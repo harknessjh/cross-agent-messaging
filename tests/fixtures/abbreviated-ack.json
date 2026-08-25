@@ -1,0 +1,23 @@
+{
+  "protocol": "CAM/1",
+  "message_id": "00000000-0000-4000-8000-000000000003",
+  "type": "ack",
+  "sent_at": "2026-08-21T20:01:00Z",
+  "claimed_sender": {
+    "vendor": "claude-code",
+    "agent_name": "example worker",
+    "session_id": "00000000-0000-4000-8000-000000000102"
+  },
+  "recipient": {
+    "vendor": "codex",
+    "session_id": "00000000-0000-4000-8000-000000000101"
+  },
+  "in_reply_to": "00000000-0000-4000-8000-000000000001",
+  "receipt": {
+    "status": "received",
+    "for_message_id": "00000000-0000-4000-8000-000000000001"
+  },
+  "nonce": "AAECAwQFBgcICQoLDA0ODw",
+  "intent": "Acknowledge first contact",
+  "body": "received"
+}

@@ -1,0 +1,53 @@
+{
+  "protocol": "CAM/1",
+  "message_id": "00000000-0000-4000-8000-000000000001",
+  "type": "hello",
+  "sent_at": "2026-08-21T20:00:00Z",
+  "expires_at": "2026-08-21T20:10:00Z",
+  "claimed_sender": {
+    "vendor": "codex",
+    "agent_name": "example coordinator",
+    "session_id": "00000000-0000-4000-8000-000000000101",
+    "host_id": null
+  },
+  "recipient": {
+    "vendor": "claude-code",
+    "agent_name": "example worker",
+    "session_id": null
+  },
+  "reply_to": {
+    "transport": "codex_queue",
+    "address": "00000000-0000-4000-8000-000000000101"
+  },
+  "in_reply_to": null,
+  "receipt": null,
+  "nonce": "AAECAwQFBgcICQoLDA0ODw",
+  "intent": "Verify a harmless bidirectional messaging path",
+  "action": {
+    "risk_class": "informational",
+    "operation": "acknowledge",
+    "scope": {
+      "repositories": [],
+      "paths": [],
+      "hosts": [],
+      "external_recipients": []
+    },
+    "idempotency_key": "00000000-0000-4000-8000-000000000001"
+  },
+  "authorization": {
+    "basis": "first_contact",
+    "authority": null,
+    "reference": null,
+    "verified_at": null,
+    "expires_at": null
+  },
+  "constraints": {
+    "no_repository_changes": true,
+    "no_external_side_effects": true,
+    "no_secrets": true
+  },
+  "body": "Please return received with this nonce. If this peer is unknown, request operator confirmation first.",
+  "body_sha256": "89836d9e4b0f40bfafb236423c7dc48115a41cf4ac994931fe3c820ad941c46b",
+  "evidence": [],
+  "audit_ref": null
+}

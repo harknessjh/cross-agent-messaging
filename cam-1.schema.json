@@ -1,0 +1,835 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Cross-Agent Messaging Protocol CAM/1 envelope",
+  "description": "Normative wire schema for the independent CAM/1 community interoperability profile.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "protocol",
+    "message_id",
+    "type",
+    "sent_at",
+    "expires_at",
+    "claimed_sender",
+    "recipient",
+    "reply_to",
+    "in_reply_to",
+    "receipt",
+    "nonce",
+    "intent",
+    "action",
+    "authorization",
+    "constraints",
+    "body",
+    "body_sha256",
+    "evidence",
+    "audit_ref"
+  ],
+  "properties": {
+    "protocol": {
+      "const": "CAM/1"
+    },
+    "message_id": {
+      "$ref": "#/$defs/uuid"
+    },
+    "type": {
+      "enum": [
+        "hello",
+        "challenge",
+        "verify",
+        "request",
+        "ack",
+        "status",
+        "result",
+        "error",
+        "cancel"
+      ]
+    },
+    "sent_at": {
+      "$ref": "#/$defs/utcDateTime"
+    },
+    "expires_at": {
+      "$ref": "#/$defs/utcDateTime"
+    },
+    "claimed_sender": {
+      "$ref": "#/$defs/senderEndpoint"
+    },
+    "recipient": {
+      "$ref": "#/$defs/recipientEndpoint"
+    },
+    "reply_to": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/replyRoute"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "in_reply_to": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/uuid"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "receipt": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/receipt"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "nonce": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/nonce"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "intent": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024
+    },
+    "action": {
+      "$ref": "#/$defs/action"
+    },
+    "authorization": {
+      "$ref": "#/$defs/authorization"
+    },
+    "constraints": {
+      "$ref": "#/$defs/constraints"
+    },
+    "body": {
+      "type": "string",
+      "maxLength": 65536,
+      "pattern": "^[^\\uD800-\\uDFFF]*$"
+    },
+    "body_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "evidence": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "$ref": "#/$defs/evidenceItem"
+      }
+    },
+    "audit_ref": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "enum": [
+              "hello",
+              "challenge",
+              "verify",
+              "request",
+              "cancel"
+            ]
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "receipt": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "enum": [
+              "challenge",
+              "verify"
+            ]
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "nonce": {
+            "$ref": "#/$defs/nonce"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "ack"
+          },
+          "receipt": {
+            "properties": {
+              "status": {
+                "const": "needs_human_confirmation"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          }
+        },
+        "required": [
+          "type",
+          "receipt"
+        ]
+      },
+      "then": {
+        "properties": {
+          "nonce": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "enum": [
+              "verify",
+              "cancel"
+            ]
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "in_reply_to": {
+            "$ref": "#/$defs/uuid"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "ack"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "$ref": "#/$defs/replyMessage",
+        "properties": {
+          "receipt": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/receipt"
+              },
+              {
+                "properties": {
+                  "status": {
+                    "enum": [
+                      "received",
+                      "needs_human_confirmation",
+                      "accepted",
+                      "rejected"
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "status"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "$ref": "#/$defs/replyMessage",
+        "properties": {
+          "receipt": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/receipt"
+              },
+              {
+                "properties": {
+                  "status": {
+                    "enum": [
+                      "accepted",
+                      "started"
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "result"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "$ref": "#/$defs/replyMessage",
+        "properties": {
+          "receipt": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/receipt"
+              },
+              {
+                "properties": {
+                  "status": {
+                    "const": "completed"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "error"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "$ref": "#/$defs/replyMessage",
+        "properties": {
+          "receipt": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/receipt"
+              },
+              {
+                "properties": {
+                  "status": {
+                    "const": "failed"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "authorization": {
+            "properties": {
+              "basis": {
+                "enum": [
+                  "none",
+                  "first_contact"
+                ]
+              }
+            },
+            "required": [
+              "basis"
+            ]
+          }
+        },
+        "required": [
+          "authorization"
+        ]
+      },
+      "then": {
+        "properties": {
+          "action": {
+            "properties": {
+              "risk_class": {
+                "const": "informational"
+              }
+            }
+          },
+          "constraints": {
+            "properties": {
+              "no_repository_changes": {
+                "const": true
+              },
+              "no_external_side_effects": {
+                "const": true
+              },
+              "no_secrets": {
+                "const": true
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "authorization": {
+            "properties": {
+              "basis": {
+                "enum": [
+                  "operator_confirmation",
+                  "receiver_policy",
+                  "delegated_scope"
+                ]
+              }
+            },
+            "required": [
+              "basis"
+            ]
+          }
+        },
+        "required": [
+          "authorization"
+        ]
+      },
+      "then": {
+        "properties": {
+          "authorization": {
+            "properties": {
+              "authority": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              "reference": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2048
+              },
+              "verified_at": {
+                "$ref": "#/$defs/utcDateTime"
+              },
+              "expires_at": {
+                "$ref": "#/$defs/utcDateTime"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$comment": "JSON Schema cannot require receipt.for_message_id to equal in_reply_to or recompute body_sha256. CAM/1 receivers must enforce both after schema validation.",
+  "$defs": {
+    "nonce": {
+      "type": "string",
+      "description": "At least 128 random bits, encoded as unpadded base64url.",
+      "minLength": 22,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "uuid": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"
+    },
+    "endpointId": {
+      "type": "string",
+      "description": "Opaque product-specific session identifier.",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "utcDateTime": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]+)?Z$"
+    },
+    "hostId": {
+      "oneOf": [
+        {
+          "type": "string",
+          "description": "Random per-enrollment alias; never a hostname or stable device identifier.",
+          "pattern": "^cam-host-[A-Za-z0-9_-]{16,64}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "senderEndpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "vendor",
+        "agent_name",
+        "session_id",
+        "host_id"
+      ],
+      "properties": {
+        "vendor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "agent_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "session_id": {
+          "$ref": "#/$defs/endpointId"
+        },
+        "host_id": {
+          "$ref": "#/$defs/hostId"
+        }
+      }
+    },
+    "recipientEndpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "vendor",
+        "agent_name",
+        "session_id"
+      ],
+      "properties": {
+        "vendor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "agent_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "session_id": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/endpointId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "host_id": {
+          "$ref": "#/$defs/hostId"
+        }
+      }
+    },
+    "replyRoute": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transport",
+        "address"
+      ],
+      "properties": {
+        "transport": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "address": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        }
+      }
+    },
+    "receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "for_message_id",
+        "detail"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "received",
+            "needs_human_confirmation",
+            "accepted",
+            "rejected",
+            "started",
+            "completed",
+            "failed"
+          ]
+        },
+        "for_message_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "detail": {
+          "oneOf": [
+            {
+              "type": "string",
+              "maxLength": 4096
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "stringList": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 4096
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repositories",
+        "paths",
+        "hosts",
+        "external_recipients"
+      ],
+      "properties": {
+        "repositories": {
+          "$ref": "#/$defs/stringList"
+        },
+        "paths": {
+          "$ref": "#/$defs/stringList"
+        },
+        "hosts": {
+          "$ref": "#/$defs/stringList"
+        },
+        "external_recipients": {
+          "$ref": "#/$defs/stringList"
+        }
+      }
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "risk_class",
+        "operation",
+        "scope",
+        "idempotency_key"
+      ],
+      "properties": {
+        "risk_class": {
+          "enum": [
+            "informational",
+            "read_only",
+            "workspace_write",
+            "external_or_irreversible"
+          ]
+        },
+        "operation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/uuid"
+        }
+      }
+    },
+    "authorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "basis",
+        "authority",
+        "reference",
+        "verified_at",
+        "expires_at"
+      ],
+      "properties": {
+        "basis": {
+          "enum": [
+            "none",
+            "first_contact",
+            "operator_confirmation",
+            "receiver_policy",
+            "delegated_scope"
+          ]
+        },
+        "authority": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reference": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "verified_at": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/utcDateTime"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expires_at": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/utcDateTime"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "constraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "no_repository_changes",
+        "no_external_side_effects",
+        "no_secrets"
+      ],
+      "properties": {
+        "no_repository_changes": {
+          "type": "boolean"
+        },
+        "no_external_side_effects": {
+          "type": "boolean"
+        },
+        "no_secrets": {
+          "const": true
+        }
+      }
+    },
+    "evidenceItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "reference",
+        "sha256",
+        "observed_at"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "transport_receipt",
+            "application_ack",
+            "artifact",
+            "log",
+            "hash",
+            "other"
+          ]
+        },
+        "reference": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "sha256": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observed_at": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/utcDateTime"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "replyMessage": {
+      "type": "object",
+      "properties": {
+        "in_reply_to": {
+          "$ref": "#/$defs/uuid"
+        },
+        "receipt": {
+          "$ref": "#/$defs/receipt"
+        }
+      }
+    }
+  }
+}

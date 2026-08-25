@@ -1,0 +1,57 @@
+{
+  "protocol": "CAM/1",
+  "message_id": "00000000-0000-4000-8000-000000000002",
+  "type": "ack",
+  "sent_at": "2026-08-21T20:01:00Z",
+  "expires_at": "2026-08-21T20:11:00Z",
+  "claimed_sender": {
+    "vendor": "claude-code",
+    "agent_name": "example worker",
+    "session_id": "00000000-0000-4000-8000-000000000102",
+    "host_id": null
+  },
+  "recipient": {
+    "vendor": "codex",
+    "agent_name": "example coordinator",
+    "session_id": "00000000-0000-4000-8000-000000000101"
+  },
+  "reply_to": {
+    "transport": "claude_send_message",
+    "address": "example worker"
+  },
+  "in_reply_to": "00000000-0000-4000-8000-000000000001",
+  "receipt": {
+    "status": "needs_human_confirmation",
+    "for_message_id": "00000000-0000-4000-8000-000000000001",
+    "detail": "Operator verification is required before enrollment."
+  },
+  "nonce": null,
+  "intent": "Acknowledge first contact",
+  "action": {
+    "risk_class": "informational",
+    "operation": "acknowledge",
+    "scope": {
+      "repositories": [],
+      "paths": [],
+      "hosts": [],
+      "external_recipients": []
+    },
+    "idempotency_key": "00000000-0000-4000-8000-000000000002"
+  },
+  "authorization": {
+    "basis": "first_contact",
+    "authority": null,
+    "reference": null,
+    "verified_at": null,
+    "expires_at": null
+  },
+  "constraints": {
+    "no_repository_changes": true,
+    "no_external_side_effects": true,
+    "no_secrets": true
+  },
+  "body": "received; no action taken; operator verification required before enrollment",
+  "body_sha256": "7a9b85f8d72f410022cb52529a74eed7cda05f5d4ee14aa96aa22acd7d6de19e",
+  "evidence": [],
+  "audit_ref": null
+}
