@@ -93,6 +93,8 @@ A fresh hello validation reports `"structurally_valid":true`, `"fresh":true`, `"
 
 Generated request and ACK files contain capability-like routing metadata. Create them only in the private exchange directory; the builders create new output files with mode `0600` and refuse to overwrite existing paths. Preserve the exact bytes until successful callback correlation, or through expiry if no correlated reply arrives. Retain only the state needed for correlation and idempotency.
 
+The generic offline validator can inspect a selected regular file or stdin; that result establishes envelope conformance, not filesystem provenance. The reference file helper refuses a final-component symlink and opens path inputs nonblocking before accepting only regular files, but it does not authenticate an arbitrary path's ancestor chain. The operator-provided private `0700` exchange directory remains part of the supported security boundary. Same-user filesystem substitution is not a property CAM/1 can prevent.
+
 After correlation or expiry makes the files eligible for cleanup, list the exact paths to the operator. Cleanup begins only after the operator verifies the resolved private directory and approves those paths; remove no unexpected contents and use no glob or recursive deletion. Do not promise secure erasure. Do not commit, publish, paste into an issue, or copy raw envelopes into an audit board. If durable audit is required, store only approved sanitized metadata in a separately managed log.
 
 ## Validate exact input

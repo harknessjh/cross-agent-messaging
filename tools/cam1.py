@@ -53,6 +53,7 @@ _load_schema = _protocol._load_schema
 _pointer = _protocol._pointer
 _unique_problems = _protocol._unique_problems
 _reject_constant = _protocol._reject_constant
+_finite_float = _protocol._finite_float
 _object_without_duplicates = _protocol._object_without_duplicates
 _scan_nesting = _protocol._scan_nesting
 _find_surrogate = _protocol._find_surrogate
@@ -65,6 +66,7 @@ serialize_envelope = _protocol.serialize_envelope
 
 # Semantic validation and pairwise correlation.
 _uuid_problem = _validation._uuid_problem
+_uuid_values_equal = _validation._uuid_values_equal
 _parse_timestamp = _validation._parse_timestamp
 _nonce_problem = _validation._nonce_problem
 _endpoint_matches = _validation._endpoint_matches

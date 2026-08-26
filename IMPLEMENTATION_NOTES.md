@@ -28,6 +28,14 @@ CAM/1 does not provide or require a coordination board, App Server controller,
 queue reader, database, daemon, inbox, retry loop, raw-socket client, or remote
 transport. Those are not fallback paths for this implementation.
 
+The offline validator accepts a selected regular file or stdin so it can inspect
+checked-in fixtures and pipelines. That is a conformance check, not a filesystem
+provenance claim. Live transport rejects stdin and uses nonblocking acquisition
+before accepting only regular files, but the generic path API does not pin or
+authenticate an ancestor chain. The supported workflow therefore retains the
+operator-verified private `0700` exchange directory as a prerequisite. CAM/1
+does not claim integrity against another process running as the same OS user.
+
 ## 2. Reference environment
 
 The 2026-08-26 compatibility pass used both products under one macOS account:
@@ -65,9 +73,11 @@ For each operation the helper:
 4. accepts only rows classified as known local session kinds;
 5. requires the exact freshly returned qualified name/ref;
 6. validates the exact CAM/1 envelope and recipient mapping;
-7. performs at most one `SendMessage` call; and
-8. requires `success:true` and a canonical transport `msg_id`; and
-9. reports the tool result as transport acceptance only before exiting.
+7. for a reply, requires the live target to equal the preserved original
+   `reply_to` route;
+8. performs at most one `SendMessage` call;
+9. requires `success:true` and a canonical transport `msg_id`; and
+10. reports the tool result as transport acceptance only before exiting.
 
 Unknown, cloud, and Remote Control rows fail closed. The implementation neither
 connects to a session's runtime socket nor exposes an MCP URL.

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import errno
 import hashlib
 import json
@@ -471,6 +472,141 @@ class TransportCliRoundTripTests(unittest.TestCase):
             with self.assertRaises(cam1_transport.TransportError) as context:
                 cam1_transport._validate_envelope(str(path), None)
         self.assertEqual(context.exception.code, "argument.against_required")
+
+    def test_live_transport_rejects_stdin_envelopes(self) -> None:
+        with self.assertRaises(cam1_transport.TransportError) as context:
+            cam1_transport._validate_envelope("-", None)
+        self.assertEqual(context.exception.code, "argument.envelope_file")
+
+    def test_codex_reply_requires_the_original_callback(self) -> None:
+        unrelated_thread = "00000000-0000-4000-8000-000000000199"
+        original = cam1.build_hello(
+            sender_vendor="codex",
+            sender_name="example coordinator",
+            sender_session=CODEX_THREAD,
+            recipient_vendor="claude-code",
+            recipient_name="local-worker",
+            recipient_session=CLAUDE_SESSION,
+            reply_transport="codex_queue",
+            reply_address=unrelated_thread,
+        )
+        reply = cam1.build_ack(
+            original,
+            sender_vendor="claude-code",
+            sender_name="local-worker",
+            sender_session=CLAUDE_SESSION,
+            reply_transport="claude_send_message",
+            reply_address="local-worker [abcdef]",
+            status_value="received",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            temp = Path(directory)
+            original_path = temp / "hello.cam1.json"
+            reply_path = temp / "ack.cam1.json"
+            write_private(original_path, original)
+            write_private(reply_path, reply)
+            with mock.patch.object(cam1_transport.subprocess, "run") as run:
+                with self.assertRaises(cam1_transport.TransportError) as context:
+                    cam1_transport.reply_to_codex(
+                        codex_bin="/fake/codex",
+                        thread=CODEX_THREAD,
+                        envelope_path=str(reply_path),
+                        against_path=str(original_path),
+                        timeout_seconds=1,
+                    )
+        self.assertEqual(context.exception.code, "envelope.callback_mismatch")
+        run.assert_not_called()
+
+    def test_reply_to_one_way_original_has_an_actionable_error(self) -> None:
+        original_envelope = json.loads(build_first_contact())
+        original_envelope["reply_to"] = None
+        original = cam1.serialize_envelope(original_envelope)
+        reply = cam1.build_ack(
+            original,
+            sender_vendor="claude-code",
+            sender_name="local-worker",
+            sender_session=CLAUDE_SESSION,
+            reply_transport="claude_send_message",
+            reply_address="local-worker [abcdef]",
+            status_value="received",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            temp = Path(directory)
+            original_path = temp / "hello.cam1.json"
+            reply_path = temp / "ack.cam1.json"
+            write_private(original_path, original)
+            write_private(reply_path, reply)
+            with mock.patch.object(cam1_transport.subprocess, "run") as run:
+                with self.assertRaises(cam1_transport.TransportError) as context:
+                    cam1_transport.reply_to_codex(
+                        codex_bin="/fake/codex",
+                        thread=CODEX_THREAD,
+                        envelope_path=str(reply_path),
+                        against_path=str(original_path),
+                        timeout_seconds=1,
+                    )
+        self.assertEqual(context.exception.code, "envelope.callback_unavailable")
+        run.assert_not_called()
+
+    def test_claude_reply_requires_the_exact_original_callback_ref(self) -> None:
+        fake_server_source = textwrap.dedent(
+            f"""\
+            #!{sys.executable}
+            from mcp.server import MCPServer
+
+            server = MCPServer("fake-claude")
+
+            @server.tool()
+            def ListAgents():
+                return {{"listing": "Peer sessions (1):\\n  local-worker [abcdef]  \u00b7  interactive  \u00b7  idle  \u00b7  started now"}}
+
+            @server.tool()
+            def SendMessage(to: str, summary: str, message: str):
+                raise RuntimeError("must not be called")
+
+            server.run(transport="stdio")
+            """
+        )
+        original = cam1.build_hello(
+            sender_vendor="claude-code",
+            sender_name="local-worker",
+            sender_session=CLAUDE_SESSION,
+            recipient_vendor="codex",
+            recipient_name="example coordinator",
+            recipient_session=CODEX_THREAD,
+            reply_transport="claude_send_message",
+            reply_address="local-worker [bbbbbb]",
+        )
+        reply = cam1.build_ack(
+            original,
+            sender_vendor="codex",
+            sender_name="example coordinator",
+            sender_session=CODEX_THREAD,
+            reply_transport="codex_queue",
+            reply_address=CODEX_THREAD,
+            status_value="received",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            temp = Path(directory)
+            server = temp / "fake-claude"
+            server.write_text(fake_server_source, encoding="utf-8")
+            server.chmod(0o700)
+            original_path = temp / "hello.cam1.json"
+            reply_path = temp / "ack.cam1.json"
+            write_private(original_path, original)
+            write_private(reply_path, reply)
+            with self.assertRaises(cam1_transport.TransportError) as context:
+                asyncio.run(
+                    cam1_transport.send_to_claude(
+                        claude_bin=str(server),
+                        target="local-worker [abcdef]",
+                        envelope_path=str(reply_path),
+                        against_path=str(original_path),
+                        summary=None,
+                        timeout_seconds=5,
+                    )
+                )
+        self.assertEqual(context.exception.code, "envelope.callback_mismatch")
 
     def test_live_transport_rejects_schema_valid_oversized_envelope(self) -> None:
         raw = cam1.build_hello(

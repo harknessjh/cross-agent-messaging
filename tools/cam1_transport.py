@@ -115,6 +115,15 @@ class ClaudeToolResponse:
         return result
 
 
+@dataclass(frozen=True)
+class ValidatedEnvelope:
+    """Exact live payload plus its validated envelope and optional root."""
+
+    raw: bytes
+    envelope: dict[str, Any]
+    original: dict[str, Any] | None
+
+
 def _find_transport_error(error: BaseException) -> TransportError | None:
     if isinstance(error, TransportError):
         return error
@@ -448,24 +457,56 @@ def _resolve_local_peer(target: str, peers: Sequence[Peer]) -> Peer:
 
 def _validate_envelope(
     envelope_path: str, against_path: str | None
-) -> tuple[bytes, dict[str, Any]]:
+) -> ValidatedEnvelope:
+    if envelope_path == "-" or against_path == "-":
+        raise TransportError(
+            "argument.envelope_file",
+            "live transport requires bounded regular files; stdin is offline-only",
+        )
     raw = cam1.read_envelope_file(envelope_path)
-    envelope = cam1.parse_exact_bytes(raw)
-    message_type = envelope.get("type")
-    if message_type in cam1.REPLY_TYPES and against_path is None:
+    against_raw = cam1.read_envelope_file(against_path) if against_path else None
+    result = cam1.validate_exact_bytes(raw, against_raw=against_raw)
+    envelope = result.envelope
+    if envelope["type"] in cam1.REPLY_TYPES and against_raw is None:
         raise TransportError(
             "argument.against_required",
             "reply envelopes require --against with the preserved original envelope",
         )
-    against_raw = cam1.read_envelope_file(against_path) if against_path else None
-    result = cam1.validate_exact_bytes(raw, against_raw=against_raw)
     if len(raw) > MAX_TRANSPORT_ENVELOPE_BYTES:
         raise TransportError(
             "transport.payload_too_large",
             "validated envelope exceeds the 65536-byte live-transport limit; "
             "send a compact path-and-hash handoff instead",
         )
-    return raw, result.envelope
+    original = cam1.parse_exact_bytes(against_raw) if against_raw is not None else None
+    return ValidatedEnvelope(raw=raw, envelope=envelope, original=original)
+
+
+def _require_original_callback(
+    validated: ValidatedEnvelope,
+    *,
+    transport: str,
+    address: str,
+) -> None:
+    if validated.envelope["type"] not in cam1.REPLY_TYPES:
+        return
+    original = validated.original
+    if original is None:
+        raise TransportError(
+            "argument.against_required",
+            "reply envelopes require --against with the preserved original envelope",
+        )
+    reply_to = original["reply_to"]
+    if not isinstance(reply_to, dict):
+        raise TransportError(
+            "envelope.callback_unavailable",
+            "preserved original does not provide a live reply_to route",
+        )
+    if reply_to["transport"] != transport or reply_to["address"] != address:
+        raise TransportError(
+            "envelope.callback_mismatch",
+            "live reply target must exactly match the preserved original reply_to",
+        )
 
 
 def _default_summary(envelope: dict[str, Any]) -> str:
@@ -549,7 +590,9 @@ async def send_to_claude(
 ) -> dict[str, Any]:
     """Validate and send one exact envelope to one freshly discovered local peer."""
 
-    raw, envelope = _validate_envelope(envelope_path, against_path)
+    validated = _validate_envelope(envelope_path, against_path)
+    raw = validated.raw
+    envelope = validated.envelope
     try:
         async with asyncio.timeout(timeout_seconds):
             async with _claude_client(
@@ -573,6 +616,11 @@ async def send_to_claude(
                         "discovered peer name",
                     )
                 transport_address = peer.qualified_address
+                _require_original_callback(
+                    validated,
+                    transport="claude_send_message",
+                    address=transport_address,
+                )
                 response = await _call_connected_tool(
                     client,
                     text_content_type,
@@ -648,13 +696,20 @@ def reply_to_codex(
     """Validate and queue one exact envelope to one literal local Codex thread."""
 
     thread = _canonical_uuid(thread, label="thread")
-    raw, envelope = _validate_envelope(envelope_path, against_path)
+    validated = _validate_envelope(envelope_path, against_path)
+    raw = validated.raw
+    envelope = validated.envelope
     recipient_session = envelope.get("recipient", {}).get("session_id")
     if recipient_session != thread:
         raise TransportError(
             "envelope.recipient_mismatch",
             "envelope recipient.session_id must equal the literal Codex thread UUID",
         )
+    _require_original_callback(
+        validated,
+        transport="codex_queue",
+        address=thread,
+    )
     try:
         completed = subprocess.run(
             [
@@ -723,7 +778,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--claude-bin", default="claude")
     parser.add_argument("--codex-bin", default="codex")
     parser.add_argument(
-        "--timeout-seconds", type=float, default=DEFAULT_TIMEOUT_SECONDS
+        "--timeout-seconds",
+        type=float,
+        default=DEFAULT_TIMEOUT_SECONDS,
+        help="overall product-operation deadline after local envelope preflight",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -734,16 +792,30 @@ def _parser() -> argparse.ArgumentParser:
         "claude-send", help="send one validated envelope to a local Claude session"
     )
     send_parser.add_argument("--to", required=True)
-    send_parser.add_argument("--envelope", required=True)
-    send_parser.add_argument("--against")
+    send_parser.add_argument(
+        "--envelope",
+        required=True,
+        help="regular envelope file in the operator-approved private directory",
+    )
+    send_parser.add_argument(
+        "--against",
+        help="preserved root envelope file required for a reply",
+    )
     send_parser.add_argument("--summary")
 
     reply_parser = subparsers.add_parser(
         "codex-reply", help="queue one validated envelope to a local Codex session"
     )
     reply_parser.add_argument("--thread", required=True)
-    reply_parser.add_argument("--envelope", required=True)
-    reply_parser.add_argument("--against")
+    reply_parser.add_argument(
+        "--envelope",
+        required=True,
+        help="regular envelope file in the operator-approved private directory",
+    )
+    reply_parser.add_argument(
+        "--against",
+        help="preserved root envelope file required for a reply",
+    )
     return parser
 
 

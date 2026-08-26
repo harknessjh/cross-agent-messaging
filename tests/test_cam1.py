@@ -7,6 +7,7 @@ import ast
 import datetime as dt
 import hashlib
 import json
+import os
 import re
 import stat
 import subprocess
@@ -132,6 +133,50 @@ class CamValidationTests(unittest.TestCase):
     def test_non_finite_json_number_is_rejected(self) -> None:
         problems = self.problem_codes(b'{"value":NaN}')
         self.assertEqual(problems[0].code, "wire.json")
+
+    def test_exponent_overflow_is_rejected_by_the_public_parser(self) -> None:
+        with self.assertRaises(cam1.CamValidationError) as context:
+            cam1.parse_exact_bytes(b'{"value":1e309}')
+        self.assertEqual(context.exception.problems[0].code, "wire.json")
+
+    def test_schema_invalid_scalars_return_bounded_diagnostics(self) -> None:
+        cases = (
+            (
+                "array message type",
+                lambda envelope: envelope.update(type=[]),
+                "schema.enum",
+                "/type",
+            ),
+            (
+                "object message type",
+                lambda envelope: envelope.update(type={}),
+                "schema.enum",
+                "/type",
+            ),
+            (
+                "non-ASCII digest",
+                lambda envelope: envelope.update(body_sha256="\u00e9" * 64),
+                "schema.pattern",
+                "/body_sha256",
+            ),
+        )
+        for label, mutate, expected_code, expected_path in cases:
+            with self.subTest(label=label):
+                problems = self.problem_codes(changed("valid-hello.json", mutate))
+                self.assertIn(
+                    (expected_code, expected_path),
+                    {(item.code, item.path) for item in problems},
+                )
+
+        invalid_status = changed(
+            "valid-ack.json",
+            lambda envelope: envelope["receipt"].update(status=[]),
+        )
+        status_problems = self.problem_codes(
+            invalid_status,
+            against_raw=fixture("valid-hello.json"),
+        )
+        self.assertIn("/receipt/status", {item.path for item in status_problems})
 
     def test_nesting_deeper_than_sixteen_is_rejected(self) -> None:
         raw = b'{"value":' + (b"[" * 16) + b"0" + (b"]" * 16) + b"}"
@@ -294,6 +339,32 @@ class CamValidationTests(unittest.TestCase):
         problems = self.problem_codes(raw)
         self.assertIn("semantic.future", {item.code for item in problems})
 
+    def test_upper_bound_timestamps_return_validation_problems(self) -> None:
+        def mutate(envelope):
+            envelope.update(
+                sent_at="9999-12-31T23:55:01Z",
+                expires_at="9999-12-31T23:55:05Z",
+            )
+            envelope["authorization"].update(
+                verified_at="9999-12-31T23:55:02Z",
+                expires_at="9999-12-31T23:55:03Z",
+            )
+
+        problems = self.problem_codes(changed("valid-hello.json", mutate))
+        self.assertIn("semantic.future", {item.code for item in problems})
+
+    def test_extreme_clock_values_do_not_overflow_validation(self) -> None:
+        latest = dt.datetime.max.replace(tzinfo=dt.UTC)
+        result = cam1.validate_exact_bytes(
+            fixture("valid-hello.json"),
+            now=latest,
+            policy=cam1.ValidationPolicy(
+                allow_expired=True,
+                clock_skew_seconds=10**30,
+            ),
+        )
+        self.assertFalse(result.fresh)
+
     def test_excessive_ttl_is_rejected(self) -> None:
         raw = changed(
             "valid-hello.json",
@@ -449,6 +520,50 @@ class CamValidationTests(unittest.TestCase):
             against_raw=fixture("valid-ack.json"),
         )
         self.assertIn("correlation.transition", {item.code for item in problems})
+
+    def test_reply_cannot_reuse_the_root_message_id(self) -> None:
+        original = json.loads(fixture("valid-hello.json"))
+
+        def reuse_root_id(envelope):
+            envelope["message_id"] = original["message_id"]
+            envelope["action"]["idempotency_key"] = original["message_id"]
+
+        problems = self.problem_codes(
+            changed("valid-ack.json", reuse_root_id),
+            against_raw=fixture("valid-hello.json"),
+        )
+        self.assertIn(
+            ("correlation.message_id", "/message_id"),
+            {(item.code, item.path) for item in problems},
+        )
+
+    def test_uuid_case_alias_cannot_bypass_message_id_uniqueness(self) -> None:
+        original = json.loads(fixture("valid-hello.json"))
+
+        def reuse_uppercase_root_id(envelope):
+            uppercase_root = original["message_id"].upper()
+            envelope["message_id"] = uppercase_root
+            envelope["action"]["idempotency_key"] = uppercase_root
+
+        problems = self.problem_codes(
+            changed("valid-ack.json", reuse_uppercase_root_id),
+            against_raw=fixture("valid-hello.json"),
+        )
+        self.assertIn("correlation.message_id", {item.code for item in problems})
+
+    def test_uuid_correlation_accepts_distinct_uppercase_wire_values(self) -> None:
+        def use_uppercase_uuids(envelope):
+            envelope["message_id"] = envelope["message_id"].upper()
+            envelope["action"]["idempotency_key"] = envelope["message_id"]
+            envelope["in_reply_to"] = envelope["in_reply_to"].upper()
+            envelope["receipt"]["for_message_id"] = envelope["in_reply_to"]
+
+        result = cam1.validate_exact_bytes(
+            changed("valid-ack.json", use_uppercase_uuids),
+            against_raw=fixture("valid-hello.json"),
+            now=NOW,
+        )
+        self.assertTrue(result.correlated)
 
     def test_illegal_challenge_responses_are_rejected_by_transition(self) -> None:
         cases = (
@@ -832,6 +947,45 @@ class CamPublicSurfaceTests(unittest.TestCase):
         self.assertNotIn("authorized", summary)
         self.assertNotIn("safe", summary)
         self.assertEqual(completed.stderr, b"")
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "requires POSIX FIFO support")
+    def test_fifo_input_is_rejected_without_waiting_for_a_writer(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fifo = Path(directory) / "message.fifo"
+            os.mkfifo(fifo)
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "tools" / "cam1.py"),
+                    "validate",
+                    str(fifo),
+                ],
+                cwd=ROOT,
+                check=False,
+                capture_output=True,
+                timeout=2,
+            )
+        self.assertEqual(completed.returncode, 2)
+        error = json.loads(completed.stderr)
+        self.assertEqual(error["problems"][0]["code"], "input.type")
+
+    def test_offline_validation_still_accepts_stdin(self) -> None:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "tools" / "cam1.py"),
+                "validate",
+                "-",
+                "--allow-expired",
+            ],
+            cwd=ROOT,
+            check=False,
+            input=fixture("valid-hello.json"),
+            capture_output=True,
+            timeout=2,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertTrue(json.loads(completed.stdout)["structurally_valid"])
 
     def test_cli_build_validate_ack_validate_round_trip(self) -> None:
         tool = str(ROOT / "tools" / "cam1.py")

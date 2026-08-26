@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -199,6 +200,13 @@ def _reject_constant(value: str) -> None:
     raise ValueError("non-finite JSON number")
 
 
+def _finite_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError("non-finite JSON number")
+    return parsed
+
+
 def _object_without_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
@@ -287,6 +295,7 @@ def parse_exact_bytes(raw: bytes) -> dict[str, Any]:
             text,
             object_pairs_hook=_object_without_duplicates,
             parse_constant=_reject_constant,
+            parse_float=_finite_float,
         )
     except DuplicateKeyError:
         raise CamValidationError(

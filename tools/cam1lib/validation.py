@@ -56,6 +56,15 @@ def _uuid_problem(value: Any, path: tuple[str, ...]) -> Problem | None:
     return None
 
 
+def _uuid_values_equal(left: Any, right: Any) -> bool:
+    if not isinstance(left, str) or not isinstance(right, str):
+        return False
+    try:
+        return uuid.UUID(left) == uuid.UUID(right)
+    except (ValueError, AttributeError):
+        return False
+
+
 def _parse_timestamp(
     value: Any, path: tuple[str, ...]
 ) -> tuple[dt.datetime | None, Problem | None]:
@@ -166,7 +175,7 @@ def _message_time_problems(
                     f"message lifetime exceeds {policy.max_ttl_seconds} seconds",
                 )
             )
-        if sent_at > now + dt.timedelta(seconds=policy.clock_skew_seconds):
+        if (sent_at - now).total_seconds() > policy.clock_skew_seconds:
             problems.append(
                 Problem(
                     "semantic.future",
@@ -215,8 +224,9 @@ def _authorization_time_problems(
                         "authorization expiry must be later than verification",
                     )
                 )
-            if sent_at is not None and verified > sent_at + dt.timedelta(
-                seconds=policy.clock_skew_seconds
+            if (
+                sent_at is not None
+                and (verified - sent_at).total_seconds() > policy.clock_skew_seconds
             ):
                 problems.append(
                     Problem(
@@ -235,7 +245,11 @@ def _nonce_semantic_problems(envelope: dict[str, Any]) -> list[Problem]:
         problems.append(nonce_problem)
 
     message_type = envelope.get("type")
-    if message_type in {"challenge", "verify"} and envelope.get("nonce") is None:
+    if (
+        isinstance(message_type, str)
+        and message_type in {"challenge", "verify"}
+        and envelope.get("nonce") is None
+    ):
         problems.append(
             Problem(
                 f"semantic.{message_type}_nonce",
@@ -252,7 +266,13 @@ def _body_hash_outcome(envelope: dict[str, Any]) -> tuple[list[Problem], bool]:
 
     body = envelope.get("body")
     claimed_digest = envelope.get("body_sha256")
-    if isinstance(body, str) and isinstance(claimed_digest, str):
+    if (
+        isinstance(body, str)
+        and isinstance(claimed_digest, str)
+        and len(claimed_digest) == 64
+        and claimed_digest.isascii()
+        and all(character in "0123456789abcdef" for character in claimed_digest)
+    ):
         actual_digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
         body_hash_valid = secrets.compare_digest(actual_digest, claimed_digest)
         if not body_hash_valid:
@@ -273,9 +293,10 @@ def _reply_semantic_problems(envelope: dict[str, Any]) -> list[Problem]:
     receipt = envelope.get("receipt")
     in_reply_to = envelope.get("in_reply_to")
     if (
-        message_type in RECEIPT_TYPES
+        isinstance(message_type, str)
+        and message_type in RECEIPT_TYPES
         and isinstance(receipt, dict)
-        and receipt.get("for_message_id") != in_reply_to
+        and not _uuid_values_equal(receipt.get("for_message_id"), in_reply_to)
     ):
         problems.append(
             Problem(
@@ -285,7 +306,8 @@ def _reply_semantic_problems(envelope: dict[str, Any]) -> list[Problem]:
             )
         )
     if (
-        message_type in {"status", "result", "error"}
+        isinstance(message_type, str)
+        and message_type in {"status", "result", "error"}
         and envelope.get("nonce") is not None
     ):
         problems.append(
@@ -326,6 +348,11 @@ def _transition_problems(
     receipt = envelope.get("receipt")
     status_value = receipt.get("status") if isinstance(receipt, dict) else None
 
+    if not isinstance(original_type, str) or not isinstance(message_type, str):
+        return []
+    if status_value is not None and not isinstance(status_value, str):
+        return []
+
     if (original_type, message_type, status_value) not in STATELESS_REPLY_TRANSITIONS:
         allowed_types = {
             candidate_type
@@ -365,7 +392,7 @@ def _correlation_outcome(
         correlated = False
         problems.extend(transition_problems)
 
-    if in_reply_to != original_id:
+    if not _uuid_values_equal(in_reply_to, original_id):
         correlated = False
         problems.append(
             Problem(
@@ -374,7 +401,18 @@ def _correlation_outcome(
                 "reply does not reference the supplied original",
             )
         )
-    if isinstance(receipt, dict) and receipt.get("for_message_id") != original_id:
+    if _uuid_values_equal(envelope.get("message_id"), original_id):
+        correlated = False
+        problems.append(
+            Problem(
+                "correlation.message_id",
+                "/message_id",
+                "reply must use a message ID distinct from the supplied original",
+            )
+        )
+    if isinstance(receipt, dict) and not _uuid_values_equal(
+        receipt.get("for_message_id"), original_id
+    ):
         correlated = False
         problems.append(
             Problem(
@@ -408,6 +446,7 @@ def _correlation_outcome(
     if (
         original_type == "challenge"
         and message_type == "ack"
+        and isinstance(status_value, str)
         and status_value in {"needs_human_confirmation", "rejected"}
     ):
         if envelope.get("nonce") is not None:
@@ -431,6 +470,7 @@ def _correlation_outcome(
             )
     elif (
         not transition_problems
+        and isinstance(message_type, str)
         and message_type in {"ack", "verify"}
         and envelope.get("nonce") != original_nonce
     ):

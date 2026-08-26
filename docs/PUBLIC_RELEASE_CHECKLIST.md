@@ -31,6 +31,7 @@ Use this checklist against the exact commit proposed for publication. A green so
 - Compare every documented `tools/cam1.py` and `tools/cam1_transport.py` invocation with the live `--help` output.
 - Confirm that `cam1_transport.py` exposes only `doctor`, `claude-list`, `claude-send`, and `codex-reply`; it must not provide receive, retry, daemon, database, board, raw-socket, or remote behavior.
 - Confirm that both transport send commands require `--against` for reply envelopes and never report transport acceptance as receiver handling.
+- Confirm that a live reply target exactly matches the preserved original `reply_to`, live transport refuses stdin, FIFO inputs fail before waiting for a writer, and offline stdin validation remains available.
 - Confirm that Claude acceptance requires `success:true` plus a canonical transport `msg_id`, Codex acceptance requires the exact documented stdout receipt for the requested thread, both send paths enforce the documented 65,536-byte live limit, and transport failures cannot contaminate the machine-readable JSON channel.
 - Validate every checked-in CAM/1 fixture and recompute every documented body digest.
 - Run the public-release audit with warnings treated as failures.
