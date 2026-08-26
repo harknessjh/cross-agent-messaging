@@ -52,6 +52,5 @@
   },
   "body": "received; no action taken; operator verification required before enrollment",
   "body_sha256": "7a9b85f8d72f410022cb52529a74eed7cda05f5d4ee14aa96aa22acd7d6de19e",
-  "evidence": [],
-  "audit_ref": null
+  "evidence": []
 }

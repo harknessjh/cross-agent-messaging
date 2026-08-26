@@ -22,8 +22,7 @@
     "constraints",
     "body",
     "body_sha256",
-    "evidence",
-    "audit_ref"
+    "evidence"
   ],
   "properties": {
     "protocol": {
@@ -126,18 +125,6 @@
       "items": {
         "$ref": "#/$defs/evidenceItem"
       }
-    },
-    "audit_ref": {
-      "oneOf": [
-        {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 2048
-        },
-        {
-          "type": "null"
-        }
-      ]
     }
   },
   "allOf": [

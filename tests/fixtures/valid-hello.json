@@ -48,6 +48,5 @@
   },
   "body": "Please return received with this nonce. If this peer is unknown, request operator confirmation first.",
   "body_sha256": "89836d9e4b0f40bfafb236423c7dc48115a41cf4ac994931fe3c820ad941c46b",
-  "evidence": [],
-  "audit_ref": null
+  "evidence": []
 }

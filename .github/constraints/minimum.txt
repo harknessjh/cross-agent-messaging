@@ -1,0 +1,4 @@
+# Direct lower bounds from requirements.txt and requirements-dev.txt.
+jsonschema[format-nongpl]==4.25.0
+mcp==2.1.0
+ruff==0.16.0

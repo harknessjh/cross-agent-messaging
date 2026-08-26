@@ -4,128 +4,108 @@ CAM stands for Cross-Agent Messaging. The `/1` is the wire-major version: a rece
 
 > CAM/1 is not an OpenAI, Anthropic, or Model Context Protocol standard, and those projects do not endorse it. It does not authenticate peers, grant permissions, transfer conversation context, or prove that reported work is true.
 
-The normative contract is [PROTOCOL.md](PROTOCOL.md) and [cam-1.schema.json](cam-1.schema.json). [IMPLEMENTATION_NOTES.md](IMPLEMENTATION_NOTES.md) contains dated, non-normative observations. New Codex and Claude Code agents should start with [the Codex-to-Claude quick start](docs/CODEX_TO_CLAUDE.md).
+The normative contract is [PROTOCOL.md](PROTOCOL.md) and [cam-1.schema.json](cam-1.schema.json). [IMPLEMENTATION_NOTES.md](IMPLEMENTATION_NOTES.md) contains dated, non-normative observations. New users should follow the single supported [Codex-to-Claude quick start](docs/CODEX_TO_CLAUDE.md).
 
-## What CAM/1 provides
+## Mental model and scope
 
-- A complete JSON envelope with explicit sender claims, recipient, callback, scope, authorization claim, constraints, expiry, idempotency key, nonce, and body digest.
-- Same-host transport profiles for Codex-to-Codex, Claude-to-Codex, Claude-to-Claude, and Codex-to-Claude messaging.
-- Distinct transport, application-receipt, authorization, and completion evidence.
-- Replay, retry, correction, and audit rules.
+CAM/1 is an envelope format and safety profile, with local reference tools for building, validating, and invoking separately installed product transports. CAM/1 does not run a broker, daemon, queue, inbox, database, coordination board, or delivery service. Claude Code owns Claude discovery and delivery. Codex owns `codex queue` and any product-internal persistence or later-turn delivery it performs. Any optional audit log is operator-owned and is not a transport or source of authority.
+
+CAM/1 provides:
+
+- a complete JSON envelope with explicit sender claims, recipient, callback, scope, authorization claim, constraints, expiry, idempotency key, nonce, and body digest;
+- same-host profiles that map the envelope onto Codex and Claude Code product transports;
+- distinct transport, application-receipt, authorization, and completion evidence; and
+- replay, retry, correction, and audit rules.
 
 CAM/1 does not provide cryptographic identity, confidentiality, non-repudiation, remote delivery, shared context, or permission delegation. Every receiving session applies its own policy and permissions.
 
-## One supported onboarding path
+The supported onboarding path is local-only: both sessions run on one host under the same operating-system account. Do not adapt it to Remote Control, cloud sessions, different accounts, another machine, or an exposed MCP, app-server, queue, or runtime-socket endpoint.
 
-The reference path for a harmless Codex-to-Claude first contact is:
+## Prerequisites
 
-1. Obtain the originating Codex thread UUID and the intended Claude session mapping from the operator. A conforming acknowledgment also requires the Claude session's own opaque session ID; never substitute its name or short ref.
-2. Capability-check the installed Codex and Claude Code interfaces.
-3. Run fresh Claude `ListAgents` discovery and correlate the exact returned name/ref with the operator-supplied role. Discovery provides an address, not identity or authority.
-4. Build a complete first-contact envelope with `tools/cam1.py`.
-5. Validate the exact serialized envelope that will be sent. Never validate a retyped or manually reconstructed copy.
-6. Send that unchanged serialization with `SendMessage`, using native Claude tools when available or the stdio MCP sequence in protocol section 11.
-7. Record the Claude transport receipt, then finish and yield the Codex turn.
-8. Require a separately correlated CAM/1 application acknowledgment through the literal Codex callback UUID.
+Before prompting either agent, obtain or prepare:
 
-Stop without sending if the callback is missing, the target mapping is ambiguous, validation fails, the recipient holds/refuses the message, or operator authorization is unclear.
+- a POSIX environment; the reference round trip was tested on macOS;
+- Python 3.11 or later;
+- installed `codex` and `claude` commands whose live capability checks succeed;
+- one originating Codex session and one independent Claude Code session on the same host and account;
+- the literal Codex thread UUID;
+- an operator-trusted Claude session ID; and
+- authority for one harmless first-contact send and its one same-host callback.
 
-## Start a new Codex session
+A fresh Claude `ListAgents` result supplies a transport address, not a human role, session identity, or authority. The operator must correlate the returned name/ref with the intended Claude session.
 
-Run the session from this repository root so it receives [AGENTS.md](AGENTS.md), or give it this bounded prompt:
+## Install and test before prompting agents
 
-```text
-Read AGENTS.md and docs/CODEX_TO_CLAUDE.md in the CAM/1 repository before acting. Help me make one harmless, same-host Codex-to-Claude first-contact round trip. Capability-check the installed products, obtain my confirmation of the literal Codex callback UUID and the freshly discovered Claude address mapping, build and validate the exact CAM/1 serialization with tools/cam1.py, then send that unchanged serialization through the supported Claude MCP tools. Treat transport acceptance, a correlated application acknowledgment, authorization, and completion as separate evidence. Do not use raw sockets, internal queue storage, shell interpolation, secrets, repository changes, or external side effects. Stop if identity, callback, scope, or authority is ambiguous.
-```
-
-This prompt delegates only the harmless messaging check. It does not authorize installation, repository edits, remote publication, or work requested by the peer.
-
-## Install the reference tools
-
-The tools require Python 3.11 or later and the mature `jsonschema` implementation; the repository does not reimplement JSON Schema.
+The reference tools use the mature `jsonschema` implementation for envelope validation and the official Python MCP SDK for the bounded Claude stdio client.
 
 ```bash
 python3.11 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m unittest discover -s tests -v
 .venv/bin/python tools/cam1.py --help
+.venv/bin/python tools/cam1_transport.py --help
+.venv/bin/python tools/cam1_transport.py doctor
 ```
 
-Build a synthetic-shaped but live first-contact envelope by replacing every uppercase value with operator-verified data:
+Do not proceed unless the offline tests finish with `OK`, the local transport doctor described in the [quick start](docs/CODEX_TO_CLAUDE.md) confirms its prerequisite checks, and `claude-list` confirms the current local Claude messaging tool surface.
 
-```bash
-.venv/bin/python tools/cam1.py build-hello \
-  --sender-vendor codex \
-  --sender-name "ORIGINATING CODEX ROLE" \
-  --sender-session "LITERAL CODEX THREAD UUID" \
-  --recipient-vendor claude-code \
-  --recipient-name "EXACT LISTAGENTS NAME" \
-  --reply-transport codex_queue \
-  --reply-address "LITERAL CODEX THREAD UUID" \
-  --output first-contact.cam1.json
+## One supported onboarding path
 
-.venv/bin/python tools/cam1.py validate first-contact.cam1.json
-```
+The complete walkthrough, including the canonical [Claude receiver prompt](docs/CODEX_TO_CLAUDE.md#5-prepare-the-claude-receiver) and [Codex sender prompt](docs/CODEX_TO_CLAUDE.md#6-start-the-codex-sender), lives in the quick start. In outline:
 
-When the operator has independently confirmed the Claude session ID, add `--recipient-session "OPERATOR-CONFIRMED CLAUDE SESSION ID"`. Otherwise the builder records `recipient.session_id` as `null`; it never invents one. The recipient still needs its operator-confirmed session ID before constructing a conforming ACK.
+1. Create a private `0700` exchange directory outside the repository.
+2. Prepare the Claude receiver with its operator-trusted session ID and expected Codex callback.
+3. Start Codex from this repository root and give it the canonical sender prompt.
+4. Run local capability checks and fresh Claude discovery.
+5. Have the operator confirm the literal callback UUID and exact Claude role/address/session mapping.
+6. Build and validate one complete first-contact envelope with `tools/cam1.py`.
+7. Send those unchanged bytes with `tools/cam1_transport.py claude-send`.
+8. Record the Claude transport receipt, then finish and yield the Codex turn.
+9. Have Claude build, validate, and return one complete ACK with `tools/cam1_transport.py codex-reply --against ORIGINAL`.
+10. When Codex receives the later user turn, validate it with `--against` the exact original and require `"correlated":true`.
 
-The builder creates fresh UUIDs and a cryptographically random nonce, computes `body_sha256`, validates the final serialization, refuses to overwrite an existing path, and creates output mode `0600`. Do not hand-edit its output. Rebuild and revalidate instead.
+`reply_to` always describes the future response route for the envelope being built. It is not the transport carrying that envelope. The hello travels through Claude `SendMessage` while its `reply_to` names `codex_queue`; the ACK travels through `codex queue` while its own `reply_to` names `claude_send_message`.
 
-For a complete acknowledgment, the receiving agent supplies the exact received request to `build-ack`. Unknown peers default to `needs_human_confirmation`; this is intentionally fail-closed.
+Stop without sending if the callback is missing, discovery is not local-only, the target mapping is ambiguous, validation fails, the recipient holds or refuses the message, or operator authorization is unclear.
 
-```bash
-.venv/bin/python tools/cam1.py build-ack \
-  --request exact-received-request.cam1.json \
-  --sender-vendor claude-code \
-  --sender-name "EXACT CLAUDE ADDRESS" \
-  --sender-session "CLAUDE SESSION ID" \
-  --reply-transport claude_send_message \
-  --reply-address "EXACT CLAUDE ADDRESS" \
-  --output acknowledgment.cam1.json
-```
+The reference live transports accept complete envelopes up to 65,536 UTF-8 bytes. Offline validation permits larger stored envelopes, but larger artifacts should be handed off by operator-approved local path and digest rather than embedded in a live message.
 
-See [docs/CODEX_TO_CLAUDE.md](docs/CODEX_TO_CLAUDE.md) for discovery, MCP transport, structured process calls, callback handling, and tested failure recovery.
+## Expected evidence
+
+| Observation | Establishes | Does not establish |
+|---|---|---|
+| Local doctor success | Required commands and helper dependencies pass prerequisite checks | Claude messaging tools, peer identity, or delivery |
+| `ListAgents` name/ref | A currently addressable Claude peer | Human role, session identity, authorship, or authority |
+| Operator-confirmed mapping | Intended role/address/session correlation | Cryptographic identity |
+| Fresh hello validation | Envelope structure, freshness, body digest, and local semantic checks passed | Identity, delivery, or authorization |
+| Claude `SendMessage` ID | Claude transport accepted the message | Recipient handling |
+| Codex queue receipt | Codex product accepted the callback for its queue | Later-turn delivery or handling |
+| Correlated CAM `ack: received` | Receiver returned an application receipt | Authorization or completed work |
+| CAM `status: started` | Receiver reports authorized progress | Completion |
+| CAM `result: completed` | Receiver reports an outcome | Truth without supporting evidence |
+
+A fresh hello validation reports `"structurally_valid":true`, `"fresh":true`, `"body_hash_valid":true`, and `"correlated":null`. A valid ACK checked with `--against` reports `"correlated":true`. Standalone reply validation reports `"correlated":null`; that means correlation was not checked, not that it succeeded.
+
+`notify_when_idle` is a scheduling signal, not a receipt. A correlated but schema-incomplete response may prove handling; record it as `handling confirmed; receipt nonconformant`, never as CAM/1 completion.
+
+## Temporary artifacts
+
+Generated request and ACK files contain capability-like routing metadata. Create them only in the private exchange directory; the builders create new output files with mode `0600` and refuse to overwrite existing paths. Preserve the exact bytes until successful callback correlation, or through expiry if no correlated reply arrives. Retain only the state needed for correlation and idempotency.
+
+After correlation or expiry makes the files eligible for cleanup, list the exact paths to the operator. Cleanup begins only after the operator verifies the resolved private directory and approves those paths; remove no unexpected contents and use no glob or recursive deletion. Do not promise secure erasure. Do not commit, publish, paste into an issue, or copy raw envelopes into an audit board. If durable audit is required, store only approved sanitized metadata in a separately managed log.
 
 ## Validate exact input
 
 ```bash
 .venv/bin/python tools/cam1.py validate MESSAGE.cam1.json
+.venv/bin/python tools/cam1.py validate ACK.cam1.json \
+  --against ORIGINAL.cam1.json
 ```
 
 The validator reads bounded raw bytes, rejects malformed UTF-8 and duplicate keys, enforces the local Draft 2020-12 schema with format assertions, parses UUIDs and timestamps semantically, checks expiry and nonce length, recomputes `body_sha256`, and enforces receipt correlation. It reports bounded error codes and paths without echoing message bodies.
 
 Validation establishes envelope conformance only. It does not establish sender identity, operator authorization, safe content, delivery, or completion.
-
-For a reply, supply the preserved original as a separate correlation input:
-
-```bash
-.venv/bin/python tools/cam1.py validate acknowledgment.cam1.json \
-  --against first-contact.cam1.json
-```
-
-Require `"correlated":true`. A standalone reply validation reports `"correlated":null`; that means correlation was not checked, not that it succeeded.
-
-## Understand the evidence
-
-| Observation | Establishes | Does not establish |
-|---|---|---|
-| `ListAgents` name/ref | A currently addressable Claude peer | Human role, authorship, or authority |
-| Operator-confirmed mapping | Intended role/address correlation | Cryptographic identity |
-| Claude `SendMessage` ID | Transport accepted the message | Recipient handling |
-| Correlated CAM `ack: received` | Receiver returned an application receipt | Authorization or completed work |
-| CAM `status: started` | Receiver reports authorized progress | Completion |
-| CAM `result: completed` | Receiver reports an outcome | Truth without supporting evidence |
-
-`notify_when_idle` is a scheduling signal, not a receipt. A correlated but schema-incomplete response may prove handling; record it as `handling confirmed; receipt nonconformant`, never as CAM/1 completion.
-
-## Tests
-
-The regression suite uses synthetic identifiers and runs offline:
-
-```bash
-.venv/bin/python -m unittest discover -s tests -v
-```
-
-It covers the exact failure modes that motivated the reference tooling, including a valid UUID falsely rejected after manual reconstruction and an abbreviated acknowledgment that correlates but fails the CAM/1 schema.
 
 ## Security and privacy
 
