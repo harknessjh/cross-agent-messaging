@@ -20,4 +20,6 @@ For every cross-session message:
 
 Repository changes must keep the normative protocol, schema, reference tooling, tests, and public claims aligned. Use synthetic fixtures only. Do not add product endorsement claims or remote-delivery claims.
 
+The repository is licensed under PolyForm Noncommercial 1.0.0. Do not change or remove `LICENSE`, `NOTICE`, copyright statements, SPDX metadata, or other legal terms without the repository owner's explicit decision.
+
 Commit messages must describe the change plainly and must not contain automated attribution, tool attribution, session identifiers, or co-author trailers.

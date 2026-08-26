@@ -4,10 +4,11 @@ Use this checklist against the exact commit proposed for publication. A green so
 
 ## Owner decisions
 
-- Select and add an explicit license. Do not infer one from repository visibility.
+- Confirm the canonical PolyForm Noncommercial 1.0.0 text, required copyright notice, and public license summary. Do not infer rights from repository visibility.
 - Confirm the GitHub account or organization, repository name, and public visibility immediately before remote creation.
 - Choose the public commit email, including whether to use a GitHub-provided `noreply` address.
-- Establish and test a private security-reporting route. Publication is blocked while the route is absent, still a placeholder, or unverified; do not invent an address.
+- Approve GitHub private vulnerability reporting as the public security-reporting route. Public visibility is not complete until the route is enabled and verified; do not invent another address.
+- Confirm that the copyright holder owns the repository contents and is authorized to publish them.
 
 ## Content and privacy
 
@@ -46,11 +47,12 @@ Use this checklist against the exact commit proposed for publication. A green so
 
 ## GitHub publication
 
-- Create the remote only after the owner confirms account, name, visibility, license, and the tested private security-reporting route.
+- Create an empty private remote only after the owner confirms account, name, initial visibility, license, copyright ownership, commit identity, and the public security-reporting plan. Do not initialize the remote with a README, license, or `.gitignore`.
 - Use authenticated Git tooling; never place a token in a remote URL.
-- Push the reviewed commit, then verify the remote default branch and commit hash independently.
+- Push only the reviewed default branch, then verify its remote commit hash independently. Do not push stale, backup, or review branches and tags.
 - Configure least-privilege Actions permissions before enabling workflows.
-- Review secret scanning, push protection, dependency alerts, branch protection, and private vulnerability reporting.
+- Before changing visibility, inspect every pushed ref plus Actions logs and artifacts; public visibility exposes the repository history and existing workflow records.
+- After changing visibility, immediately enable and verify private vulnerability reporting, then review secret scanning, push protection, dependency alerts, code scanning, and branch protection. Reapply any rulesets disabled by the visibility change.
 - Inspect the rendered public repository as a logged-out visitor.
 
 Record source validation, Git commit, remote creation, push, and public visibility as separate evidence. None substitutes for the next.

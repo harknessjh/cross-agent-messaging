@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 John Harkness
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 """Deterministic CAM/1 envelope serialization and safe first-contact builders."""
 
 from __future__ import annotations

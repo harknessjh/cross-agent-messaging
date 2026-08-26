@@ -115,6 +115,12 @@ Do not publish real callback UUIDs, session IDs, queue receipts, working directo
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Normative changes require matching schema, examples, tests, and compatibility evidence. Publication uses the separate [public release checklist](docs/PUBLIC_RELEASE_CHECKLIST.md).
 
-## License status
+## License and copyright
 
-No public license has been selected. Do not assume permission to copy, modify, or redistribute this project until the owner adds explicit license terms. License selection is required before an open-source release.
+Copyright © 2026 John Harkness.
+
+This repository is source-available for noncommercial use under the [PolyForm Noncommercial License 1.0.0](LICENSE). Subject to those terms and preservation of the required notice in [NOTICE](NOTICE), you may use, copy, modify, and distribute the project for noncommercial purposes.
+
+Commercial use is not licensed. Contact the copyright holder to request separate written permission. No commercial license, price, royalty, or other commercial terms are offered by this repository.
+
+This is a noncommercial source-available project, not Open Source software as defined by the Open Source Initiative. Public visibility does not by itself grant rights beyond the project license. GitHub's [platform terms](https://docs.github.com/en/site-policy/github-terms/github-terms-of-service) separately govern GitHub's service and AI-training uses and GitHub users' in-service viewing and forking.

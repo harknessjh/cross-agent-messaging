@@ -1,6 +1,8 @@
 # Contributing
 
-CAM/1 is an experimental interoperability draft. Contributions should keep the public surface small, auditable, vendor-neutral, and safe by default.
+CAM/1 is an experimental interoperability draft. Issues and suggestions are welcome. External code and documentation contributions are not accepted yet while contributor terms are being established; please do not open a pull request.
+
+This temporary boundary preserves clear ownership and the copyright holder's ability to grant separate permissions later. It does not affect noncommercial reuse and modification allowed by [LICENSE](LICENSE). If contribution terms are introduced later, they will be documented before outside code or documentation is accepted.
 
 ## Before changing the protocol
 
@@ -11,7 +13,7 @@ CAM/1 is an experimental interoperability draft. Contributions should keep the p
 - Keep the canonical Codex sender and Claude receiver prompts in [the quick start](docs/CODEX_TO_CLAUDE.md); link to them instead of copying variants into other documents.
 - Keep `tools/cam1_transport.py` narrowly local and send-only. Do not add receive, polling, retry, daemon, database, board, raw-socket, or remote behavior. Reply envelopes must be checked against the exact preserved original before transport.
 - Cite dated, primary vendor documentation or exact source revisions for capability claims.
-- Do not add a license or legal terms without the repository owner's explicit decision.
+- Do not change or remove the license, required notice, copyright statements, or other legal terms without the repository owner's explicit decision.
 
 ## Validation
 
@@ -38,4 +40,4 @@ Use short, plain messages focused on the change. Do not include automated attrib
 
 ## Security reports
 
-Do not put sensitive routing metadata or exploit details in a public issue. Follow [SECURITY.md](SECURITY.md). Public release remains blocked until the owner replaces any private-reporting placeholder with a tested private route; contributors must not invent an address.
+Do not put sensitive routing metadata or exploit details in a public issue. Follow [SECURITY.md](SECURITY.md). Public release remains blocked until GitHub private vulnerability reporting is enabled and verified during the controlled public cutover; contributors must not invent another address.

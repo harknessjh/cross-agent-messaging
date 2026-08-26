@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 John Harkness
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 """CAM/1 wire limits, data types, schema validation, and exact-byte codec."""
 
 from __future__ import annotations

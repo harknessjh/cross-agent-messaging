@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 John Harkness
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 """One-shot local transports for validated CAM/1 envelopes.
 
 This module deliberately has no inbox, daemon, retry loop, database, or remote

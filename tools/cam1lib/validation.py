@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 John Harkness
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 """Semantic and pairwise correlation validation for parsed CAM/1 envelopes."""
 
 from __future__ import annotations

@@ -17,6 +17,6 @@ CAM/1 is an experimental same-host messaging profile, not a security boundary. I
 
 ## Reporting a vulnerability
 
-Do not open a public issue containing raw envelopes, callbacks, session identifiers, local paths, transcripts, queue rows, credentials, or exploit details. Once the GitHub repository enables private vulnerability reporting, use that private channel. Until then, ask the maintainer for a private reporting route without including sensitive details in the initial request.
+Do not open a public issue containing raw envelopes, callbacks, session identifiers, local paths, transcripts, queue rows, credentials, or exploit details. For the public repository, use **Security and quality → Report a vulnerability** to submit a private report through GitHub. That channel must be enabled and verified as part of the controlled public cutover; until then, the repository remains private and has no external reporting audience.
 
 There are currently no production-supported versions. Reports should identify the exact CAM document revision, schema hash, operating system, product versions, transport profile, and a sanitized reproducer.

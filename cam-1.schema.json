@@ -1,5 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Copyright © 2026 John Harkness. Licensed under the PolyForm Noncommercial License 1.0.0; see LICENSE.",
   "title": "Cross-Agent Messaging Protocol CAM/1 envelope",
   "description": "Normative wire schema for the independent CAM/1 community interoperability profile.",
   "type": "object",

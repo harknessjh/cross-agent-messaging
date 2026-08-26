@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 John Harkness
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 """Stable public facade and CLI for the offline CAM/1 reference tooling.
 
 The implementation lives in small, dependency-ordered ``cam1lib`` modules.
