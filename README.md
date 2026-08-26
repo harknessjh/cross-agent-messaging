@@ -26,7 +26,7 @@ The supported onboarding path is local-only: both sessions run on one host under
 Before prompting either agent, obtain or prepare:
 
 - a POSIX environment; the reference round trip was tested on macOS;
-- Python 3.11 or later;
+- Python 3.11, 3.12, 3.13, or 3.14;
 - installed `codex` and `claude` commands whose live capability checks succeed;
 - one originating Codex session and one independent Claude Code session on the same host and account;
 - the literal Codex thread UUID;
@@ -40,13 +40,17 @@ A fresh Claude `ListAgents` result supplies a transport address, not a human rol
 The reference tools use the mature `jsonschema` implementation for envelope validation and the official Python MCP SDK for the bounded Claude stdio client.
 
 ```bash
-python3.11 -m venv .venv
+python3 --version  # must report a supported 3.11-3.14 version
+python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 .venv/bin/python -m unittest discover -s tests -v
 .venv/bin/python tools/cam1.py --help
 .venv/bin/python tools/cam1_transport.py --help
 .venv/bin/python tools/cam1_transport.py doctor
 ```
+
+If `python3` is outside the supported range, replace it in the first two lines
+with an installed compatible command such as `python3.12`.
 
 Do not proceed unless the offline tests finish with `OK`, the local transport doctor described in the [quick start](docs/CODEX_TO_CLAUDE.md) confirms its prerequisite checks, and `claude-list` confirms the current local Claude messaging tool surface.
 

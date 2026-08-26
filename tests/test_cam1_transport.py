@@ -517,6 +517,60 @@ class TransportCliRoundTripTests(unittest.TestCase):
         self.assertEqual(context.exception.code, "envelope.callback_mismatch")
         run.assert_not_called()
 
+    def test_codex_reply_accepts_equivalent_uppercase_thread_ids(self) -> None:
+        canonical_thread = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+        uppercase_thread = canonical_thread.upper()
+        original = cam1.build_hello(
+            sender_vendor="codex",
+            sender_name="example coordinator",
+            sender_session=uppercase_thread,
+            recipient_vendor="claude-code",
+            recipient_name="local-worker",
+            recipient_session=CLAUDE_SESSION,
+            reply_transport="codex_queue",
+            reply_address=uppercase_thread,
+        )
+        reply = cam1.build_ack(
+            original,
+            sender_vendor="claude-code",
+            sender_name="local-worker",
+            sender_session=CLAUDE_SESSION,
+            reply_transport="claude_send_message",
+            reply_address="local-worker [abcdef]",
+            status_value="received",
+        )
+        receipt = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=(
+                "Queued message 00000000-0000-4000-8000-000000000901 "
+                f"for thread {canonical_thread}.\n"
+            ),
+            stderr="",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            temp = Path(directory)
+            original_path = temp / "hello.cam1.json"
+            reply_path = temp / "ack.cam1.json"
+            write_private(original_path, original)
+            write_private(reply_path, reply)
+            with mock.patch.object(
+                cam1_transport.subprocess, "run", return_value=receipt
+            ) as run:
+                result = cam1_transport.reply_to_codex(
+                    codex_bin="/fake/codex",
+                    thread=uppercase_thread,
+                    envelope_path=str(reply_path),
+                    against_path=str(original_path),
+                    timeout_seconds=1,
+                )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["target_thread"], canonical_thread)
+        run.assert_called_once()
+        command = run.call_args.args[0]
+        self.assertEqual(command[command.index("--thread") + 1], canonical_thread)
+
     def test_reply_to_one_way_original_has_an_actionable_error(self) -> None:
         original_envelope = json.loads(build_first_contact())
         original_envelope["reply_to"] = None

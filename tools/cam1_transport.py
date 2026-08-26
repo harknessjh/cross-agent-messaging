@@ -502,7 +502,12 @@ def _require_original_callback(
             "envelope.callback_unavailable",
             "preserved original does not provide a live reply_to route",
         )
-    if reply_to["transport"] != transport or reply_to["address"] != address:
+    address_matches = (
+        _uuid_values_equal(reply_to["address"], address)
+        if transport == "codex_queue"
+        else reply_to["address"] == address
+    )
+    if reply_to["transport"] != transport or not address_matches:
         raise TransportError(
             "envelope.callback_mismatch",
             "live reply target must exactly match the preserved original reply_to",
@@ -655,18 +660,30 @@ async def send_to_claude(
 
 
 def _canonical_uuid(value: str, *, label: str) -> str:
+    if not isinstance(value, str):
+        raise TransportError(f"argument.{label}", f"{label} must be a valid UUID")
     try:
         parsed = uuid.UUID(value)
-    except (AttributeError, ValueError):
+    except ValueError:
         raise TransportError(
-            f"argument.{label}", f"{label} must be a canonical UUID"
+            f"argument.{label}", f"{label} must be a valid UUID"
         ) from None
     canonical = str(parsed)
-    if canonical != value:
+    if value.lower() != canonical:
         raise TransportError(
-            f"argument.{label}", f"{label} must be a lowercase canonical UUID"
+            f"argument.{label}",
+            f"{label} must use canonical 8-4-4-4-12 UUID spelling",
         )
     return canonical
+
+
+def _uuid_values_equal(left: Any, right: Any) -> bool:
+    if not isinstance(left, str) or not isinstance(right, str):
+        return False
+    try:
+        return uuid.UUID(left) == uuid.UUID(right)
+    except (ValueError, AttributeError):
+        return False
 
 
 def _codex_queue_receipt(stdout: str, *, expected_thread: str) -> dict[str, str]:
@@ -700,7 +717,7 @@ def reply_to_codex(
     raw = validated.raw
     envelope = validated.envelope
     recipient_session = envelope.get("recipient", {}).get("session_id")
-    if recipient_session != thread:
+    if not _uuid_values_equal(recipient_session, thread):
         raise TransportError(
             "envelope.recipient_mismatch",
             "envelope recipient.session_id must equal the literal Codex thread UUID",
