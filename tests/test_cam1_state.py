@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from tools.cam1lib import builders, journal, project, state
+from tools.cam1lib import builders, journal, project, state, state_projection
 from tools.cam1lib.lifecycle import LifecycleState
 from tools.cam1lib.participants import ParticipantStatus, RouteStatus
 from tools.cam1lib.protocol import CamUsageError, CamValidationError, serialize_envelope
@@ -310,7 +310,7 @@ class JournalBackedStateTests(unittest.TestCase):
                 transaction=transaction,
             )
             with mock.patch.object(
-                state,
+                state_projection,
                 "_current_utc_time",
                 return_value=recorded_at,
             ):
@@ -788,7 +788,7 @@ class JournalBackedStateTests(unittest.TestCase):
     def test_projection_failure_leaves_journal_rebuildable(self) -> None:
         with (
             mock.patch.object(
-                state,
+                state_projection,
                 "replace_private_json",
                 side_effect=project.ProjectError("state.replace", "injected failure"),
             ),
@@ -835,18 +835,18 @@ class JournalBackedStateTests(unittest.TestCase):
 
     def test_transaction_replays_state_once_and_advances_snapshot_cache(self) -> None:
         original_verify = journal._verify_records
-        original_empty = state._empty_snapshot
-        original_deepcopy = state.deepcopy
+        original_empty = state_projection._empty_snapshot
+        original_deepcopy = state_projection.deepcopy
 
         with (
             mock.patch.object(
                 journal, "_verify_records", wraps=original_verify
             ) as verify_records,
             mock.patch.object(
-                state, "_empty_snapshot", wraps=original_empty
+                state_projection, "_empty_snapshot", wraps=original_empty
             ) as empty_snapshot,
             mock.patch.object(
-                state, "deepcopy", wraps=original_deepcopy
+                state_projection, "deepcopy", wraps=original_deepcopy
             ) as copy_snapshot,
             project.project_transaction(self.binding) as transaction,
         ):

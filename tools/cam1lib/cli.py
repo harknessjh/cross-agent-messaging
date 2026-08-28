@@ -34,10 +34,6 @@ from .builders import (
 from .profile import validation_profile_report
 from .project import (
     ProjectError,
-    _open_directory_fd,
-    _open_private_directory,
-    _split_local_file_path,
-    _validate_private_file,
     create_private_bytes,
 )
 from .protocol import (
@@ -51,6 +47,12 @@ from .protocol import (
     CliError,
     Problem,
     ValidationPolicy,
+)
+from .secure_fs import (
+    _open_directory_fd,
+    _open_private_directory,
+    _split_local_file_path,
+    _validate_private_file,
 )
 from .validation import validate_exact_bytes
 

@@ -14,7 +14,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from tools.cam1lib import cli, darwin_acl, native_fs, project
+from tools.cam1lib import cli, darwin_acl, native_fs, project, secure_fs
 
 
 class FakeAclLibrary:
@@ -175,7 +175,7 @@ class DarwinAclPortableTests(unittest.TestCase):
             try:
                 with (
                     mock.patch.object(
-                        project,
+                        secure_fs,
                         "fd_has_extended_acl",
                         side_effect=OSError(errno.EIO, "query failed"),
                     ),
@@ -192,7 +192,7 @@ class DarwinAclPortableTests(unittest.TestCase):
             child = parent / "managed"
             with (
                 mock.patch.object(
-                    project,
+                    secure_fs,
                     "clear_fd_extended_acl",
                     side_effect=OSError(errno.EIO, "clear failed"),
                 ),
@@ -216,14 +216,14 @@ class DarwinAclPortableTests(unittest.TestCase):
             )
             with (
                 mock.patch.object(
-                    project,
+                    secure_fs,
                     "clear_fd_extended_acl",
                     side_effect=OSError(errno.EIO, "clear failed"),
                 ),
                 self.assertRaises(project.ProjectError) as context,
+                project._project_initialization_lock(context_value),
             ):
-                with project._project_initialization_lock(context_value):
-                    self.fail("initialization lock must not be yielded")
+                self.fail("initialization lock must not be yielded")
             self.assertFalse((common_admin / project.INITIALIZATION_LOCK_NAME).exists())
         self.assertEqual(
             context.exception.code, "project.initialization_lock.acl_clear"
@@ -236,19 +236,21 @@ class DarwinAclPortableTests(unittest.TestCase):
             try:
                 with (
                     mock.patch.object(
-                        project,
+                        secure_fs,
                         "_require_owned",
                         side_effect=project.ProjectError(
                             "test.staged.owner", "foreign owner"
                         ),
                     ),
                     mock.patch.object(
-                        project, "_prepare_created_private_directory"
+                        secure_fs, "_prepare_created_private_directory"
                     ) as prepare,
-                    mock.patch.object(project, "_remove_matching_directory") as remove,
+                    mock.patch.object(
+                        secure_fs, "_remove_matching_directory"
+                    ) as remove,
                     self.assertRaises(project.ProjectError) as context,
                 ):
-                    project._create_staged_private_directory(
+                    secure_fs._create_staged_private_directory(
                         parent_descriptor, label="test.staged"
                     )
             finally:
