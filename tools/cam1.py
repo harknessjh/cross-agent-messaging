@@ -3,9 +3,9 @@
 
 """Stable public facade and CLI for the offline CAM/1 reference tooling.
 
-The implementation lives in small, dependency-ordered ``cam1lib`` modules.
-This facade deliberately preserves the original constants, types, functions,
-builders, private test seams, and command behavior.
+The implementation lives in dependency-ordered ``cam1lib`` modules. This
+facade preserves the original constants, types, functions, builders, private
+compatibility seams, and command behavior.
 """
 
 from __future__ import annotations
@@ -13,11 +13,13 @@ from __future__ import annotations
 if __package__:
     from .cam1lib import builders as _builders
     from .cam1lib import cli as _cli
+    from .cam1lib import profile as _profile
     from .cam1lib import protocol as _protocol
     from .cam1lib import validation as _validation
 else:  # Direct execution: ``python tools/cam1.py``.
     from cam1lib import builders as _builders
     from cam1lib import cli as _cli
+    from cam1lib import profile as _profile
     from cam1lib import protocol as _protocol
     from cam1lib import validation as _validation
 
@@ -46,6 +48,15 @@ SemanticOutcome = _protocol.SemanticOutcome
 CamValidationError = _protocol.CamValidationError
 DuplicateKeyError = _protocol.DuplicateKeyError
 CliError = _protocol.CliError
+
+PROFILE_FORMAT = _profile.PROFILE_FORMAT
+ValidationProfileError = _profile.ValidationProfileError
+SourceControlState = _profile.SourceControlState
+ValidationProfile = _profile.ValidationProfile
+build_validation_profile = _profile.build_validation_profile
+current_validation_profile = _profile.current_validation_profile
+validation_profile_report = _profile.validation_profile_report
+require_live_profile = _profile.require_live_profile
 
 SCHEMA = _protocol.SCHEMA
 VALIDATOR = _protocol.VALIDATOR
@@ -84,16 +95,36 @@ _normalize_now = _validation._normalize_now
 validate_exact_bytes = _validation.validate_exact_bytes
 
 # Envelope builders.
+HELLO_INTENT = _builders.HELLO_INTENT
+HELLO_BODY = _builders.HELLO_BODY
+CHALLENGE_INTENT = _builders.CHALLENGE_INTENT
+CHALLENGE_BODY = _builders.CHALLENGE_BODY
+VERIFY_INTENT = _builders.VERIFY_INTENT
+VERIFY_BODY = _builders.VERIFY_BODY
+RISK_CLASSES = _builders.RISK_CLASSES
+AUTHORIZATION_BASES = _builders.AUTHORIZATION_BASES
+STATUS_VALUES = _builders.STATUS_VALUES
 _utc_text = _builders._utc_text
 _nonce = _builders._nonce
 _body_digest = _builders._body_digest
 _empty_scope = _builders._empty_scope
 _safe_constraints = _builders._safe_constraints
 build_hello = _builders.build_hello
+build_challenge = _builders.build_challenge
+build_verify = _builders.build_verify
+build_request = _builders.build_request
 build_ack = _builders.build_ack
+build_status = _builders.build_status
+build_result = _builders.build_result
+build_error = _builders.build_error
+build_cancel = _builders.build_cancel
+build_status_inquiry = _builders.build_status_inquiry
+renew_request = _builders.renew_request
+build_late_rejection = _builders.build_late_rejection
 
 # Local I/O and CLI surface.
 read_envelope_file = _cli.read_envelope_file
+read_private_envelope_file = _cli.read_private_envelope_file
 _write_stdout = _cli._write_stdout
 _write_output = _cli._write_output
 _add_endpoint_arguments = _cli._add_endpoint_arguments

@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Copyright © 2026 John Harkness. Licensed under the PolyForm Noncommercial License 1.0.0; see LICENSE.",
+  "title": "CAM local project binding document",
+  "oneOf": [
+    { "$ref": "#/$defs/pointer" },
+    { "$ref": "#/$defs/identity" },
+    { "$ref": "#/$defs/worktree" }
+  ],
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$"
+    },
+    "absolutePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^/"
+    },
+    "pointer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "project_id",
+        "project_directory",
+        "bound_state_root",
+        "bound_git_common_dir",
+        "created_at"
+      ],
+      "properties": {
+        "format": { "const": "CAM-PROJECT-POINTER/1" },
+        "project_id": { "$ref": "#/$defs/uuid" },
+        "project_directory": {
+          "type": "string",
+          "minLength": 39,
+          "maxLength": 96,
+          "pattern": "^[a-z0-9][a-z0-9-]{0,47}--[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "bound_state_root": { "$ref": "#/$defs/absolutePath" },
+        "bound_git_common_dir": { "$ref": "#/$defs/absolutePath" },
+        "created_at": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "project_id",
+        "display_name",
+        "created_at",
+        "bound_state_root",
+        "bound_git_common_dir",
+        "initial_git_top_level"
+      ],
+      "properties": {
+        "format": { "const": "CAM-PROJECT-IDENTITY/1" },
+        "project_id": { "$ref": "#/$defs/uuid" },
+        "display_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "created_at": { "$ref": "#/$defs/timestamp" },
+        "bound_state_root": { "$ref": "#/$defs/absolutePath" },
+        "bound_git_common_dir": { "$ref": "#/$defs/absolutePath" },
+        "initial_git_top_level": { "$ref": "#/$defs/absolutePath" }
+      }
+    },
+    "worktree": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "project_id",
+        "worktree_id",
+        "bound_git_dir",
+        "created_at"
+      ],
+      "properties": {
+        "format": { "const": "CAM-WORKTREE/1" },
+        "project_id": { "$ref": "#/$defs/uuid" },
+        "worktree_id": { "$ref": "#/$defs/uuid" },
+        "bound_git_dir": { "$ref": "#/$defs/absolutePath" },
+        "created_at": { "$ref": "#/$defs/timestamp" }
+      }
+    }
+  }
+}

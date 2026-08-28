@@ -1,933 +1,1131 @@
 # SPDX-FileCopyrightText: 2026 John Harkness
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
-"""One-shot local transports for validated CAM/1 envelopes.
-
-This module deliberately has no inbox, daemon, retry loop, database, or remote
-transport.  It starts Claude Code's MCP server for one operation or invokes one
-Codex queue command, reports the transport result, and exits.
-"""
+"""Audited project orchestration for one-shot local CAM/1 transports."""
 
 from __future__ import annotations
 
-import argparse
-import asyncio
-import errno
 import hashlib
-import importlib.metadata
-import json
-import math
-import os
-import re
-import shutil
-import subprocess
 import sys
-import time
-import uuid
-from collections.abc import AsyncIterator, Sequence
-from contextlib import asynccontextmanager
+from collections.abc import Sequence
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
-try:
+if __package__:
     from . import cam1
-except ImportError:  # Direct execution adds tools/ rather than the repo to sys.path.
+    from . import cam1_transport_native as _native
+    from . import cam1_transport_retry as _retry
+    from .cam1lib import (
+        journal,
+        lifecycle,
+        participants,
+        project,
+        routing,
+        state,
+    )
+    from .cam1lib import transport_cli as _transport_cli
+else:  # Direct execution adds tools/ rather than the repo to sys.path.
     import cam1  # type: ignore[no-redef]
+    import cam1_transport_native as _native  # type: ignore[no-redef]
+    import cam1_transport_retry as _retry  # type: ignore[no-redef]
+    from cam1lib import (  # type: ignore[no-redef]
+        journal,
+        lifecycle,
+        participants,
+        project,
+        routing,
+        state,
+    )
+    from cam1lib import transport_cli as _transport_cli  # type: ignore[no-redef]
 
-DEFAULT_TIMEOUT_SECONDS = 20.0
-MAX_TIMEOUT_SECONDS = 120.0
-MAX_RECEIPT_TEXT = 4_096
-MAX_RECEIPT_BLOCKS = 8
-# Keep the one-shot public transport below common per-argument limits.  This is
-# deliberately narrower than the 1 MiB offline CAM/1 envelope limit because
-# ``codex queue`` currently receives the envelope as one argv value.
-MAX_TRANSPORT_ENVELOPE_BYTES = 64 * 1_024
-MIN_MCP_SDK_VERSION = (2, 1)
-LOCAL_SESSION_KINDS = frozenset(
-    {"background", "headless", "interactive", "non-interactive", "print"}
-)
-NONLOCAL_MARKERS = ("cloud", "remote control", "other machine")
-PEER_NAME_PATTERN = re.compile(r"^(?P<name>.+?) \[(?P<ref>[0-9a-fA-F]{6})\]$")
-UUID_TEXT = (
-    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
-    r"[0-9a-f]{4}-[0-9a-f]{12}"
-)
-CODEX_QUEUE_RECEIPT_PATTERN = re.compile(
-    rf"\AQueued message (?P<queue_id>{UUID_TEXT}) "
-    rf"for thread (?P<thread_id>{UUID_TEXT})\.?\Z"
-)
-
-
-class TransportError(Exception):
-    """A bounded, user-actionable transport failure."""
-
-    def __init__(self, code: str, detail: str) -> None:
-        self.code = code[:80]
-        self.detail = detail[:500]
-        super().__init__(self.detail)
-
-
-@dataclass(frozen=True)
-class Peer:
-    """One row returned by Claude Code's ListAgents tool."""
-
-    name: str
-    ref: str
-    kind: str
-    state: str
-    details: tuple[str, ...]
-    local: bool
-
-    @property
-    def qualified_address(self) -> str:
-        return f"{self.name} [{self.ref}]"
-
-    def as_dict(self) -> dict[str, Any]:
-        return {
-            "name": self.name,
-            "ref": self.ref,
-            "kind": self.kind,
-            "state": self.state,
-            "details": list(self.details),
-            "local": self.local,
-        }
-
-
-@dataclass(frozen=True)
-class ClaudeToolResponse:
-    """Stable subset of an MCP tool result used by this helper."""
-
-    protocol_version: str | None
-    is_error: bool
-    structured_content: Any
-    text_content: tuple[str, ...]
-
-    def receipt(self) -> dict[str, Any]:
-        result: dict[str, Any] = {"is_error": self.is_error}
-        if self.structured_content is not None:
-            result["structured_content"] = _bounded_json_value(self.structured_content)
-        if self.text_content:
-            result["text_content"] = [
-                text[:MAX_RECEIPT_TEXT]
-                for text in self.text_content[:MAX_RECEIPT_BLOCKS]
-            ]
-        return result
-
-
-@dataclass(frozen=True)
-class ValidatedEnvelope:
-    """Exact live payload plus its validated envelope and optional root."""
-
-    raw: bytes
-    envelope: dict[str, Any]
-    original: dict[str, Any] | None
-
-
-def _find_transport_error(error: BaseException) -> TransportError | None:
-    if isinstance(error, TransportError):
-        return error
-    if isinstance(error, BaseExceptionGroup):
-        for nested in error.exceptions:
-            found = _find_transport_error(nested)
-            if found is not None:
-                return found
-    return None
-
-
-def _bounded_json_value(value: Any) -> Any:
-    try:
-        serialized = json.dumps(value, separators=(",", ":"), sort_keys=True)
-    except (TypeError, ValueError):
-        return {"omitted": "non-json transport result"}
-    encoded = serialized.encode("utf-8")
-    if len(encoded) <= MAX_RECEIPT_TEXT:
-        return value
-    return {
-        "omitted": "oversized transport result",
-        "bytes": len(encoded),
-        "sha256": hashlib.sha256(encoded).hexdigest(),
-    }
-
-
-def _emit(payload: dict[str, Any], *, stream: Any = sys.stdout) -> None:
-    stream.write(json.dumps(payload, separators=(",", ":"), sort_keys=True) + "\n")
-
-
-def _resolve_binary(value: str, *, label: str) -> str:
-    candidate = shutil.which(value) if os.path.sep not in value else value
-    if candidate is None:
-        raise TransportError(f"{label}.not_found", f"{label} executable was not found")
-    path = Path(candidate).expanduser()
-    if not path.is_file() or not os.access(path, os.X_OK):
-        raise TransportError(
-            f"{label}.not_executable", f"{label} path is not an executable file"
-        )
-    return str(path.resolve())
-
-
-def _bounded_timeout(value: float) -> float:
-    if not math.isfinite(value) or value <= 0 or value > MAX_TIMEOUT_SECONDS:
-        raise TransportError(
-            "argument.timeout",
-            f"timeout-seconds must be greater than 0 and at most {MAX_TIMEOUT_SECONDS:g}",
-        )
-    return value
-
-
-def _run_probe(
-    command: list[str], timeout_seconds: float, *, required_text: Sequence[str] = ()
-) -> dict[str, Any]:
-    try:
-        completed = subprocess.run(
-            command,
-            check=False,
-            capture_output=True,
-            shell=False,
-            text=True,
-            timeout=timeout_seconds,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return {"ok": False, "detail": "probe did not complete"}
-    text = (completed.stdout or completed.stderr).strip()
-    first_line = next((line.strip() for line in text.splitlines() if line.strip()), "")
-    content_matches = all(fragment in text for fragment in required_text)
-    return {
-        "ok": completed.returncode == 0 and content_matches,
-        "exit_code": completed.returncode,
-        "output": first_line[:300],
-    }
-
-
-def _run_probe_before(
-    command: list[str], deadline: float, *, required_text: Sequence[str] = ()
-) -> dict[str, Any]:
-    remaining = deadline - time.monotonic()
-    if remaining <= 0:
-        return {"ok": False, "detail": "overall doctor timeout was exhausted"}
-    return _run_probe(command, remaining, required_text=required_text)
-
-
-def _mcp_sdk_check() -> tuple[bool, str | None]:
-    try:
-        sdk_version = importlib.metadata.version("mcp")
-        match = re.match(r"^(\d+)\.(\d+)(?:\.|$)", sdk_version)
-        sdk_supported = bool(
-            match
-            and int(match.group(1)) == 2
-            and (int(match.group(1)), int(match.group(2))) >= MIN_MCP_SDK_VERSION
-        )
-        from mcp import Client, StdioServerParameters  # noqa: F401
-        from mcp.client.stdio import stdio_client  # noqa: F401
-    except (ImportError, importlib.metadata.PackageNotFoundError):
-        return False, None
-    return sdk_supported, sdk_version
+TransportError = _native.TransportError
+ValidatedEnvelope = _native.ValidatedEnvelope
+_canonical_uuid = _native._canonical_uuid
+_delivery_state = _native._delivery_state
+_domain_transport_error = _native._domain_transport_error
+_preflight_claude_session = _native._preflight_claude_session
+_record_summary = _native._record_summary
+_resolve_project = _native._resolve_project
+_require_project_session_cwd = _native._require_project_session_cwd
+_require_live_validation_profile = _native._require_live_validation_profile
+_require_session_guard = _native._require_session_guard
+_send_to_claude = _native._send_to_claude
+_send_to_codex_queue = _native._send_to_codex_queue
+_utc_now = _native._utc_now
+_uuid_values_equal = _native._uuid_values_equal
+_transport_outcomes = _retry._transport_outcomes
 
 
 def doctor(
     *, claude_bin: str, codex_bin: str, timeout_seconds: float
 ) -> dict[str, Any]:
-    """Check installed prerequisites without opening a messaging session."""
+    """Run native diagnostics through this module's patchable helper seams."""
 
-    timeout_seconds = _bounded_timeout(timeout_seconds)
-    deadline = time.monotonic() + timeout_seconds
-    checks: dict[str, Any] = {}
-    try:
-        resolved_claude = _resolve_binary(claude_bin, label="claude")
-        checks["claude"] = {
-            "path": resolved_claude,
-            "version": _run_probe_before([resolved_claude, "--version"], deadline),
-            "mcp_serve": _run_probe_before(
-                [resolved_claude, "mcp", "serve", "--help"],
-                deadline,
-                required_text=("claude mcp serve",),
-            ),
-        }
-    except TransportError as error:
-        checks["claude"] = {"ok": False, "error": error.code}
-
-    try:
-        resolved_codex = _resolve_binary(codex_bin, label="codex")
-        checks["codex"] = {
-            "path": resolved_codex,
-            "version": _run_probe_before([resolved_codex, "--version"], deadline),
-            "queue": _run_probe_before(
-                [resolved_codex, "queue", "--help"],
-                deadline,
-                required_text=("--thread", "--message"),
-            ),
-        }
-    except TransportError as error:
-        checks["codex"] = {"ok": False, "error": error.code}
-
-    sdk_supported, sdk_version = _mcp_sdk_check()
-    checks["mcp_sdk"] = {"ok": sdk_supported, "version": sdk_version}
-
-    claude = checks["claude"]
-    codex = checks["codex"]
-    ok = bool(
-        sdk_supported
-        and claude.get("version", {}).get("ok")
-        and claude.get("mcp_serve", {}).get("ok")
-        and codex.get("version", {}).get("ok")
-        and codex.get("queue", {}).get("ok")
+    return _native.doctor(
+        claude_bin=claude_bin,
+        codex_bin=codex_bin,
+        timeout_seconds=timeout_seconds,
+        _facade=sys.modules[__name__],
     )
-    return {
-        "ok": ok,
-        "local_only": True,
-        "checks": checks,
-        "expected": {
-            "claude": (
-                "Claude Code with mcp serve; run claude-list to verify the "
-                "cross-session tools"
-            ),
-            "codex": "Codex CLI with the send-only queue command",
-            "mcp_sdk": "Python package mcp >=2.1,<3",
-        },
-    }
 
 
-@asynccontextmanager
-async def _claude_client(
-    *, claude_bin: str, timeout_seconds: float
-) -> AsyncIterator[tuple[Any, type[Any]]]:
-    try:
-        from mcp import Client, StdioServerParameters
-        from mcp.client.stdio import stdio_client
-        from mcp.types import Implementation, TextContent
-    except ImportError as error:
-        raise TransportError(
-            "mcp_sdk.not_installed",
-            "install the repository requirements before using Claude transport",
-        ) from error
-
-    settings = json.dumps({"isolatePeerMachines": True}, separators=(",", ":"))
-    parameters = StdioServerParameters(
-        command=claude_bin,
-        args=["--settings", settings, "mcp", "serve"],
-    )
-    client_info = Implementation(name="cam1-local-transport", version="1")
-    try:
-        with open(os.devnull, "w", encoding="utf-8") as error_sink:
-            transport = stdio_client(parameters, errlog=error_sink)
-            async with Client(
-                transport,
-                read_timeout_seconds=timeout_seconds,
-                client_info=client_info,
-            ) as client:
-                yield client, TextContent
-    except Exception as error:
-        transport_error = _find_transport_error(error)
-        if transport_error is not None:
-            raise transport_error from error
-        raise TransportError(
-            "claude.mcp_failure",
-            f"Claude MCP operation failed ({type(error).__name__})",
-        ) from error
+def __getattr__(name: str) -> Any:
+    if name == "JsonArgumentParser":
+        return _transport_cli.JsonArgumentParser
+    return getattr(_native, name)
 
 
-async def _require_claude_tools(client: Any, *names: str) -> None:
-    available = {tool.name for tool in (await client.list_tools()).tools}
-    missing = [name for name in names if name not in available]
-    if missing:
-        raise TransportError(
-            "claude.tool_unavailable",
-            f"Claude MCP server does not expose {', '.join(missing)}",
-        )
+@dataclass(slots=True)
+class _SendAttempt:
+    """Mutable audit context shared with an immediately-before-send hook."""
+
+    participant_id: str
+    transport: str
+    route_address: str
+    message_id: str | None = None
+    intent_record: dict[str, Any] | None = None
+    lifecycle_plan: state.LifecyclePlan | None = None
+    lifecycle_committed: bool = False
+    projection_error: state.ProjectionRefreshError | None = None
+    dispatch_started: bool = False
 
 
-async def _call_connected_tool(
-    client: Any,
-    text_content_type: type[Any],
+def _require_bound_participant(
+    store: state.StateStore,
+    selector: str,
     *,
-    tool_name: str,
-    arguments: dict[str, Any],
-) -> ClaudeToolResponse:
-    result = await client.call_tool(tool_name, arguments)
-    text_content = tuple(
-        block.text for block in result.content if isinstance(block, text_content_type)
-    )
-    return ClaudeToolResponse(
-        protocol_version=(
-            str(client.protocol_version) if client.protocol_version else None
-        ),
-        is_error=bool(result.is_error),
-        structured_content=result.structured_content,
-        text_content=text_content,
-    )
-
-
-def _listing_text(response: ClaudeToolResponse) -> str:
-    if response.is_error:
+    vendor: str,
+    transaction: project.ProjectTransaction,
+) -> participants.Participant:
+    participant = store.snapshot(transaction=transaction).roster.select(selector)
+    if participant.vendor != vendor:
         raise TransportError(
-            "claude.list_failed", "Claude ListAgents reported an error"
+            "roster.vendor_mismatch",
+            f"participant is not a {vendor} session",
         )
-    for text in response.text_content:
-        try:
-            decoded = json.loads(text)
-        except json.JSONDecodeError:
-            decoded = None
-        if isinstance(decoded, dict) and isinstance(decoded.get("listing"), str):
-            return decoded["listing"]
-        if "Peer sessions" in text:
-            return text
-    raise TransportError(
-        "claude.list_format",
-        "Claude ListAgents returned an unrecognized response format",
-    )
-
-
-def parse_peers(listing: str) -> tuple[Peer, ...]:
-    """Parse the documented human-readable ListAgents rows, failing closed."""
-
-    peers: list[Peer] = []
-    for raw_line in listing.splitlines():
-        parts = tuple(part.strip() for part in raw_line.strip().split("·"))
-        if len(parts) < 3:
-            continue
-        matched = PEER_NAME_PATTERN.fullmatch(parts[0])
-        if matched is None:
-            continue
-        metadata = tuple(part for part in parts[1:] if part)
-        kind = metadata[0] if metadata else ""
-        state = metadata[1] if len(metadata) > 1 else ""
-        metadata_text = " ".join(metadata).lower()
-        local = kind.lower() in LOCAL_SESSION_KINDS and not any(
-            marker in metadata_text for marker in NONLOCAL_MARKERS
-        )
-        peers.append(
-            Peer(
-                name=matched.group("name"),
-                ref=matched.group("ref").lower(),
-                kind=kind,
-                state=state,
-                details=metadata[2:],
-                local=local,
-            )
-        )
-    return tuple(peers)
-
-
-async def list_local_peers(
-    *, claude_bin: str, timeout_seconds: float
-) -> tuple[str | None, tuple[Peer, ...], tuple[Peer, ...]]:
-    try:
-        async with asyncio.timeout(timeout_seconds):
-            async with _claude_client(
-                claude_bin=claude_bin, timeout_seconds=timeout_seconds
-            ) as (client, text_content_type):
-                await _require_claude_tools(client, "ListAgents")
-                response = await _call_connected_tool(
-                    client,
-                    text_content_type,
-                    tool_name="ListAgents",
-                    arguments={},
-                )
-    except TimeoutError as error:
+    if participant.binding is None:
         raise TransportError(
-            "claude.timeout", "Claude discovery exceeded the overall timeout"
-        ) from error
-    peers = parse_peers(_listing_text(response))
-    return (
-        response.protocol_version,
-        tuple(peer for peer in peers if peer.local),
-        tuple(peer for peer in peers if not peer.local),
-    )
-
-
-def _resolve_local_peer(target: str, peers: Sequence[Peer]) -> Peer:
-    if not target or "\n" in target or "\r" in target or len(target) > 300:
-        raise TransportError(
-            "argument.target", "target must be a bounded single-line ListAgents address"
+            "roster.participant_unbound",
+            "participant has no operator-correlated full session binding",
         )
-    qualified = [peer for peer in peers if peer.qualified_address == target]
-    if len(qualified) == 1:
-        return qualified[0]
-    bare = [peer for peer in peers if peer.name == target]
-    if bare:
+    if participant.status == participants.ParticipantStatus.RETIRED:
         raise TransportError(
-            "claude.target_unqualified",
-            "target must include the exact fresh name and ref from claude-list",
+            "roster.participant_retired",
+            "retired participant cannot be used for live transport",
         )
-    raise TransportError(
-        "claude.target_not_local",
-        "target was not found among freshly discovered local Claude sessions",
-    )
+    return participant
 
 
-def _validate_envelope(
-    envelope_path: str, against_path: str | None
-) -> ValidatedEnvelope:
-    if envelope_path == "-" or against_path == "-":
-        raise TransportError(
-            "argument.envelope_file",
-            "live transport requires bounded regular files; stdin is offline-only",
-        )
-    raw = cam1.read_envelope_file(envelope_path)
-    against_raw = cam1.read_envelope_file(against_path) if against_path else None
-    result = cam1.validate_exact_bytes(raw, against_raw=against_raw)
-    envelope = result.envelope
-    if envelope["type"] in cam1.REPLY_TYPES and against_raw is None:
-        raise TransportError(
-            "argument.against_required",
-            "reply envelopes require --against with the preserved original envelope",
-        )
-    if len(raw) > MAX_TRANSPORT_ENVELOPE_BYTES:
-        raise TransportError(
-            "transport.payload_too_large",
-            "validated envelope exceeds the 65536-byte live-transport limit; "
-            "send a compact path-and-hash handoff instead",
-        )
-    original = cam1.parse_exact_bytes(against_raw) if against_raw is not None else None
-    return ValidatedEnvelope(raw=raw, envelope=envelope, original=original)
-
-
-def _require_original_callback(
+def _require_safe_retry(
+    binding: project.ProjectBinding,
     validated: ValidatedEnvelope,
     *,
-    transport: str,
-    address: str,
-) -> None:
-    if validated.envelope["type"] not in cam1.REPLY_TYPES:
-        return
-    original = validated.original
-    if original is None:
-        raise TransportError(
-            "argument.against_required",
-            "reply envelopes require --against with the preserved original envelope",
-        )
-    reply_to = original["reply_to"]
-    if not isinstance(reply_to, dict):
-        raise TransportError(
-            "envelope.callback_unavailable",
-            "preserved original does not provide a live reply_to route",
-        )
-    address_matches = (
-        _uuid_values_equal(reply_to["address"], address)
-        if transport == "codex_queue"
-        else reply_to["address"] == address
+    retry_after_intent: str | None,
+    known_renewal_roots: frozenset[str],
+) -> str | None:
+    """Apply journal-backed retry policy through the stable facade seam."""
+
+    return _retry.require_safe_retry(
+        binding,
+        validated,
+        retry_after_intent=retry_after_intent,
+        known_renewal_roots=known_renewal_roots,
     )
-    if reply_to["transport"] != transport or not address_matches:
-        raise TransportError(
-            "envelope.callback_mismatch",
-            "live reply target must exactly match the preserved original reply_to",
+
+
+def _intent_attributes(
+    validated: ValidatedEnvelope,
+    attempt: _SendAttempt,
+    *,
+    sender_participant_id: str,
+    recipient_session_id: str,
+    renewal_of: str | None,
+    retry_after_intent: str | None,
+    validation_profile: dict[str, Any],
+    dirty_validator_override: bool,
+    observed_at: str,
+) -> dict[str, Any]:
+    action = validated.envelope["action"]
+    return {
+        "participant_id": attempt.participant_id,
+        "sender_participant_id": sender_participant_id,
+        "message_id": validated.envelope["message_id"],
+        "message_type": validated.envelope["type"],
+        "idempotency_key": _canonical_uuid(
+            action["idempotency_key"], label="idempotency_key"
+        ),
+        "semantic_operation_sha256": lifecycle.semantic_operation_digest(
+            validated.envelope
+        ),
+        "transport": attempt.transport,
+        "route_address": attempt.route_address,
+        "recipient_session_id": recipient_session_id,
+        "renewal_of": renewal_of,
+        "retry_after_intent": retry_after_intent,
+        "against_sha256": (
+            hashlib.sha256(validated.original_raw).hexdigest()
+            if validated.original_raw is not None
+            else None
+        ),
+        "validation_profile": validation_profile,
+        "dirty_validator_override": dirty_validator_override,
+        "observed_at": observed_at,
+    }
+
+
+def _require_roster_endpoints(
+    store: state.StateStore,
+    transaction: project.ProjectTransaction,
+    validated: ValidatedEnvelope,
+    recipient_participant: participants.Participant,
+) -> participants.Participant:
+    """Bind claimed wire endpoints to active project-roster identities."""
+
+    recipient_binding = recipient_participant.binding
+    if recipient_binding is None:
+        raise cam1.CamUsageError(
+            "roster.participant_unbound",
+            "recipient participant has no active session binding",
+        )
+    wire_recipient = validated.envelope.get("recipient")
+    if not isinstance(wire_recipient, dict) or (
+        wire_recipient.get("vendor") != recipient_participant.vendor
+        or wire_recipient.get("agent_name") != recipient_participant.common_name
+        or not _uuid_values_equal(
+            wire_recipient.get("session_id"), recipient_binding.session_id
+        )
+    ):
+        raise cam1.CamUsageError(
+            "roster.recipient_mismatch",
+            "envelope recipient does not match the selected project participant",
         )
 
-
-def _default_summary(envelope: dict[str, Any]) -> str:
-    return f"CAM/1 {envelope['type']} message {envelope['message_id']}"
-
-
-def _validated_summary(value: str) -> str:
-    if not value or "\n" in value or "\r" in value or len(value) > 200:
-        raise TransportError(
-            "argument.summary", "summary must be 1-200 characters on one line"
+    wire_sender = validated.envelope.get("claimed_sender")
+    if not isinstance(wire_sender, dict):
+        raise cam1.CamUsageError(
+            "roster.sender_unknown",
+            "envelope claimed_sender does not identify a project participant",
         )
-    return value
+    snapshot = store.snapshot(transaction=transaction)
+    matches = [
+        candidate
+        for candidate in snapshot.roster.participants.values()
+        if candidate.binding is not None
+        and candidate.status == participants.ParticipantStatus.BOUND
+        and candidate.vendor == wire_sender.get("vendor")
+        and candidate.common_name == wire_sender.get("agent_name")
+        and _uuid_values_equal(
+            candidate.binding.session_id,
+            wire_sender.get("session_id"),
+        )
+    ]
+    if len(matches) != 1:
+        raise cam1.CamUsageError(
+            "roster.sender_unknown",
+            "envelope claimed_sender must match one active project participant",
+        )
+    sender = matches[0]
+    assert sender.binding is not None
+    reply_to = validated.envelope.get("reply_to")
+    expected_transport = participants.VENDOR_ROUTE_TRANSPORT[sender.vendor]
+    if not isinstance(reply_to, dict) or (
+        reply_to.get("transport") != expected_transport
+        or not _uuid_values_equal(reply_to.get("address"), sender.binding.session_id)
+    ):
+        raise cam1.CamUsageError(
+            "roster.callback_unusable",
+            "live messages require the bound sender's supported return transport",
+        )
+    return sender
 
 
-def _direct_receipt_objects(response: ClaudeToolResponse) -> tuple[dict[str, Any], ...]:
-    candidates: list[dict[str, Any]] = []
-    if isinstance(response.structured_content, dict):
-        candidates.append(response.structured_content)
-    for text in response.text_content:
-        try:
-            decoded = json.loads(text)
-        except json.JSONDecodeError:
+def _require_reply_slot_available(
+    binding: project.ProjectBinding,
+    validated: ValidatedEnvelope,
+) -> None:
+    """Reserve one reply transition until its prior transport outcome is known."""
+
+    envelope = validated.envelope
+    if envelope.get("type") not in cam1.REPLY_TYPES:
+        return
+    root_id = _canonical_uuid(envelope.get("in_reply_to"), label="in_reply_to")
+    records = journal.replay_records(binding)
+    outcomes = _transport_outcomes(records)
+    for record in records:
+        if record["event_type"] != "message.outbound.intent":
             continue
-        if isinstance(decoded, dict):
-            candidates.append(decoded)
-
-    unique: dict[str, dict[str, Any]] = {}
-    for candidate in candidates:
+        prior_raw = journal.decode_exact_message(record)
+        if prior_raw is None:
+            raise TransportError(
+                "transport.intent_invalid",
+                "a prior outbound reply intent has no preserved envelope",
+            )
         try:
-            key = json.dumps(candidate, separators=(",", ":"), sort_keys=True)
-        except (TypeError, ValueError):
+            prior_envelope = cam1.parse_exact_bytes(prior_raw)
+        except (cam1.CamUsageError, cam1.CamValidationError) as error:
+            raise TransportError(
+                "transport.intent_invalid",
+                "a prior outbound reply intent cannot be safely interpreted",
+            ) from error
+        if prior_envelope.get("type") not in cam1.REPLY_TYPES or not _uuid_values_equal(
+            prior_envelope.get("in_reply_to"), root_id
+        ):
             continue
-        unique[key] = candidate
-    return tuple(unique.values())
+        linked = [
+            outcome
+            for outcome in outcomes.get(record["record_id"], [])
+            if outcome["sequence"] > record["sequence"]
+        ]
+        if len(linked) == 1:
+            outcome = linked[0]
+            attributes = outcome.get("attributes")
+            if (
+                outcome["event_type"] == "transport.accepted"
+                and isinstance(attributes, dict)
+                and attributes.get("lifecycle_state_committed") is True
+            ):
+                continue
+            if (
+                outcome["event_type"] == "transport.not_accepted"
+                and isinstance(attributes, dict)
+                and attributes.get("delivery_state") == "not_attempted"
+            ):
+                continue
+        raise TransportError(
+            "transport.reply_transition_reserved",
+            "an earlier reply for this lifecycle root has unresolved delivery; "
+            "do not dispatch a competing reply",
+        )
 
 
-def _accepted_claude_message_id(response: ClaudeToolResponse) -> str:
-    if response.is_error:
-        raise TransportError(
-            "claude.send_rejected", "Claude SendMessage reported an MCP tool error"
-        )
-    candidates = _direct_receipt_objects(response)
-    if len(candidates) == 1 and candidates[0].get("success") is False:
-        raise TransportError(
-            "claude.send_rejected", "Claude SendMessage rejected the message"
-        )
-    if len(candidates) != 1 or candidates[0].get("success") is not True:
-        raise TransportError(
-            "claude.receipt_unrecognized",
-            "Claude SendMessage returned no unambiguous success receipt; delivery "
-            "state is unknown and must not be retried automatically",
-        )
-    message_id = candidates[0].get("msg_id")
-    if not isinstance(message_id, str):
-        raise TransportError(
-            "claude.receipt_unrecognized",
-            "Claude SendMessage success receipt omitted a canonical msg_id; "
-            "delivery state is unknown and must not be retried automatically",
-        )
+def _prepare_and_journal_intent(
+    binding: project.ProjectBinding,
+    store: state.StateStore,
+    transaction: project.ProjectTransaction,
+    validated: ValidatedEnvelope,
+    attempt: _SendAttempt,
+    *,
+    recipient_participant: participants.Participant,
+    renewal_of: str | None,
+    retry_after_intent: str | None,
+    validation_profile: dict[str, Any],
+    dirty_validator_override: bool,
+) -> None:
+    event_now, observed_at = _utc_now()
     try:
-        canonical = str(uuid.UUID(message_id))
-    except ValueError:
-        canonical = ""
-    if canonical != message_id:
-        raise TransportError(
-            "claude.receipt_unrecognized",
-            "Claude SendMessage success receipt contained a noncanonical msg_id; "
-            "delivery state is unknown and must not be retried automatically",
+        sender_participant = _require_roster_endpoints(
+            store,
+            transaction,
+            validated,
+            recipient_participant,
         )
-    return canonical
+        assert recipient_participant.binding is not None
+        plan = store.prepare_lifecycle(
+            validated.raw,
+            renewal_of=renewal_of,
+            preserved_against=validated.original_raw,
+            require_preserved_against=True,
+            now=event_now,
+            transaction=transaction,
+        )
+        _require_reply_slot_available(binding, validated)
+        known_renewal_roots: frozenset[str] = frozenset()
+        if plan.preview.renewal_of is not None:
+            snapshot = store.snapshot(transaction=transaction)
+            known_renewal_roots = frozenset(
+                entry.root_message_id
+                for entry in snapshot.lifecycle.entries.values()
+                if entry.idempotency_key == plan.preview.idempotency_key
+                and entry.semantic_request_sha256
+                == plan.preview.semantic_request_sha256
+            )
+        retry_intent_id = _require_safe_retry(
+            binding,
+            validated,
+            retry_after_intent=retry_after_intent,
+            known_renewal_roots=known_renewal_roots,
+        )
+        if validated.envelope["type"] in lifecycle.ROOT_TYPES and (
+            plan.preview.state != lifecycle.LifecycleState.PENDING
+        ):
+            raise cam1.CamUsageError(
+                "state.root_not_sendable",
+                "outbound root is expired or already present in lifecycle state",
+            )
+        intent_record = journal.append_record(
+            binding,
+            event_type="message.outbound.intent",
+            exact_message=validated.raw,
+            attributes=_intent_attributes(
+                validated,
+                attempt,
+                sender_participant_id=sender_participant.participant_id,
+                recipient_session_id=recipient_participant.binding.session_id,
+                renewal_of=renewal_of,
+                retry_after_intent=retry_intent_id,
+                validation_profile=validation_profile,
+                dirty_validator_override=dirty_validator_override,
+                observed_at=observed_at,
+            ),
+            now=event_now,
+            transaction=transaction,
+        )
+        attempt.lifecycle_plan = plan
+        attempt.message_id = validated.envelope["message_id"]
+        attempt.intent_record = intent_record
+        if validated.envelope["type"] in lifecycle.ROOT_TYPES:
+            if plan.duplicate:
+                attempt.lifecycle_committed = True
+            else:
+                try:
+                    store.commit_lifecycle(
+                        plan,
+                        transaction=transaction,
+                        now=event_now,
+                    )
+                    attempt.lifecycle_committed = True
+                except state.ProjectionRefreshError as error:
+                    # The canonical root event is present. A later rebuild can
+                    # refresh the disposable projection without resending.
+                    attempt.lifecycle_committed = True
+                    attempt.projection_error = error
+        dispatch_now, _ = _utc_now()
+        attempt.lifecycle_plan = store.prepare_lifecycle(
+            validated.raw,
+            renewal_of=renewal_of,
+            preserved_against=validated.original_raw,
+            require_preserved_against=True,
+            now=dispatch_now,
+            transaction=transaction,
+        )
+        final_dispatch_now, _ = _utc_now()
+        state.require_plan_freshness(attempt.lifecycle_plan, now=final_dispatch_now)
+    except (cam1.CamUsageError, cam1.CamValidationError, project.ProjectError) as error:
+        raise _domain_transport_error(error) from error
 
 
-async def send_to_claude(
+def _journal_failed_attempt(
+    binding: project.ProjectBinding,
+    transaction: project.ProjectTransaction,
+    attempt: _SendAttempt,
+    error: TransportError,
+) -> TransportError:
+    if attempt.intent_record is None:
+        return error
+    event_now, observed_at = _utc_now()
+    delivery_state = _delivery_state(error, attempt)
+    try:
+        outcome = journal.append_record(
+            binding,
+            event_type="transport.not_accepted",
+            attributes={
+                "intent_record_id": attempt.intent_record["record_id"],
+                "participant_id": attempt.participant_id,
+                "message_id": attempt.message_id,
+                "transport": attempt.transport,
+                "route_address": attempt.route_address,
+                "delivery_state": delivery_state,
+                "error_code": error.code,
+                "observed_at": observed_at,
+            },
+            now=event_now,
+            transaction=transaction,
+        )
+    except project.ProjectError as journal_error:
+        raise TransportError(
+            "transport.outcome_unjournaled",
+            "a send was attempted but its outcome could not be journaled; inspect "
+            "the project journal and do not retry automatically",
+            audit={"intent_record": _record_summary(attempt.intent_record)},
+        ) from journal_error
+    error.audit = {
+        "delivery_state": delivery_state,
+        "intent_record": _record_summary(attempt.intent_record),
+        "outcome_record": _record_summary(outcome),
+    }
+    return error
+
+
+def _post_attempt_lock_failure(
+    attempt: _SendAttempt,
+    *,
+    accepted: bool,
+    result: dict[str, Any] | None = None,
+    original_error: TransportError | None = None,
+) -> TransportError:
+    """Preserve a bounded do-not-retry verdict when outcome journaling is blocked."""
+
+    audit: dict[str, Any] = {
+        "delivery_state": "accepted" if accepted else "unknown",
+        "intent_record": (
+            _record_summary(attempt.intent_record)
+            if attempt.intent_record is not None
+            else None
+        ),
+    }
+    if result is not None:
+        audit["transport_receipt_id"] = _transport_receipt_identifier(result)
+    if original_error is not None:
+        audit["transport_error_code"] = original_error.code
+    if accepted:
+        return TransportError(
+            "transport.acceptance_unjournaled",
+            "transport acceptance is known but the project outcome could not be "
+            "journaled; inspect the intent and do not retry automatically",
+            audit=audit,
+        )
+    return TransportError(
+        "transport.outcome_unjournaled",
+        "a send was attempted but its outcome could not be journaled; inspect the "
+        "intent and do not retry automatically",
+        audit=audit,
+    )
+
+
+def _transport_receipt_identifier(result: dict[str, Any]) -> Any:
+    receipt_identifier = result.get("transport_message_id")
+    receipt = result.get("transport_receipt")
+    if receipt_identifier is None and isinstance(receipt, dict):
+        return receipt.get("queue_id")
+    return receipt_identifier
+
+
+def _require_complete_attempt(
+    attempt: _SendAttempt,
+) -> tuple[dict[str, Any], state.LifecyclePlan]:
+    if attempt.intent_record is None or attempt.lifecycle_plan is None:
+        raise TransportError(
+            "transport.audit_incomplete",
+            "transport accepted a message without a complete outbound audit plan; "
+            "do not retry automatically",
+        )
+    return attempt.intent_record, attempt.lifecycle_plan
+
+
+def _settle_accepted_lifecycle(
+    store: state.StateStore,
+    transaction: project.ProjectTransaction,
+    attempt: _SendAttempt,
+    plan: state.LifecyclePlan,
+) -> tuple[lifecycle.LifecycleEntry, state.ProjectionRefreshError | None]:
+    projection_error = attempt.projection_error
+    try:
+        if attempt.lifecycle_committed:
+            snapshot = store.snapshot(transaction=transaction)
+            lifecycle_entry = snapshot.lifecycle.entries.get(
+                plan.preview.root_message_id
+            )
+            if lifecycle_entry is None:
+                raise cam1.CamUsageError(
+                    "state.committed_root_missing",
+                    "journaled outbound root is missing from lifecycle state",
+                )
+        else:
+            lifecycle_entry = store.commit_lifecycle(
+                plan,
+                transaction=transaction,
+                preserve_prepared_observation=True,
+            )
+    except state.ProjectionRefreshError as error:
+        # The canonical event exists; only its disposable projection is stale.
+        return plan.preview, error
+    return lifecycle_entry, projection_error
+
+
+def _acceptance_attributes(
+    attempt: _SendAttempt,
+    intent_record: dict[str, Any],
+    result: dict[str, Any],
+    receipt_identifier: Any,
+    *,
+    lifecycle_state_committed: bool,
+    observed_at: str,
+) -> dict[str, Any]:
+    return {
+        "intent_record_id": intent_record["record_id"],
+        "participant_id": attempt.participant_id,
+        "message_id": result["message_id"],
+        "transport": attempt.transport,
+        "route_address": attempt.route_address,
+        "transport_receipt_id": receipt_identifier,
+        "lifecycle_state_committed": lifecycle_state_committed,
+        "observed_at": observed_at,
+    }
+
+
+def _accepted_state_incomplete_error(
+    binding: project.ProjectBinding,
+    transaction: project.ProjectTransaction,
+    attempt: _SendAttempt,
+    intent_record: dict[str, Any],
+    plan: state.LifecyclePlan,
+    result: dict[str, Any],
+    receipt_identifier: Any,
+) -> TransportError:
+    event_now, observed_at = _utc_now()
+    try:
+        accepted_record = journal.append_record(
+            binding,
+            event_type="transport.accepted",
+            exact_message=plan.exact_message,
+            attributes=_acceptance_attributes(
+                attempt,
+                intent_record,
+                result,
+                receipt_identifier,
+                lifecycle_state_committed=False,
+                observed_at=observed_at,
+            ),
+            now=event_now,
+            transaction=transaction,
+        )
+    except project.ProjectError:
+        accepted_record = None
+    return TransportError(
+        "transport.accepted_state_incomplete",
+        "transport accepted the message but canonical lifecycle state could not "
+        "be committed; inspect the journal and do not retry automatically",
+        audit={
+            "intent_record": _record_summary(intent_record),
+            "transport_receipt_id": receipt_identifier,
+            "accepted_record": (
+                _record_summary(accepted_record)
+                if accepted_record is not None
+                else None
+            ),
+        },
+    )
+
+
+def _journal_committed_acceptance(
+    binding: project.ProjectBinding,
+    transaction: project.ProjectTransaction,
+    attempt: _SendAttempt,
+    intent_record: dict[str, Any],
+    result: dict[str, Any],
+    receipt_identifier: Any,
+    projection_error: state.ProjectionRefreshError | None,
+) -> dict[str, Any]:
+    event_now, observed_at = _utc_now()
+    try:
+        return journal.append_record(
+            binding,
+            event_type="transport.accepted",
+            attributes=_acceptance_attributes(
+                attempt,
+                intent_record,
+                result,
+                receipt_identifier,
+                lifecycle_state_committed=True,
+                observed_at=observed_at,
+            ),
+            now=event_now,
+            transaction=transaction,
+        )
+    except project.ProjectError as error:
+        audit: dict[str, Any] = {
+            "intent_record": _record_summary(intent_record),
+            "lifecycle_state_committed": True,
+        }
+        if projection_error is not None:
+            audit["lifecycle_record"] = {
+                "record_id": projection_error.record_id,
+                "sequence": projection_error.sequence,
+            }
+        raise TransportError(
+            "transport.acceptance_unjournaled",
+            "transport and lifecycle acceptance were recorded, but the separate "
+            "transport receipt record failed; do not retry automatically",
+            audit=audit,
+        ) from error
+
+
+def _accepted_result(
+    result: dict[str, Any],
+    intent_record: dict[str, Any],
+    accepted_record: dict[str, Any],
+    lifecycle_entry: lifecycle.LifecycleEntry,
+    projection_error: state.ProjectionRefreshError | None,
+) -> dict[str, Any]:
+    result["journal"] = {
+        "intent_record": _record_summary(intent_record),
+        "accepted_record": _record_summary(accepted_record),
+    }
+    result["lifecycle"] = lifecycle_entry.as_dict()
+    if projection_error is not None:
+        result["state_projection"] = {
+            "current": False,
+            "journal_record_id": projection_error.record_id,
+            "journal_sequence": projection_error.sequence,
+            "action": "run cam1_project.py state rebuild; do not resend",
+        }
+    return result
+
+
+def _finalize_accepted_attempt(
+    binding: project.ProjectBinding,
+    store: state.StateStore,
+    transaction: project.ProjectTransaction,
+    attempt: _SendAttempt,
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    intent_record, plan = _require_complete_attempt(attempt)
+    receipt_identifier = _transport_receipt_identifier(result)
+    try:
+        lifecycle_entry, projection_error = _settle_accepted_lifecycle(
+            store, transaction, attempt, plan
+        )
+    except (cam1.CamUsageError, cam1.CamValidationError, project.ProjectError) as error:
+        raise _accepted_state_incomplete_error(
+            binding,
+            transaction,
+            attempt,
+            intent_record,
+            plan,
+            result,
+            receipt_identifier,
+        ) from error
+    accepted_record = _journal_committed_acceptance(
+        binding,
+        transaction,
+        attempt,
+        intent_record,
+        result,
+        receipt_identifier,
+        projection_error,
+    )
+    return _accepted_result(
+        result,
+        intent_record,
+        accepted_record,
+        lifecycle_entry,
+        projection_error,
+    )
+
+
+async def preflight_project_claude(
+    binding: project.ProjectBinding,
     *,
     claude_bin: str,
-    target: str,
+    participant_selector: str,
+    session_id_guard: str | None,
+    target_guard: str | None,
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    """Discover and journal one roster-bound Claude route without sending."""
+
+    store = state.StateStore(binding)
+    with project.project_transaction(binding) as transaction:
+        participant = _require_bound_participant(
+            store,
+            participant_selector,
+            vendor="claude-code",
+            transaction=transaction,
+        )
+        assert participant.binding is not None
+        _require_session_guard(
+            session_id_guard,
+            participant.binding.session_id,
+            label="session_id",
+        )
+        bound_session_id = participant.binding.session_id
+
+    result = await _preflight_claude_session(
+        claude_bin=claude_bin,
+        session_id=bound_session_id,
+        target=target_guard,
+        timeout_seconds=timeout_seconds,
+    )
+    identity = result["identity"]
+    route_data = result["route"]
+    route = routing.ClaudeRoute(
+        session=routing.AgentViewSession(
+            session_id=identity["session_id"],
+            agent_view_id=identity["agent_view_id"],
+            product_name=identity["product_name"],
+            cwd=identity["cwd"],
+            kind=identity["kind"],
+            state=identity["state"],
+            started_at_ms=identity["started_at_ms"],
+        ),
+        peer=routing.Peer(
+            name=route_data["list_agents_name"],
+            ref=route_data["list_agents_ref"],
+            kind=route_data["kind"],
+            state=route_data["state"],
+            details=(),
+            local=True,
+        ),
+    )
+    session_context = _require_project_session_cwd(binding, route.session)
+    with project.project_transaction(binding) as transaction:
+        participant = _require_bound_participant(
+            store,
+            participant_selector,
+            vendor="claude-code",
+            transaction=transaction,
+        )
+        assert participant.binding is not None
+        if participant.binding.session_id != bound_session_id:
+            raise TransportError(
+                "claude.session_changed",
+                "participant binding changed during Claude route discovery",
+            )
+        event_now, observed_at = _utc_now()
+        try:
+            observed = store.participant_observe_route(
+                participant.participant_id,
+                transport="claude_send_message",
+                address=route.peer.qualified_address,
+                source="claude_agent_view_and_list_agents",
+                observed_at=observed_at,
+                agent_view_id=route.session.agent_view_id,
+                list_agents_name=route.peer.name,
+                list_agents_ref=route.peer.ref,
+                product_state=route.peer.state,
+                agent_view_kind=route.session.kind,
+                agent_view_started_at_ms=route.session.started_at_ms,
+                session_git_top_level=str(session_context.top_level),
+                session_git_common_dir=str(session_context.common_dir),
+                now=event_now,
+                transaction=transaction,
+            )
+        except (cam1.CamUsageError, project.ProjectError) as error:
+            raise _domain_transport_error(error) from error
+        assert observed.route is not None
+        result["participant"] = {
+            "participant_id": observed.participant_id,
+            "common_name": observed.common_name,
+            "display_name": observed.display_name,
+            "route_status": observed.route.status.value,
+        }
+        result["operator_correlation_required"] = (
+            observed.route.status != participants.RouteStatus.OPERATOR_CORRELATED
+        )
+        return result
+
+
+async def send_project_claude(
+    binding: project.ProjectBinding,
+    *,
+    claude_bin: str,
+    participant_selector: str,
+    session_id_guard: str | None,
+    target_guard: str | None,
     envelope_path: str,
     against_path: str | None,
+    renewal_of: str | None,
+    retry_after_intent: str | None,
     summary: str | None,
     timeout_seconds: float,
+    allow_dirty_validator: bool = False,
+    expected_validation_profile_sha256: str | None = None,
 ) -> dict[str, Any]:
-    """Validate and send one exact envelope to one freshly discovered local peer."""
+    """Journal, send, and commit one roster-bound Claude lifecycle message."""
 
-    validated = _validate_envelope(envelope_path, against_path)
-    raw = validated.raw
-    envelope = validated.envelope
-    try:
-        async with asyncio.timeout(timeout_seconds):
-            async with _claude_client(
-                claude_bin=claude_bin, timeout_seconds=timeout_seconds
-            ) as (client, text_content_type):
-                await _require_claude_tools(client, "ListAgents", "SendMessage")
-                listing_response = await _call_connected_tool(
-                    client,
-                    text_content_type,
-                    tool_name="ListAgents",
-                    arguments={},
+    validation_profile, dirty_validator_override = _require_live_validation_profile(
+        allow_dirty=allow_dirty_validator,
+        expected_sha256=expected_validation_profile_sha256,
+    )
+    store = state.StateStore(binding)
+    with project.project_transaction(binding) as transaction:
+        participant = _require_bound_participant(
+            store,
+            participant_selector,
+            vendor="claude-code",
+            transaction=transaction,
+        )
+        assert participant.binding is not None
+        _require_session_guard(
+            session_id_guard,
+            participant.binding.session_id,
+            label="session_id",
+        )
+        participant_id = participant.participant_id
+        bound_session_id = participant.binding.session_id
+
+    attempt = _SendAttempt(
+        participant_id=participant_id,
+        transport="claude_send_message",
+        route_address="pending_fresh_discovery",
+    )
+
+    def before_send(
+        validated: ValidatedEnvelope,
+        route: routing.ClaudeRoute,
+    ) -> None:
+        session_context = _require_project_session_cwd(binding, route.session)
+        with project.project_transaction(binding) as transaction:
+            current = _require_bound_participant(
+                store,
+                participant_id,
+                vendor="claude-code",
+                transaction=transaction,
+            )
+            assert current.binding is not None
+            if (
+                current.binding.session_id != bound_session_id
+                or route.session.session_id != bound_session_id
+            ):
+                raise TransportError(
+                    "claude.session_changed",
+                    "fresh Claude discovery no longer matches the participant binding",
                 )
-                peers = parse_peers(_listing_text(listing_response))
-                local_peers = tuple(peer for peer in peers if peer.local)
-                peer = _resolve_local_peer(target, local_peers)
-                recipient = envelope.get("recipient", {})
-                if recipient.get("agent_name") != peer.name:
-                    raise TransportError(
-                        "envelope.recipient_mismatch",
-                        "envelope recipient.agent_name must equal the freshly "
-                        "discovered peer name",
-                    )
-                transport_address = peer.qualified_address
-                _require_original_callback(
-                    validated,
+            event_now, observed_at = _utc_now()
+            try:
+                observed = store.participant_observe_route(
+                    current.participant_id,
                     transport="claude_send_message",
-                    address=transport_address,
+                    address=route.peer.qualified_address,
+                    source="claude_agent_view_and_list_agents",
+                    observed_at=observed_at,
+                    agent_view_id=route.session.agent_view_id,
+                    list_agents_name=route.peer.name,
+                    list_agents_ref=route.peer.ref,
+                    product_state=route.peer.state,
+                    agent_view_kind=route.session.kind,
+                    agent_view_started_at_ms=route.session.started_at_ms,
+                    session_git_top_level=str(session_context.top_level),
+                    session_git_common_dir=str(session_context.common_dir),
+                    now=event_now,
+                    transaction=transaction,
                 )
-                response = await _call_connected_tool(
-                    client,
-                    text_content_type,
-                    tool_name="SendMessage",
-                    arguments={
-                        "to": transport_address,
-                        "summary": _validated_summary(
-                            summary
-                            if summary is not None
-                            else _default_summary(envelope)
-                        ),
-                        "message": raw.decode("utf-8"),
-                    },
+                if (
+                    observed.route is None
+                    or observed.route.status
+                    != participants.RouteStatus.OPERATOR_CORRELATED
+                ):
+                    raise cam1.CamUsageError(
+                        "roster.route_not_ready",
+                        "fresh Claude route requires explicit operator correlation",
+                    )
+                attempt.route_address = route.peer.qualified_address
+                _prepare_and_journal_intent(
+                    binding,
+                    store,
+                    transaction,
+                    validated,
+                    attempt,
+                    recipient_participant=current,
+                    renewal_of=renewal_of,
+                    retry_after_intent=retry_after_intent,
+                    validation_profile=validation_profile,
+                    dirty_validator_override=dirty_validator_override,
                 )
-    except TimeoutError as error:
-        raise TransportError(
-            "claude.timeout", "Claude send exceeded the overall timeout"
-        ) from error
-    transport_message_id = _accepted_claude_message_id(response)
-    return {
-        "ok": True,
-        "status": "transport_accepted",
-        "application_ack": False,
-        "local_only": True,
-        "target": transport_address,
-        "target_ref": peer.ref,
-        "message_id": envelope["message_id"],
-        "transport_message_id": transport_message_id,
-        "mcp_protocol": response.protocol_version,
-        "transport_receipt": response.receipt(),
-    }
+            except (
+                cam1.CamUsageError,
+                cam1.CamValidationError,
+                project.ProjectError,
+            ) as error:
+                raise _domain_transport_error(error) from error
+            attempt.dispatch_started = True
 
-
-def _canonical_uuid(value: str, *, label: str) -> str:
-    if not isinstance(value, str):
-        raise TransportError(f"argument.{label}", f"{label} must be a valid UUID")
     try:
-        parsed = uuid.UUID(value)
-    except ValueError:
-        raise TransportError(
-            f"argument.{label}", f"{label} must be a valid UUID"
-        ) from None
-    canonical = str(parsed)
-    if value.lower() != canonical:
-        raise TransportError(
-            f"argument.{label}",
-            f"{label} must use canonical 8-4-4-4-12 UUID spelling",
+        result = await _send_to_claude(
+            claude_bin=claude_bin,
+            target=target_guard,
+            session_id=bound_session_id,
+            envelope_path=envelope_path,
+            against_path=against_path,
+            summary=summary,
+            timeout_seconds=timeout_seconds,
+            before_send=before_send,
         )
-    return canonical
-
-
-def _uuid_values_equal(left: Any, right: Any) -> bool:
-    if not isinstance(left, str) or not isinstance(right, str):
-        return False
+    except TransportError as error:
+        if attempt.intent_record is not None:
+            try:
+                with project.project_transaction(binding) as transaction:
+                    _journal_failed_attempt(
+                        binding,
+                        transaction,
+                        attempt,
+                        error,
+                    )
+            except project.ProjectError as lock_error:
+                raise _post_attempt_lock_failure(
+                    attempt,
+                    accepted=False,
+                    original_error=error,
+                ) from lock_error
+        raise
     try:
-        return uuid.UUID(left) == uuid.UUID(right)
-    except (ValueError, AttributeError):
-        return False
+        with project.project_transaction(binding) as transaction:
+            return _finalize_accepted_attempt(
+                binding,
+                store,
+                transaction,
+                attempt,
+                result,
+            )
+    except project.ProjectError as lock_error:
+        raise _post_attempt_lock_failure(
+            attempt,
+            accepted=True,
+            result=result,
+        ) from lock_error
 
 
-def _codex_queue_receipt(stdout: str, *, expected_thread: str) -> dict[str, str]:
-    receipt_text = stdout.strip()
-    receipt_match = CODEX_QUEUE_RECEIPT_PATTERN.fullmatch(receipt_text)
-    if receipt_match is None or receipt_match.group("thread_id") != expected_thread:
-        raise TransportError(
-            "codex.receipt_unrecognized",
-            "Codex queue returned no exact receipt for the requested thread; delivery "
-            "state is unknown and must not be retried automatically",
-        )
-    return {
-        "queue_id": receipt_match.group("queue_id"),
-        "thread_id": receipt_match.group("thread_id"),
-        "text": receipt_text[:MAX_RECEIPT_TEXT],
-    }
-
-
-def reply_to_codex(
+def send_project_codex(
+    binding: project.ProjectBinding,
     *,
     codex_bin: str,
-    thread: str,
+    participant_selector: str,
+    thread_guard: str | None,
     envelope_path: str,
     against_path: str | None,
+    renewal_of: str | None,
+    retry_after_intent: str | None,
     timeout_seconds: float,
+    allow_dirty_validator: bool = False,
+    expected_validation_profile_sha256: str | None = None,
 ) -> dict[str, Any]:
-    """Validate and queue one exact envelope to one literal local Codex thread."""
+    """Journal, queue, and commit one roster-bound Codex lifecycle message."""
 
-    thread = _canonical_uuid(thread, label="thread")
-    validated = _validate_envelope(envelope_path, against_path)
-    raw = validated.raw
-    envelope = validated.envelope
-    recipient_session = envelope.get("recipient", {}).get("session_id")
-    if not _uuid_values_equal(recipient_session, thread):
-        raise TransportError(
-            "envelope.recipient_mismatch",
-            "envelope recipient.session_id must equal the literal Codex thread UUID",
+    validation_profile, dirty_validator_override = _require_live_validation_profile(
+        allow_dirty=allow_dirty_validator,
+        expected_sha256=expected_validation_profile_sha256,
+    )
+    store = state.StateStore(binding)
+    with project.project_transaction(binding) as transaction:
+        participant = _require_bound_participant(
+            store,
+            participant_selector,
+            vendor="codex",
+            transaction=transaction,
         )
-    _require_original_callback(
-        validated,
+        assert participant.binding is not None
+        _require_session_guard(
+            thread_guard,
+            participant.binding.session_id,
+            label="thread",
+        )
+        try:
+            route = store.snapshot(
+                transaction=transaction
+            ).roster.require_correlated_route(participant.participant_id)
+        except cam1.CamUsageError as error:
+            raise _domain_transport_error(error) from error
+        participant_id = participant.participant_id
+        bound_session_id = participant.binding.session_id
+        route_address = route.address
+
+    attempt = _SendAttempt(
+        participant_id=participant_id,
         transport="codex_queue",
-        address=thread,
+        route_address=route_address,
     )
+
+    def before_send(validated: ValidatedEnvelope) -> None:
+        with project.project_transaction(binding) as transaction:
+            current = _require_bound_participant(
+                store,
+                participant_id,
+                vendor="codex",
+                transaction=transaction,
+            )
+            assert current.binding is not None
+            if current.binding.session_id != bound_session_id:
+                raise TransportError(
+                    "codex.session_changed",
+                    "participant binding changed before Codex queue dispatch",
+                )
+            try:
+                current_route = store.snapshot(
+                    transaction=transaction
+                ).roster.require_correlated_route(current.participant_id)
+            except cam1.CamUsageError as error:
+                raise _domain_transport_error(error) from error
+            if current_route.address != route_address:
+                raise TransportError(
+                    "codex.route_changed",
+                    "participant route changed before Codex queue dispatch",
+                )
+            _prepare_and_journal_intent(
+                binding,
+                store,
+                transaction,
+                validated,
+                attempt,
+                recipient_participant=current,
+                renewal_of=renewal_of,
+                retry_after_intent=retry_after_intent,
+                validation_profile=validation_profile,
+                dirty_validator_override=dirty_validator_override,
+            )
+            attempt.dispatch_started = True
+
     try:
-        completed = subprocess.run(
-            [
-                codex_bin,
-                "queue",
-                "--thread",
-                thread,
-                "--message",
-                raw.decode("utf-8"),
-            ],
-            check=False,
-            capture_output=True,
-            shell=False,
-            text=True,
-            timeout=timeout_seconds,
+        result = _send_to_codex_queue(
+            codex_bin=codex_bin,
+            thread=bound_session_id,
+            envelope_path=envelope_path,
+            against_path=against_path,
+            timeout_seconds=timeout_seconds,
+            before_send=before_send,
         )
-    except OSError as error:
-        if error.errno == errno.E2BIG:
-            raise TransportError(
-                "transport.payload_too_large",
-                "operating system rejected the Codex queue argument size; send a "
-                "compact path-and-hash handoff instead",
-            ) from error
-        raise TransportError(
-            "codex.queue_failure", "Codex queue command did not complete"
-        ) from error
-    except subprocess.TimeoutExpired as error:
-        raise TransportError(
-            "codex.queue_failure", "Codex queue command did not complete"
-        ) from error
-    if completed.returncode != 0:
-        raise TransportError(
-            "codex.queue_rejected",
-            f"Codex queue exited with status {completed.returncode}",
-        )
-    transport_receipt = _codex_queue_receipt(completed.stdout, expected_thread=thread)
-    return {
-        "ok": True,
-        "status": "transport_accepted",
-        "application_ack": False,
-        "local_only": True,
-        "target_thread": thread,
-        "message_id": envelope["message_id"],
-        "transport_receipt": transport_receipt,
-    }
+    except TransportError as error:
+        if attempt.intent_record is not None:
+            try:
+                with project.project_transaction(binding) as transaction:
+                    _journal_failed_attempt(
+                        binding,
+                        transaction,
+                        attempt,
+                        error,
+                    )
+            except project.ProjectError as lock_error:
+                raise _post_attempt_lock_failure(
+                    attempt,
+                    accepted=False,
+                    original_error=error,
+                ) from lock_error
+        raise
+    try:
+        with project.project_transaction(binding) as transaction:
+            return _finalize_accepted_attempt(
+                binding,
+                store,
+                transaction,
+                attempt,
+                result,
+            )
+    except project.ProjectError as lock_error:
+        raise _post_attempt_lock_failure(
+            attempt,
+            accepted=True,
+            result=result,
+        ) from lock_error
 
 
-class JsonArgumentParser(argparse.ArgumentParser):
-    """Keep command-line failures on the documented JSON error channel."""
+def _cli_api() -> _transport_cli.TransportCliApi:
+    module = sys.modules[__name__]
+    return _transport_cli.TransportCliApi(
+        cam1=cam1,
+        project=project,
+        transport_error=TransportError,
+        default_timeout_seconds=_native.DEFAULT_TIMEOUT_SECONDS,
+        emit=module._emit,
+        with_validation_profile=module._with_validation_profile,
+        bounded_timeout=module._bounded_timeout,
+        doctor=module.doctor,
+        require_live_validation_profile=module._require_live_validation_profile,
+        resolve_binary=module._resolve_binary,
+        resolve_project=module._resolve_project,
+        list_local_peers=module.list_local_peers,
+        preflight_project_claude=module.preflight_project_claude,
+        send_project_claude=module.send_project_claude,
+        send_project_codex=module.send_project_codex,
+    )
 
-    def error(self, message: str) -> None:
-        _emit(
-            {
-                "ok": False,
-                "error": {"code": "argument.invalid", "detail": message[:500]},
-            },
-            stream=sys.stderr,
-        )
-        raise SystemExit(2)
 
+def _parser() -> Any:
+    """Compatibility seam for callers that inspect the command parser."""
 
-def _parser() -> argparse.ArgumentParser:
-    parser = JsonArgumentParser(
-        description="Use Claude Code's local messaging transport for CAM/1 envelopes."
-    )
-    parser.add_argument("--claude-bin", default="claude")
-    parser.add_argument("--codex-bin", default="codex")
-    parser.add_argument(
-        "--timeout-seconds",
-        type=float,
-        default=DEFAULT_TIMEOUT_SECONDS,
-        help="overall product-operation deadline after local envelope preflight",
-    )
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    subparsers.add_parser("doctor", help="check local transport prerequisites")
-    subparsers.add_parser("claude-list", help="list eligible local Claude sessions")
-
-    send_parser = subparsers.add_parser(
-        "claude-send", help="send one validated envelope to a local Claude session"
-    )
-    send_parser.add_argument("--to", required=True)
-    send_parser.add_argument(
-        "--envelope",
-        required=True,
-        help="regular envelope file in the operator-approved private directory",
-    )
-    send_parser.add_argument(
-        "--against",
-        help="preserved root envelope file required for a reply",
-    )
-    send_parser.add_argument("--summary")
-
-    reply_parser = subparsers.add_parser(
-        "codex-reply", help="queue one validated envelope to a local Codex session"
-    )
-    reply_parser.add_argument("--thread", required=True)
-    reply_parser.add_argument(
-        "--envelope",
-        required=True,
-        help="regular envelope file in the operator-approved private directory",
-    )
-    reply_parser.add_argument(
-        "--against",
-        help="preserved root envelope file required for a reply",
-    )
-    return parser
+    return _transport_cli.build_parser(_cli_api())
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
-    try:
-        timeout_seconds = _bounded_timeout(args.timeout_seconds)
-        if args.command == "doctor":
-            result = doctor(
-                claude_bin=args.claude_bin,
-                codex_bin=args.codex_bin,
-                timeout_seconds=timeout_seconds,
-            )
-            _emit(result)
-            return 0 if result["ok"] else 2
-
-        if args.command == "claude-list":
-            claude_bin = _resolve_binary(args.claude_bin, label="claude")
-            protocol, local_peers, excluded = asyncio.run(
-                list_local_peers(claude_bin=claude_bin, timeout_seconds=timeout_seconds)
-            )
-            _emit(
-                {
-                    "ok": True,
-                    "local_only": True,
-                    "mcp_protocol": protocol,
-                    "agents": [peer.as_dict() for peer in local_peers],
-                    "excluded_nonlocal_or_unknown": [
-                        peer.as_dict() for peer in excluded
-                    ],
-                }
-            )
-            return 0
-
-        if args.command == "claude-send":
-            claude_bin = _resolve_binary(args.claude_bin, label="claude")
-            result = asyncio.run(
-                send_to_claude(
-                    claude_bin=claude_bin,
-                    target=args.to,
-                    envelope_path=args.envelope,
-                    against_path=args.against,
-                    summary=args.summary,
-                    timeout_seconds=timeout_seconds,
-                )
-            )
-            _emit(result)
-            return 0
-
-        if args.command == "codex-reply":
-            codex_bin = _resolve_binary(args.codex_bin, label="codex")
-            result = reply_to_codex(
-                codex_bin=codex_bin,
-                thread=args.thread,
-                envelope_path=args.envelope,
-                against_path=args.against,
-                timeout_seconds=timeout_seconds,
-            )
-            _emit(result)
-            return 0
-    except (cam1.CamValidationError, cam1.CliError) as error:
-        if isinstance(error, cam1.CamValidationError):
-            detail = [problem.as_dict() for problem in error.problems]
-            _emit(
-                {
-                    "ok": False,
-                    "error": {"code": "envelope.invalid", "problems": detail},
-                },
-                stream=sys.stderr,
-            )
-        else:
-            _emit(
-                {"ok": False, "error": {"code": error.code, "detail": error.detail}},
-                stream=sys.stderr,
-            )
-        return 2
-    except TransportError as error:
-        _emit(
-            {"ok": False, "error": {"code": error.code, "detail": error.detail}},
-            stream=sys.stderr,
-        )
-        return 2
-    except Exception as error:  # noqa: BLE001 - suppress raw transport internals
-        _emit(
-            {
-                "ok": False,
-                "error": {
-                    "code": "transport.internal",
-                    "detail": f"unexpected transport failure ({type(error).__name__})",
-                },
-            },
-            stream=sys.stderr,
-        )
-        return 3
-    return 3
+    return _transport_cli.main(argv, api=_cli_api())
 
 
 if __name__ == "__main__":

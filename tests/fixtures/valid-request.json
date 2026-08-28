@@ -1,0 +1,56 @@
+{
+  "protocol": "CAM/1",
+  "message_id": "00000000-0000-4000-8000-000000000010",
+  "type": "request",
+  "sent_at": "2026-08-21T20:02:00Z",
+  "expires_at": "2026-08-21T20:12:00Z",
+  "claimed_sender": {
+    "vendor": "codex",
+    "agent_name": "example coordinator",
+    "session_id": "00000000-0000-4000-8000-000000000101",
+    "host_id": null
+  },
+  "recipient": {
+    "vendor": "claude-code",
+    "agent_name": "example worker",
+    "session_id": "00000000-0000-4000-8000-000000000102"
+  },
+  "reply_to": {
+    "transport": "codex_queue",
+    "address": "00000000-0000-4000-8000-000000000101"
+  },
+  "in_reply_to": null,
+  "receipt": null,
+  "nonce": "AQECAwQFBgcICQoLDA0ODw",
+  "intent": "Review one synthetic artifact",
+  "action": {
+    "risk_class": "read_only",
+    "operation": "review_artifact",
+    "scope": {
+      "repositories": [
+        "/example/project"
+      ],
+      "paths": [
+        "/example/project/README.md"
+      ],
+      "hosts": [],
+      "external_recipients": []
+    },
+    "idempotency_key": "00000000-0000-4000-8000-000000000010"
+  },
+  "authorization": {
+    "basis": "operator_confirmation",
+    "authority": "example operator",
+    "reference": "synthetic fixture approval",
+    "verified_at": "2026-08-21T20:01:00Z",
+    "expires_at": "2026-08-21T20:10:00Z"
+  },
+  "constraints": {
+    "no_repository_changes": true,
+    "no_external_side_effects": true,
+    "no_secrets": true
+  },
+  "body": "Review the synthetic artifact without making changes.",
+  "body_sha256": "7d4d225447f83d5f633b3431836b5a17dcbc11d6a03012064852a41b9601ddc0",
+  "evidence": []
+}

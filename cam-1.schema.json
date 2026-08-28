@@ -157,6 +157,69 @@
     {
       "if": {
         "properties": {
+          "constraints": {
+            "properties": {
+              "no_repository_changes": {
+                "const": false
+              }
+            },
+            "required": [
+              "no_repository_changes"
+            ]
+          }
+        },
+        "required": [
+          "constraints"
+        ]
+      },
+      "then": {
+        "properties": {
+          "action": {
+            "properties": {
+              "risk_class": {
+                "enum": [
+                  "workspace_write",
+                  "external_or_irreversible"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "constraints": {
+            "properties": {
+              "no_external_side_effects": {
+                "const": false
+              }
+            },
+            "required": [
+              "no_external_side_effects"
+            ]
+          }
+        },
+        "required": [
+          "constraints"
+        ]
+      },
+      "then": {
+        "properties": {
+          "action": {
+            "properties": {
+              "risk_class": {
+                "const": "external_or_irreversible"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
           "type": {
             "enum": [
               "challenge",

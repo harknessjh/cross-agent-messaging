@@ -1,9 +1,9 @@
 {
   "protocol": "CAM/1",
-  "message_id": "00000000-0000-4000-8000-000000000002",
-  "type": "ack",
-  "sent_at": "2026-08-21T20:01:00Z",
-  "expires_at": "2026-08-21T20:11:00Z",
+  "message_id": "00000000-0000-4000-8000-000000000011",
+  "type": "result",
+  "sent_at": "2026-08-21T20:04:00Z",
+  "expires_at": "2026-08-21T20:14:00Z",
   "claimed_sender": {
     "vendor": "claude-code",
     "agent_name": "example worker",
@@ -19,27 +19,27 @@
     "transport": "claude_send_message",
     "address": "00000000-0000-4000-8000-000000000102"
   },
-  "in_reply_to": "00000000-0000-4000-8000-000000000001",
+  "in_reply_to": "00000000-0000-4000-8000-000000000010",
   "receipt": {
-    "status": "needs_human_confirmation",
-    "for_message_id": "00000000-0000-4000-8000-000000000001",
-    "detail": "Operator verification is required before operator correlation."
+    "status": "completed",
+    "for_message_id": "00000000-0000-4000-8000-000000000010",
+    "detail": "Synthetic review completed."
   },
   "nonce": null,
-  "intent": "Acknowledge first contact",
+  "intent": "Report a completed synthetic review",
   "action": {
     "risk_class": "informational",
-    "operation": "acknowledge",
+    "operation": "report_result",
     "scope": {
       "repositories": [],
       "paths": [],
       "hosts": [],
       "external_recipients": []
     },
-    "idempotency_key": "00000000-0000-4000-8000-000000000002"
+    "idempotency_key": "00000000-0000-4000-8000-000000000011"
   },
   "authorization": {
-    "basis": "first_contact",
+    "basis": "none",
     "authority": null,
     "reference": null,
     "verified_at": null,
@@ -50,7 +50,7 @@
     "no_external_side_effects": true,
     "no_secrets": true
   },
-  "body": "received; no action taken; operator verification required before operator correlation",
-  "body_sha256": "69398e56ec245ffded87e4c7c318027a645da81ca0206e0696313a55ee2a7a4e",
+  "body": "Review completed; no changes were made.",
+  "body_sha256": "bc774752fe032461ee093d4454f150318aaf31c8c45d788534338e58afc0a302",
   "evidence": []
 }
