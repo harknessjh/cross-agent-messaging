@@ -126,6 +126,21 @@ class ValidationProfileTests(unittest.TestCase):
         self.assertIn("python_implementation", report["runtime"])
         self.assertIn("jsonschema", report["runtime"])
 
+    def test_blob_identity_matches_git_hash_object(self) -> None:
+        git_bin = profile._git_executable()
+        if git_bin is None:
+            self.skipTest("no trusted Git executable is available")
+        for raw in (b"", b"CAM/1\n", b"embedded\x00byte\n"):
+            with self.subTest(raw=raw):
+                result = subprocess.run(
+                    [git_bin, "hash-object", "--stdin"],
+                    input=raw,
+                    check=True,
+                    capture_output=True,
+                )
+                expected = result.stdout.decode("ascii").strip()
+                self.assertEqual(profile._git_blob_id(raw, expected), expected)
+
     def test_profile_digest_is_independent_of_installation_path(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)

@@ -66,7 +66,7 @@ PROFILE_TREE_ROOTS = (
     "schemas",
     "tools",
 )
-_GIT_OBJECT_ID = re.compile(r"[0-9a-f]{40,64}")
+_GIT_OBJECT_ID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
 
 
 class ValidationProfileError(RuntimeError):
@@ -258,7 +258,6 @@ def _run_git(
     git_bin: str,
     root: Path,
     *arguments: str,
-    input_bytes: bytes | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     try:
         return subprocess.run(
@@ -274,8 +273,7 @@ def _run_git(
                 *arguments,
             ],
             check=False,
-            input=input_bytes,
-            stdin=subprocess.DEVNULL if input_bytes is None else None,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             timeout=5,
@@ -426,15 +424,16 @@ def _index_profile_tags(
     return tags, duplicate
 
 
-def _working_blob_id(git_bin: str, root: Path, raw: bytes) -> str:
-    result = _run_git(git_bin, root, "hash-object", "--stdin", input_bytes=raw)
-    object_id = _single_git_line(result.stdout) if result.returncode == 0 else None
-    if object_id is None or _GIT_OBJECT_ID.fullmatch(object_id) is None:
-        raise ValidationProfileError(
-            "profile.source_unavailable",
-            "validation source-control blob identity could not be computed",
-        )
-    return object_id
+def _git_blob_id(raw: bytes, expected_object_id: str) -> str:
+    framed = b"blob " + str(len(raw)).encode("ascii") + b"\x00" + raw
+    if len(expected_object_id) == 40:
+        return hashlib.sha1(framed, usedforsecurity=False).hexdigest()
+    if len(expected_object_id) == 64:
+        return hashlib.sha256(framed).hexdigest()
+    raise ValidationProfileError(
+        "profile.source_unavailable",
+        "validation source-control object format was unsupported",
+    )
 
 
 def _profile_head_state(
@@ -459,7 +458,7 @@ def _profile_head_state(
     )
 
     bytes_match = paths_match and all(
-        _working_blob_id(git_bin, root, raw) == head[path_text][2]
+        _git_blob_id(raw, head[path_text][2]) == head[path_text][2]
         for path_text, raw in working.items()
     )
     return paths_match, bytes_match, index_flags_clean
