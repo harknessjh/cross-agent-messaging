@@ -10,8 +10,23 @@ This temporary boundary preserves clear ownership and the copyright holder's abi
 - Keep transport reachability, sender identity, operator authorization, and completion evidence distinct.
 - Use synthetic identifiers, paths, receipts, and message bodies in every public artifact.
 - Update the schema, examples, reference tools, and tests together when the wire contract changes.
-- Keep the canonical Codex sender and Claude receiver prompts in [the quick start](docs/CODEX_TO_CLAUDE.md); link to them instead of copying variants into other documents.
-- Keep `tools/cam1_transport.py` narrowly local and send-only. Do not add receive, polling, retry, daemon, database, board, raw-socket, or remote behavior. Reply envelopes must be checked against the exact preserved original before transport.
+- Keep the canonical Codex sender and Claude receiver prompts only in
+  [the first-contact runbook](docs/FIRST_CONTACT.md); link to them instead of
+  copying variants into other documents.
+- Keep `tools/cam1_transport.py` narrowly local and send-only. Do not add
+  receive, polling, an automatic retry loop, daemon, database, legacy-board,
+  raw-socket, or remote behavior. The only retry is an explicit, journal-gated
+  repeat of the latest exact intent whose outcome proves dispatch was not
+  attempted.
+  Reply envelopes must be checked against the exact preserved original before
+  transport.
+- Preserve the required Git-bound external journal and its append-only source
+  of truth. Project pointers remain private Git administrative state; journals
+  remain outside repositories. `state-current.json` is a rebuildable atomic
+  projection only.
+- Keep stable full session IDs, human-friendly participant names, and transient
+  Claude routes distinct. Resolve every Claude send through fresh Agent View
+  and `ListAgents` evidence; never introduce UDS routing.
 - Cite dated, primary vendor documentation or exact source revisions for capability claims.
 - Do not change or remove the license, required notice, copyright statements, or other legal terms without the repository owner's explicit decision.
 
@@ -25,6 +40,8 @@ python -m ruff format --check tools tests
 python -m ruff check --select E4,E7,E9,F,I,B,UP --target-version py311 tools tests
 python -m unittest discover --start-directory tests --verbose
 python tools/cam1.py --help
+python tools/cam1.py validation-profile
+python tools/cam1_project.py --help
 python tools/cam1_transport.py --help
 python tools/cam1.py validate tests/fixtures/valid-hello.json --allow-expired
 python tools/cam1.py validate tests/fixtures/valid-ack.json \
@@ -32,7 +49,17 @@ python tools/cam1.py validate tests/fixtures/valid-ack.json \
   --allow-expired
 ```
 
-Also render the Markdown, validate local links, scan for private identifiers and credentials, confirm that onboarding uses a private exchange directory outside the repository, and follow the [public release checklist](docs/PUBLIC_RELEASE_CHECKLIST.md) before publication. Do not run a live transport test unless the operator separately authorizes its exact same-host recipient, callback, and harmless scope.
+The validation profile must identify a clean CAM checkout for release work.
+Dirty-source overrides are development evidence only and must not be used to
+qualify a release.
+
+Also render the Markdown, validate local links, scan for private identifiers and
+credentials, confirm that onboarding uses the required private external
+project journal, confirm that all public onboarding links resolve to the
+canonical first-contact prompts, and follow the
+[public release checklist](docs/PUBLIC_RELEASE_CHECKLIST.md) before a release.
+Do not run a live transport test unless the operator separately authorizes its
+exact same-host recipient, callback, project, and harmless scope.
 
 ## Commit messages
 
@@ -40,4 +67,6 @@ Use short, plain messages focused on the change. Do not include automated attrib
 
 ## Security reports
 
-Do not put sensitive routing metadata or exploit details in a public issue. Follow [SECURITY.md](SECURITY.md). Public release remains blocked until GitHub private vulnerability reporting is enabled and verified during the controlled public cutover; contributors must not invent another address.
+Do not put sensitive routing metadata or exploit details in a public issue.
+Follow [SECURITY.md](SECURITY.md) and use the repository's private vulnerability
+reporting flow.

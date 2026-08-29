@@ -13,7 +13,7 @@
   "recipient": {
     "vendor": "claude-code",
     "agent_name": "example worker",
-    "session_id": null
+    "session_id": "00000000-0000-4000-8000-000000000102"
   },
   "reply_to": {
     "transport": "codex_queue",

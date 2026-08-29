@@ -56,6 +56,7 @@ STATELESS_REPLY_TRANSITIONS = frozenset(
         ("cancel", "ack", "received"),
         ("cancel", "ack", "accepted"),
         ("cancel", "ack", "rejected"),
+        ("cancel", "status", "accepted"),
         ("cancel", "error", "failed"),
     }
 )
@@ -99,6 +100,7 @@ class ValidationResult:
     fresh: bool
     body_hash_valid: bool
     correlated: bool | None
+    validation_profile: dict[str, Any]
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -108,6 +110,7 @@ class ValidationResult:
             "body_hash_valid": self.body_hash_valid,
             "correlated": self.correlated,
             "type": self.envelope["type"],
+            "validation_profile": self.validation_profile,
         }
 
 

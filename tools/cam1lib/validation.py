@@ -13,6 +13,7 @@ import secrets
 import uuid
 from typing import Any
 
+from .profile import validation_profile_report
 from .protocol import (
     DEFAULT_VALIDATION_POLICY,
     RECEIPT_TYPES,
@@ -122,12 +123,14 @@ def _nonce_problem(value: Any) -> Problem | None:
 def _endpoint_matches(actual: Any, expected: Any) -> bool:
     if not isinstance(actual, dict) or not isinstance(expected, dict):
         return False
-    for field in ("vendor", "agent_name"):
-        if actual.get(field) != expected.get(field):
-            return False
-    expected_session = expected.get("session_id")
-    if expected_session is not None and actual.get("session_id") != expected_session:
+    if actual.get("vendor") != expected.get("vendor"):
         return False
+    if actual.get("agent_name") != expected.get("agent_name"):
+        return False
+    expected_session = expected.get("session_id")
+    if expected_session is not None:
+        if not _uuid_values_equal(actual.get("session_id"), expected_session):
+            return False
     expected_host = expected.get("host_id")
     return expected_host is None or actual.get("host_id") == expected_host
 
@@ -201,6 +204,8 @@ def _authorization_time_problems(
 ) -> list[Problem]:
     problems: list[Problem] = []
 
+    envelope_expires, _ = _parse_timestamp(envelope.get("expires_at"), ("expires_at",))
+
     authorization = envelope.get("authorization")
     if isinstance(authorization, dict):
         verified, verified_problem = _parse_timestamp(
@@ -215,6 +220,18 @@ def _authorization_time_problems(
             problems.append(verified_problem)
         if auth_expires_problem:
             problems.append(auth_expires_problem)
+        if (
+            auth_expires is not None
+            and envelope_expires is not None
+            and auth_expires > envelope_expires
+        ):
+            problems.append(
+                Problem(
+                    "semantic.authorization_exceeds_message",
+                    "/authorization/expires_at",
+                    "authorization expiry must not be later than message expiry",
+                )
+            )
         if verified is not None and auth_expires is not None:
             if auth_expires <= verified:
                 problems.append(
@@ -233,6 +250,14 @@ def _authorization_time_problems(
                         "semantic.authorization_future",
                         "/authorization/verified_at",
                         "authorization verification is later than the message",
+                    )
+                )
+            if sent_at is not None and auth_expires <= sent_at:
+                problems.append(
+                    Problem(
+                        "semantic.authorization_expired_before_send",
+                        "/authorization/expires_at",
+                        "authorization expired before the message was sent",
                     )
                 )
     return problems
@@ -320,22 +345,78 @@ def _reply_semantic_problems(envelope: dict[str, Any]) -> list[Problem]:
     return problems
 
 
+def _risk_constraint_problems(envelope: dict[str, Any]) -> list[Problem]:
+    action = envelope.get("action")
+    constraints = envelope.get("constraints")
+    if not isinstance(action, dict) or not isinstance(constraints, dict):
+        return []
+    risk_class = action.get("risk_class")
+    problems: list[Problem] = []
+    if constraints.get("no_repository_changes") is False and risk_class in {
+        "informational",
+        "read_only",
+    }:
+        problems.append(
+            Problem(
+                "semantic.risk_constraints",
+                "/action/risk_class",
+                "repository changes require workspace_write or higher risk",
+            )
+        )
+    if (
+        constraints.get("no_external_side_effects") is False
+        and risk_class != "external_or_irreversible"
+    ):
+        problems.append(
+            Problem(
+                "semantic.risk_constraints",
+                "/action/risk_class",
+                "external side effects require external_or_irreversible risk",
+            )
+        )
+    return problems
+
+
 def _callback_problems(envelope: dict[str, Any]) -> list[Problem]:
     problems: list[Problem] = []
 
     reply_to = envelope.get("reply_to")
-    if isinstance(reply_to, dict) and reply_to.get("transport") == "codex_queue":
-        callback_problem = _uuid_problem(
-            reply_to.get("address"), ("reply_to", "address")
-        )
-        if callback_problem:
-            problems.append(
-                Problem(
-                    "semantic.codex_callback",
-                    "/reply_to/address",
-                    "codex_queue callback must be a literal valid UUID",
-                )
+    sender = envelope.get("claimed_sender")
+    if not isinstance(reply_to, dict) or not isinstance(sender, dict):
+        return problems
+
+    expected_transport = {
+        "codex": "codex_queue",
+        "claude-code": "claude_send_message",
+    }.get(sender.get("vendor"))
+    if expected_transport is None:
+        return problems
+    if reply_to.get("transport") != expected_transport:
+        problems.append(
+            Problem(
+                "semantic.callback_transport",
+                "/reply_to/transport",
+                "reply transport does not match the claimed sender product",
             )
+        )
+
+    callback_problem = _uuid_problem(reply_to.get("address"), ("reply_to", "address"))
+    if callback_problem:
+        problems.append(
+            Problem(
+                "semantic.callback_address",
+                "/reply_to/address",
+                "reply address must be the sender's literal full session UUID",
+            )
+        )
+    elif not _uuid_values_equal(reply_to.get("address"), sender.get("session_id")):
+        problems.append(
+            Problem(
+                "semantic.callback_identity",
+                "/reply_to/address",
+                "reply address does not equal the claimed sender session UUID",
+            )
+        )
     return problems
 
 
@@ -377,6 +458,8 @@ def _transition_problems(
 def _correlation_outcome(
     envelope: dict[str, Any],
     original: dict[str, Any] | None,
+    *,
+    observed_at: dt.datetime,
 ) -> tuple[list[Problem], bool | None]:
     if original is None:
         return [], None
@@ -387,6 +470,18 @@ def _correlation_outcome(
     receipt = envelope.get("receipt")
     in_reply_to = envelope.get("in_reply_to")
     original_id = original.get("message_id")
+    original_expiry, _ = _parse_timestamp(original.get("expires_at"), ("expires_at",))
+    original_sent, _ = _parse_timestamp(original.get("sent_at"), ("sent_at",))
+    reply_sent, _ = _parse_timestamp(envelope.get("sent_at"), ("sent_at",))
+    root_expired_before_reply = (
+        original_expiry is not None and observed_at >= original_expiry
+    )
+    late_rejection = (
+        root_expired_before_reply
+        and message_type == "ack"
+        and isinstance(receipt, dict)
+        and receipt.get("status") == "rejected"
+    )
     transition_problems = _transition_problems(envelope, original)
     if transition_problems:
         correlated = False
@@ -440,10 +535,34 @@ def _correlation_outcome(
             )
         )
 
+    if (
+        original_sent is not None
+        and reply_sent is not None
+        and reply_sent < original_sent
+    ):
+        correlated = False
+        problems.append(
+            Problem(
+                "correlation.reply_before_root",
+                "/sent_at",
+                "reply was sent before the supplied root",
+            )
+        )
+
     original_nonce = original.get("nonce")
     original_type = original.get("type")
     status_value = receipt.get("status") if isinstance(receipt, dict) else None
-    if (
+    if late_rejection:
+        if envelope.get("nonce") is not None:
+            correlated = False
+            problems.append(
+                Problem(
+                    "correlation.late_rejection_nonce",
+                    "/nonce",
+                    "rejection of an expired root must use nonce null",
+                )
+            )
+    elif (
         original_type == "challenge"
         and message_type == "ack"
         and isinstance(status_value, str)
@@ -482,6 +601,20 @@ def _correlation_outcome(
                 "reply does not echo the original challenge nonce",
             )
         )
+    elif (
+        transition_problems
+        and message_type in {"ack", "verify"}
+        and envelope.get("nonce") is not None
+        and envelope.get("nonce") != original_nonce
+    ):
+        correlated = False
+        problems.append(
+            Problem(
+                "correlation.nonce_impossible",
+                "/nonce",
+                "nonce matches no legal reply shape for the supplied original",
+            )
+        )
     return problems, correlated
 
 
@@ -498,7 +631,11 @@ def _semantic_problems(
         policy=policy,
     )
     body_problems, body_hash_valid = _body_hash_outcome(envelope)
-    correlation_problems, correlated = _correlation_outcome(envelope, original)
+    correlation_problems, correlated = _correlation_outcome(
+        envelope,
+        original,
+        observed_at=now,
+    )
     problems = _unique_problems(
         (
             *_identifier_problems(envelope),
@@ -511,6 +648,7 @@ def _semantic_problems(
             *_nonce_semantic_problems(envelope),
             *body_problems,
             *_reply_semantic_problems(envelope),
+            *_risk_constraint_problems(envelope),
             *_callback_problems(envelope),
             *correlation_problems,
         )
@@ -540,6 +678,7 @@ def validate_exact_bytes(
 ) -> ValidationResult:
     """Validate exact serialized CAM/1 bytes and optional reply correlation."""
 
+    validation_profile = validation_profile_report()
     if not isinstance(policy, ValidationPolicy):
         raise CamUsageError(
             "argument.policy",
@@ -554,10 +693,15 @@ def validate_exact_bytes(
 
     original: dict[str, Any] | None = None
     if against_raw is not None:
+        original_policy = ValidationPolicy(
+            allow_expired=True,
+            max_ttl_seconds=policy.max_ttl_seconds,
+            clock_skew_seconds=policy.clock_skew_seconds,
+        )
         original_result = validate_exact_bytes(
             against_raw,
             now=observed_now,
-            policy=policy,
+            policy=original_policy,
         )
         original = original_result.envelope
 
@@ -576,4 +720,5 @@ def validate_exact_bytes(
         fresh=semantic.fresh,
         body_hash_valid=semantic.body_hash_valid,
         correlated=semantic.correlated,
+        validation_profile=validation_profile,
     )

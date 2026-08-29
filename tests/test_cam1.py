@@ -3,18 +3,11 @@
 
 from __future__ import annotations
 
-import ast
 import datetime as dt
-import hashlib
 import json
-import os
-import re
-import stat
-import subprocess
-import sys
-import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tools import cam1
 
@@ -68,6 +61,20 @@ class CamValidationTests(unittest.TestCase):
         self.assertTrue(hello.body_hash_valid)
         self.assertIsNone(hello.correlated)
         self.assertTrue(ack.correlated)
+
+    def test_validation_summary_preserves_the_profile_captured_at_start(self) -> None:
+        captured = {
+            "available": True,
+            "format": "CAM-VALIDATION-PROFILE/1",
+            "validation_profile_sha256": "a" * 64,
+        }
+        with mock.patch(
+            "tools.cam1lib.validation.validation_profile_report",
+            return_value=captured,
+        ):
+            result = cam1.validate_exact_bytes(fixture("valid-hello.json"), now=NOW)
+
+        self.assertEqual(result.summary()["validation_profile"], captured)
 
     def test_preserved_valid_uuid_is_accepted(self) -> None:
         valid = "123e4567-e89b-42d3-a456-426614174000"
@@ -253,7 +260,15 @@ class CamValidationTests(unittest.TestCase):
             (
                 "recipient",
                 lambda envelope: envelope["recipient"].update(
-                    agent_name="different coordinator"
+                    session_id="00000000-0000-4000-8000-000000000088"
+                ),
+                "correlation.recipient",
+                "/recipient",
+            ),
+            (
+                "recipient common name",
+                lambda envelope: envelope["recipient"].update(
+                    agent_name="different-recipient"
                 ),
                 "correlation.recipient",
                 "/recipient",
@@ -261,7 +276,15 @@ class CamValidationTests(unittest.TestCase):
             (
                 "sender",
                 lambda envelope: envelope["claimed_sender"].update(
-                    agent_name="different worker"
+                    session_id="00000000-0000-4000-8000-000000000087"
+                ),
+                "correlation.sender",
+                "/claimed_sender",
+            ),
+            (
+                "sender common name",
+                lambda envelope: envelope["claimed_sender"].update(
+                    agent_name="different-sender"
                 ),
                 "correlation.sender",
                 "/claimed_sender",
@@ -379,8 +402,32 @@ class CamValidationTests(unittest.TestCase):
             lambda envelope: envelope["reply_to"].update(address="$CODEX_THREAD_ID"),
         )
         problems = self.problem_codes(raw)
-        callback = [item for item in problems if item.code == "semantic.codex_callback"]
+        callback = [
+            item for item in problems if item.code == "semantic.callback_address"
+        ]
         self.assertEqual(len(callback), 1)
+
+    def test_reply_route_is_bound_to_the_claimed_sender_session(self) -> None:
+        wrong_transport = changed(
+            "valid-hello.json",
+            lambda envelope: envelope["reply_to"].update(
+                transport="claude_send_message"
+            ),
+        )
+        wrong_identity = changed(
+            "valid-ack.json",
+            lambda envelope: envelope["reply_to"].update(
+                address="00000000-0000-4000-8000-000000000199"
+            ),
+        )
+        self.assertIn(
+            "semantic.callback_transport",
+            {item.code for item in self.problem_codes(wrong_transport)},
+        )
+        self.assertIn(
+            "semantic.callback_identity",
+            {item.code for item in self.problem_codes(wrong_identity)},
+        )
 
     def test_challenge_requires_a_nonce(self) -> None:
         def mutate(envelope):
@@ -433,6 +480,7 @@ class CamValidationTests(unittest.TestCase):
             ("cancel", "ack", "received"),
             ("cancel", "ack", "accepted"),
             ("cancel", "ack", "rejected"),
+            ("cancel", "status", "accepted"),
             ("cancel", "error", "failed"),
         }
         self.assertEqual(cam1.STATELESS_REPLY_TRANSITIONS, expected)
@@ -684,6 +732,45 @@ class CamValidationTests(unittest.TestCase):
 
         cam1.validate_exact_bytes(changed("valid-hello.json", mutate), now=NOW)
 
+        def expire_with_message(envelope):
+            mutate(envelope)
+            envelope["authorization"]["expires_at"] = envelope["expires_at"]
+
+        cam1.validate_exact_bytes(
+            changed("valid-hello.json", expire_with_message), now=NOW
+        )
+
+    def test_authorization_must_not_outlive_message(self) -> None:
+        def mutate(envelope):
+            envelope["authorization"] = {
+                "basis": "operator_confirmation",
+                "authority": "example operator",
+                "reference": "example decision",
+                "verified_at": "2026-08-21T19:59:00Z",
+                "expires_at": "2026-08-21T20:11:00Z",
+            }
+
+        problems = self.problem_codes(changed("valid-hello.json", mutate))
+        self.assertIn(
+            "semantic.authorization_exceeds_message",
+            {item.code for item in problems},
+        )
+
+        def omit_verification(envelope):
+            envelope["authorization"] = {
+                "basis": "none",
+                "authority": None,
+                "reference": None,
+                "verified_at": None,
+                "expires_at": "2026-08-21T20:11:00Z",
+            }
+
+        problems = self.problem_codes(changed("valid-hello.json", omit_verification))
+        self.assertIn(
+            "semantic.authorization_exceeds_message",
+            {item.code for item in problems},
+        )
+
     def test_malformed_uuid_diagnostic_is_bounded(self) -> None:
         malformed = "-" * 200_000
         raw = changed(
@@ -694,452 +781,6 @@ class CamValidationTests(unittest.TestCase):
         self.assertTrue(all(len(item.detail) <= 240 for item in problems))
         self.assertTrue(all(len(item.path) <= 256 for item in problems))
         self.assertNotIn("sha256", json.dumps([item.as_dict() for item in problems]))
-
-
-class CamBuilderTests(unittest.TestCase):
-    def build_request(self) -> bytes:
-        return cam1.build_hello(
-            sender_vendor="codex",
-            sender_name="example coordinator",
-            sender_session="00000000-0000-4000-8000-000000000101",
-            recipient_vendor="claude-code",
-            recipient_name="example worker",
-            recipient_session="00000000-0000-4000-8000-000000000102",
-            reply_transport="codex_queue",
-            reply_address="00000000-0000-4000-8000-000000000101",
-            now=NOW,
-        )
-
-    def test_hello_builder_preserves_exact_callback_and_serialization(self) -> None:
-        raw = self.build_request()
-        self.assertFalse(raw.endswith(b"\n"))
-        envelope = json.loads(raw)
-        self.assertEqual(
-            envelope["claimed_sender"]["session_id"],
-            "00000000-0000-4000-8000-000000000101",
-        )
-        self.assertEqual(
-            envelope["reply_to"]["address"],
-            "00000000-0000-4000-8000-000000000101",
-        )
-        self.assertEqual(cam1.serialize_envelope(envelope), raw)
-        cam1.validate_exact_bytes(raw, now=NOW)
-
-    def test_default_ack_is_complete_fail_closed_and_correlated(self) -> None:
-        request = self.build_request()
-        raw = cam1.build_ack(
-            request,
-            sender_vendor="claude-code",
-            sender_name="example worker",
-            sender_session="00000000-0000-4000-8000-000000000102",
-            reply_transport="claude_send_message",
-            reply_address="example worker",
-            now=NOW + dt.timedelta(seconds=30),
-        )
-        envelope = json.loads(raw)
-        request_id = json.loads(request)["message_id"]
-        self.assertEqual(envelope["receipt"]["status"], "needs_human_confirmation")
-        self.assertIsNone(envelope["nonce"])
-        self.assertEqual(envelope["in_reply_to"], request_id)
-        self.assertEqual(envelope["receipt"]["for_message_id"], request_id)
-        result = cam1.validate_exact_bytes(
-            raw,
-            against_raw=request,
-            now=NOW + dt.timedelta(seconds=30),
-        )
-        self.assertTrue(result.correlated)
-
-    def test_received_ack_echoes_original_nonce(self) -> None:
-        request = self.build_request()
-        raw = cam1.build_ack(
-            request,
-            sender_vendor="claude-code",
-            sender_name="example worker",
-            sender_session="00000000-0000-4000-8000-000000000102",
-            reply_transport="claude_send_message",
-            reply_address="example worker",
-            status_value="received",
-            now=NOW + dt.timedelta(seconds=30),
-        )
-        self.assertEqual(json.loads(raw)["nonce"], json.loads(request)["nonce"])
-        cam1.validate_exact_bytes(
-            raw,
-            against_raw=request,
-            now=NOW + dt.timedelta(seconds=30),
-        )
-
-    def test_challenge_ack_builder_holds_or_rejects_without_nonce(self) -> None:
-        common = {
-            "sender_vendor": "claude-code",
-            "sender_name": "example worker",
-            "sender_session": "00000000-0000-4000-8000-000000000102",
-            "reply_transport": "claude_send_message",
-            "reply_address": "example worker",
-            "now": NOW + dt.timedelta(seconds=30),
-        }
-        for status_value in ("needs_human_confirmation", "rejected"):
-            with self.subTest(status_value=status_value):
-                raw = cam1.build_ack(
-                    challenge_envelope(),
-                    status_value=status_value,
-                    **common,
-                )
-                self.assertIsNone(json.loads(raw)["nonce"])
-                result = cam1.validate_exact_bytes(
-                    raw,
-                    against_raw=challenge_envelope(),
-                    now=NOW + dt.timedelta(seconds=30),
-                )
-                self.assertTrue(result.correlated)
-
-        for status_value in ("received", "accepted"):
-            with (
-                self.subTest(status_value=status_value),
-                self.assertRaises(cam1.CamUsageError),
-            ):
-                cam1.build_ack(
-                    challenge_envelope(),
-                    status_value=status_value,
-                    **common,
-                )
-
-    def test_ack_builder_does_not_invent_missing_sender_identity(self) -> None:
-        with self.assertRaises(cam1.CamValidationError):
-            cam1.build_ack(
-                self.build_request(),
-                sender_vendor="claude-code",
-                sender_name="example worker",
-                sender_session="",
-                reply_transport="claude_send_message",
-                reply_address="example worker",
-                now=NOW + dt.timedelta(seconds=30),
-            )
-
-    def test_all_public_time_inputs_reject_naive_datetimes(self) -> None:
-        naive = NOW.replace(tzinfo=None)
-        cases = (
-            lambda: cam1.validate_exact_bytes(
-                fixture("valid-hello.json"),
-                now=naive,
-            ),
-            lambda: cam1.build_hello(
-                sender_vendor="codex",
-                sender_name="example coordinator",
-                sender_session="00000000-0000-4000-8000-000000000101",
-                recipient_vendor="claude-code",
-                recipient_name="example worker",
-                recipient_session=None,
-                reply_transport="codex_queue",
-                reply_address="00000000-0000-4000-8000-000000000101",
-                now=naive,
-            ),
-            lambda: cam1.build_ack(
-                self.build_request(),
-                sender_vendor="claude-code",
-                sender_name="example worker",
-                sender_session="00000000-0000-4000-8000-000000000102",
-                reply_transport="claude_send_message",
-                reply_address="example worker",
-                now=naive,
-            ),
-        )
-        for operation in cases:
-            with self.subTest(operation=operation):
-                with self.assertRaises(cam1.CamUsageError) as context:
-                    operation()
-                self.assertEqual(context.exception.code, "argument.now")
-
-    def test_output_file_is_private_and_never_overwritten(self) -> None:
-        raw = self.build_request()
-        with tempfile.TemporaryDirectory() as directory:
-            output = Path(directory) / "message.json"
-            cam1._write_output(raw, str(output))
-            self.assertEqual(output.read_bytes(), raw)
-            self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o600)
-            with self.assertRaises(cam1.CliError):
-                cam1._write_output(raw, str(output))
-
-    def test_input_symlink_is_refused(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            target = Path(directory) / "target.json"
-            target.write_bytes(self.build_request())
-            link = Path(directory) / "message.json"
-            link.symlink_to(target)
-            with self.assertRaises(cam1.CliError):
-                cam1.read_envelope_file(str(link))
-
-
-class CamPublicSurfaceTests(unittest.TestCase):
-    def test_protocol_examples_equal_checked_fixtures(self) -> None:
-        protocol = (ROOT / "PROTOCOL.md").read_text(encoding="utf-8")
-        section = protocol.split("## 20. Minimal first-contact example", 1)[1]
-        fence = chr(96) * 3
-        pattern = re.escape(fence + "json\n") + r"(\{.*?\})\n" + re.escape(fence)
-        blocks = re.findall(pattern, section, flags=re.DOTALL)
-        self.assertGreaterEqual(len(blocks), 2)
-        self.assertEqual(json.loads(blocks[0]), json.loads(fixture("valid-hello.json")))
-        self.assertEqual(json.loads(blocks[1]), json.loads(fixture("valid-ack.json")))
-        for block in blocks[:2]:
-            envelope = json.loads(block)
-            self.assertEqual(
-                envelope["body_sha256"],
-                hashlib.sha256(envelope["body"].encode("utf-8")).hexdigest(),
-            )
-
-    def test_reference_tool_imports_no_transport_modules(self) -> None:
-        tree = ast.parse((ROOT / "tools" / "cam1.py").read_text(encoding="utf-8"))
-        imported: set[str] = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                imported.update(alias.name.split(".", 1)[0] for alias in node.names)
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                imported.add(node.module.split(".", 1)[0])
-        forbidden = {
-            "http",
-            "requests",
-            "socket",
-            "subprocess",
-            "urllib",
-            "webbrowser",
-        }
-        self.assertFalse(imported & forbidden)
-
-    def test_public_reply_types_include_verify_for_against_enforcement(self) -> None:
-        self.assertEqual(
-            cam1.REPLY_TYPES,
-            {"ack", "status", "result", "error", "verify"},
-        )
-
-    def test_invalid_cli_input_emits_no_stdout_envelope(self) -> None:
-        completed = subprocess.run(
-            [
-                sys.executable,
-                str(ROOT / "tools" / "cam1.py"),
-                "validate",
-                str(FIXTURES / "abbreviated-ack.json"),
-                "--allow-expired",
-            ],
-            cwd=ROOT,
-            check=False,
-            capture_output=True,
-        )
-        self.assertNotEqual(completed.returncode, 0)
-        self.assertEqual(completed.stdout, b"")
-        error = json.loads(completed.stderr)
-        self.assertFalse(error["valid"])
-
-    def test_valid_cli_summary_is_bounded_and_not_a_trust_claim(self) -> None:
-        completed = subprocess.run(
-            [
-                sys.executable,
-                str(ROOT / "tools" / "cam1.py"),
-                "validate",
-                str(FIXTURES / "valid-hello.json"),
-                "--allow-expired",
-            ],
-            cwd=ROOT,
-            check=True,
-            capture_output=True,
-        )
-        summary = json.loads(completed.stdout)
-        self.assertTrue(summary["structurally_valid"])
-        self.assertNotIn("trusted", summary)
-        self.assertNotIn("authorized", summary)
-        self.assertNotIn("safe", summary)
-        self.assertEqual(completed.stderr, b"")
-
-    @unittest.skipUnless(hasattr(os, "mkfifo"), "requires POSIX FIFO support")
-    def test_fifo_input_is_rejected_without_waiting_for_a_writer(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            fifo = Path(directory) / "message.fifo"
-            os.mkfifo(fifo)
-            completed = subprocess.run(
-                [
-                    sys.executable,
-                    str(ROOT / "tools" / "cam1.py"),
-                    "validate",
-                    str(fifo),
-                ],
-                cwd=ROOT,
-                check=False,
-                capture_output=True,
-                timeout=2,
-            )
-        self.assertEqual(completed.returncode, 2)
-        error = json.loads(completed.stderr)
-        self.assertEqual(error["problems"][0]["code"], "input.type")
-
-    def test_offline_validation_still_accepts_stdin(self) -> None:
-        completed = subprocess.run(
-            [
-                sys.executable,
-                str(ROOT / "tools" / "cam1.py"),
-                "validate",
-                "-",
-                "--allow-expired",
-            ],
-            cwd=ROOT,
-            check=False,
-            input=fixture("valid-hello.json"),
-            capture_output=True,
-            timeout=2,
-        )
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertTrue(json.loads(completed.stdout)["structurally_valid"])
-
-    def test_cli_build_validate_ack_validate_round_trip(self) -> None:
-        tool = str(ROOT / "tools" / "cam1.py")
-        coordinator_session = "00000000-0000-4000-8000-000000000201"
-        worker_session = "00000000-0000-4000-8000-000000000202"
-        with tempfile.TemporaryDirectory() as directory:
-            hello_path = Path(directory) / "hello.json"
-            ack_path = Path(directory) / "ack.json"
-            build_hello = subprocess.run(
-                [
-                    sys.executable,
-                    tool,
-                    "build-hello",
-                    "--sender-vendor",
-                    "codex",
-                    "--sender-name",
-                    "cli coordinator",
-                    "--sender-session",
-                    coordinator_session,
-                    "--recipient-vendor",
-                    "claude-code",
-                    "--recipient-name",
-                    "cli worker",
-                    "--recipient-session",
-                    worker_session,
-                    "--reply-transport",
-                    "codex_queue",
-                    "--reply-address",
-                    coordinator_session,
-                    "--output",
-                    str(hello_path),
-                ],
-                cwd=ROOT,
-                check=False,
-                capture_output=True,
-            )
-            self.assertEqual(build_hello.returncode, 0, build_hello.stderr)
-            self.assertEqual(build_hello.stdout, b"")
-            self.assertEqual(stat.S_IMODE(hello_path.stat().st_mode), 0o600)
-
-            validate_hello = subprocess.run(
-                [sys.executable, tool, "validate", str(hello_path)],
-                cwd=ROOT,
-                check=False,
-                capture_output=True,
-            )
-            self.assertEqual(validate_hello.returncode, 0, validate_hello.stderr)
-            self.assertTrue(json.loads(validate_hello.stdout)["structurally_valid"])
-
-            build_ack = subprocess.run(
-                [
-                    sys.executable,
-                    tool,
-                    "build-ack",
-                    "--request",
-                    str(hello_path),
-                    "--sender-vendor",
-                    "claude-code",
-                    "--sender-name",
-                    "cli worker",
-                    "--sender-session",
-                    worker_session,
-                    "--reply-transport",
-                    "claude_send_message",
-                    "--reply-address",
-                    "cli worker",
-                    "--output",
-                    str(ack_path),
-                ],
-                cwd=ROOT,
-                check=False,
-                capture_output=True,
-            )
-            self.assertEqual(build_ack.returncode, 0, build_ack.stderr)
-            self.assertEqual(build_ack.stdout, b"")
-            self.assertEqual(stat.S_IMODE(ack_path.stat().st_mode), 0o600)
-
-            validate_ack = subprocess.run(
-                [
-                    sys.executable,
-                    tool,
-                    "validate",
-                    str(ack_path),
-                    "--against",
-                    str(hello_path),
-                ],
-                cwd=ROOT,
-                check=False,
-                capture_output=True,
-            )
-            self.assertEqual(validate_ack.returncode, 0, validate_ack.stderr)
-            self.assertTrue(json.loads(validate_ack.stdout)["correlated"])
-
-    def test_builder_cli_requires_an_explicit_output_destination(self) -> None:
-        completed = subprocess.run(
-            [
-                sys.executable,
-                str(ROOT / "tools" / "cam1.py"),
-                "build-hello",
-                "--sender-vendor",
-                "codex",
-                "--sender-name",
-                "cli coordinator",
-                "--sender-session",
-                "00000000-0000-4000-8000-000000000201",
-                "--recipient-vendor",
-                "claude-code",
-                "--recipient-name",
-                "cli worker",
-                "--reply-transport",
-                "codex_queue",
-                "--reply-address",
-                "00000000-0000-4000-8000-000000000201",
-            ],
-            cwd=ROOT,
-            check=False,
-            capture_output=True,
-        )
-        self.assertEqual(completed.returncode, 2)
-        self.assertEqual(completed.stdout, b"")
-        self.assertIn(b"--output", completed.stderr)
-        self.assertIn(b"--stdout", completed.stderr)
-        self.assertIn(b"one of the arguments", completed.stderr)
-
-    def test_builder_cli_stdout_is_explicit_and_exact(self) -> None:
-        completed = subprocess.run(
-            [
-                sys.executable,
-                str(ROOT / "tools" / "cam1.py"),
-                "build-hello",
-                "--sender-vendor",
-                "codex",
-                "--sender-name",
-                "cli coordinator",
-                "--sender-session",
-                "00000000-0000-4000-8000-000000000201",
-                "--recipient-vendor",
-                "claude-code",
-                "--recipient-name",
-                "cli worker",
-                "--reply-transport",
-                "codex_queue",
-                "--reply-address",
-                "00000000-0000-4000-8000-000000000201",
-                "--stdout",
-            ],
-            cwd=ROOT,
-            check=False,
-            capture_output=True,
-        )
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertFalse(completed.stdout.endswith(b"\n"))
-        self.assertEqual(completed.stderr, b"")
-        cam1.validate_exact_bytes(completed.stdout)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,246 @@
+# SPDX-FileCopyrightText: 2026 John Harkness
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
+from __future__ import annotations
+
+import shutil
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from tools.cam1lib import profile
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class ValidationProfileTests(unittest.TestCase):
+    def copied_profile_root(self, destination: Path) -> Path:
+        for relative in profile.REQUIRED_PROFILE_PATHS:
+            source = ROOT / relative
+            target = destination / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, target)
+        for pattern in profile.PROFILE_GLOBS:
+            for source in ROOT.glob(pattern):
+                target = destination / source.relative_to(ROOT)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, target)
+        return destination
+
+    def initialized_git_profile_root(self, destination: Path) -> tuple[Path, str]:
+        git_bin = profile._git_executable()
+        if git_bin is None:
+            self.skipTest("no trusted Git executable is available")
+        copied = self.copied_profile_root(destination)
+        subprocess.run(
+            [git_bin, "-C", str(copied), "init", "--quiet"],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            [git_bin, "-C", str(copied), "add", "."],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            [
+                git_bin,
+                "-C",
+                str(copied),
+                "-c",
+                "user.name=CAM Tests",
+                "-c",
+                "user.email=cam-tests@example.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                "fixture",
+            ],
+            check=True,
+            capture_output=True,
+        )
+        return copied, git_bin
+
+    def test_profile_digest_changes_with_validation_source_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            copied = self.copied_profile_root(Path(directory))
+            before = profile.build_validation_profile(copied)
+            validation_path = copied / "tools" / "cam1lib" / "validation.py"
+            validation_path.write_bytes(validation_path.read_bytes() + b"\n# changed\n")
+            after = profile.build_validation_profile(copied)
+
+        self.assertNotEqual(
+            before.validation_profile_sha256,
+            after.validation_profile_sha256,
+        )
+        self.assertEqual(before.source_control.kind, "not_git")
+        self.assertEqual(after.source_control.kind, "not_git")
+
+    def test_profile_includes_every_top_level_cam_tool(self) -> None:
+        profiled = {
+            path.relative_to(ROOT).as_posix() for path in profile._profile_paths(ROOT)
+        }
+        expected = {
+            path.relative_to(ROOT).as_posix() for path in ROOT.glob("tools/cam1*.py")
+        }
+
+        self.assertTrue(expected)
+        self.assertLessEqual(expected, profiled)
+
+    def test_profile_reports_runtime_outside_the_source_digest(self) -> None:
+        report = profile.validation_profile_report()
+        self.assertTrue(report["available"])
+        self.assertRegex(report["validation_profile_sha256"], r"\A[0-9a-f]{64}\Z")
+        self.assertIn("python", report["runtime"])
+        self.assertIn("python_implementation", report["runtime"])
+        self.assertIn("jsonschema", report["runtime"])
+
+    def test_profile_digest_is_independent_of_installation_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            first = profile.build_validation_profile(
+                self.copied_profile_root(base / "first")
+            )
+            second = profile.build_validation_profile(
+                self.copied_profile_root(base / "different" / "second")
+            )
+
+        self.assertEqual(
+            first.validation_profile_sha256,
+            second.validation_profile_sha256,
+        )
+
+    def test_actual_git_checkout_reports_clean_tracked_and_untracked_state(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            copied, _ = self.initialized_git_profile_root(Path(directory))
+            clean = profile.build_validation_profile(copied)
+            self.assertEqual(clean.source_control.kind, "git")
+            self.assertFalse(clean.source_control.dirty)
+            with mock.patch.object(
+                profile, "current_validation_profile", return_value=clean
+            ):
+                self.assertIs(profile.require_live_profile(allow_dirty=False), clean)
+
+            validation_path = copied / "tools" / "cam1lib" / "validation.py"
+            original = validation_path.read_bytes()
+            validation_path.write_bytes(original + b"\n# tracked change\n")
+            tracked = profile.build_validation_profile(copied)
+            self.assertTrue(tracked.source_control.dirty)
+
+            validation_path.write_bytes(original)
+            (copied / "untracked.txt").write_text("untracked\n", encoding="utf-8")
+            untracked = profile.build_validation_profile(copied)
+            self.assertTrue(untracked.source_control.dirty)
+
+    def test_missing_required_schema_and_unusable_git_metadata_fail_closed(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            missing = self.copied_profile_root(base / "missing")
+            (missing / "schemas" / "cam-journal-record-1.schema.json").unlink()
+            with self.assertRaises(profile.ValidationProfileError) as missing_error:
+                profile.build_validation_profile(missing)
+            self.assertEqual(missing_error.exception.code, "profile.component_missing")
+
+            unusable = self.copied_profile_root(base / "unusable")
+            (unusable / ".git").write_text("not valid git metadata\n", encoding="utf-8")
+            unavailable = profile.build_validation_profile(unusable)
+            self.assertEqual(unavailable.source_control.kind, "unavailable")
+            with (
+                mock.patch.object(
+                    profile, "current_validation_profile", return_value=unavailable
+                ),
+                self.assertRaises(profile.ValidationProfileError) as blocked,
+            ):
+                profile.require_live_profile(allow_dirty=False)
+            self.assertEqual(blocked.exception.code, "profile.source_unavailable")
+
+    def test_dirty_source_requires_an_exact_explicit_override(self) -> None:
+        dirty = profile.ValidationProfile(
+            validation_profile_sha256="a" * 64,
+            component_count=1,
+            source_control=profile.SourceControlState("git", "b" * 40, True),
+            python_implementation="TestPython",
+            python_version="3.test",
+            jsonschema_version="test",
+            referencing_version="test",
+            rpds_py_version="test",
+            rfc3339_validator_version="test",
+        )
+        with mock.patch.object(
+            profile, "current_validation_profile", return_value=dirty
+        ):
+            with self.assertRaises(profile.ValidationProfileError) as blocked:
+                profile.require_live_profile(allow_dirty=False)
+            self.assertEqual(blocked.exception.code, "profile.dirty_source")
+
+            with self.assertRaises(profile.ValidationProfileError) as unpinned:
+                profile.require_live_profile(allow_dirty=True)
+            self.assertEqual(unpinned.exception.code, "profile.override_unpinned")
+
+            with self.assertRaises(profile.ValidationProfileError) as mismatch:
+                profile.require_live_profile(
+                    allow_dirty=True,
+                    expected_sha256="c" * 64,
+                )
+            self.assertEqual(mismatch.exception.code, "profile.digest_mismatch")
+
+            accepted = profile.require_live_profile(
+                allow_dirty=True,
+                expected_sha256="a" * 64,
+            )
+            self.assertIs(accepted, dirty)
+
+    def test_unverifiable_and_non_git_sources_fail_live(self) -> None:
+        unavailable = profile.ValidationProfile(
+            validation_profile_sha256="a" * 64,
+            component_count=1,
+            source_control=profile.SourceControlState("unavailable", None, None),
+            python_implementation="TestPython",
+            python_version="3.test",
+            jsonschema_version=None,
+            referencing_version=None,
+            rpds_py_version=None,
+            rfc3339_validator_version=None,
+        )
+        non_git = profile.ValidationProfile(
+            validation_profile_sha256="a" * 64,
+            component_count=1,
+            source_control=profile.SourceControlState("not_git", None, None),
+            python_implementation="TestPython",
+            python_version="3.test",
+            jsonschema_version=None,
+            referencing_version=None,
+            rpds_py_version=None,
+            rfc3339_validator_version=None,
+        )
+        with mock.patch.object(
+            profile, "current_validation_profile", return_value=unavailable
+        ):
+            with self.assertRaises(profile.ValidationProfileError) as context:
+                profile.require_live_profile(allow_dirty=False)
+            self.assertEqual(context.exception.code, "profile.source_unavailable")
+        with mock.patch.object(
+            profile, "current_validation_profile", return_value=non_git
+        ):
+            with self.assertRaises(profile.ValidationProfileError) as context:
+                profile.require_live_profile(allow_dirty=False)
+            self.assertEqual(context.exception.code, "profile.source_unversioned")
+            with self.assertRaises(profile.ValidationProfileError) as overridden:
+                profile.require_live_profile(
+                    allow_dirty=True,
+                    expected_sha256="a" * 64,
+                )
+            self.assertEqual(
+                overridden.exception.code,
+                "profile.source_unversioned",
+            )
+
+
+if __name__ == "__main__":
+    unittest.main()
