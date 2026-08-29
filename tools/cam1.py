@@ -10,18 +10,29 @@ compatibility seams, and command behavior.
 
 from __future__ import annotations
 
-if __package__:
-    from .cam1lib import builders as _builders
-    from .cam1lib import cli as _cli
-    from .cam1lib import profile as _profile
-    from .cam1lib import protocol as _protocol
-    from .cam1lib import validation as _validation
-else:  # Direct execution: ``python tools/cam1.py``.
-    from cam1lib import builders as _builders
-    from cam1lib import cli as _cli
-    from cam1lib import profile as _profile
-    from cam1lib import protocol as _protocol
-    from cam1lib import validation as _validation
+import sys
+
+# Do not execute adjacent, ignored bytecode while loading the audited modules.
+_previous_dont_write_bytecode = sys.dont_write_bytecode
+_previous_pycache_prefix = sys.pycache_prefix
+sys.dont_write_bytecode = True
+sys.pycache_prefix = "/dev/null/cam1"
+try:
+    if __package__:
+        from .cam1lib import builders as _builders
+        from .cam1lib import cli as _cli
+        from .cam1lib import profile as _profile
+        from .cam1lib import protocol as _protocol
+        from .cam1lib import validation as _validation
+    else:  # Direct execution: ``python tools/cam1.py``.
+        from cam1lib import builders as _builders
+        from cam1lib import cli as _cli
+        from cam1lib import profile as _profile
+        from cam1lib import protocol as _protocol
+        from cam1lib import validation as _validation
+finally:
+    sys.dont_write_bytecode = _previous_dont_write_bytecode
+    sys.pycache_prefix = _previous_pycache_prefix
 
 # Wire contract, limits, and result types.
 ROOT = _protocol.ROOT

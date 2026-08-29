@@ -138,12 +138,19 @@ command such as `python3.12`. Do not send unless tests pass, the project status
 and journal verify cleanly, the local doctor succeeds, and Claude preflight
 resolves the intended full session UUID to one fresh local route.
 
-The validation-profile command reports a deterministic digest of the reference
-Python tools, schemas, and runtime requirements plus separate Git and runtime
-metadata. A clean checkout is required for ordinary live sends. `doctor` and
-the send commands refuse a dirty CAM checkout by default, so a commit name
-cannot silently describe different validation rules. Offline validation still
-reports its actual profile on both successful and rejected verdicts.
+The validation-profile command reports a deterministic digest of every Python
+source below `tools/`, the schemas, runtime requirements, and any importable
+binary or sourceless modules outside standard `__pycache__` directories, plus
+separate Git and runtime metadata. It also requires a concrete HEAD commit,
+compares the complete profile path set and exact working bytes with regular
+blobs in that commit, and rejects assume-unchanged, skip-worktree, or sparse
+index state on those paths. The public tool facades do not consult adjacent
+ignored bytecode while loading those audited modules; standard bytecode caches
+remain derived, unaudited artifacts rather than alternate executable inputs.
+A clean checkout is required for ordinary live sends. `doctor` and the send
+commands refuse a dirty CAM checkout by default, so a commit name cannot
+silently describe different validation rules. Offline validation still reports
+its actual profile on both successful and rejected verdicts.
 
 Offline building and validation may run from an unpacked source archive, but
 the supported live adapters require a verifiable Git checkout. A profile digest
@@ -157,6 +164,10 @@ requires both global options before the subcommand:
 --allow-dirty-validator
 --expected-validation-profile-sha256 EXACT_REPORTED_DIGEST
 ```
+
+That override may cover ordinary edits to profile files already tracked in
+HEAD. It cannot override a missing HEAD, a changed profile path set, or
+concealed/sparse index flags.
 
 `doctor` reports the selected profile and whether live use is blocked. An
 actual send records the profile and any override used in the outbound journal;

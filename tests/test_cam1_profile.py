@@ -3,8 +3,13 @@
 
 from __future__ import annotations
 
+import importlib.util
+import json
+import os
+import py_compile
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,6 +21,26 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ValidationProfileTests(unittest.TestCase):
+    def assert_live_profile_error(
+        self,
+        snapshot: profile.ValidationProfile,
+        expected_code: str,
+        *,
+        allow_dirty: bool,
+    ) -> None:
+        expected_sha256 = snapshot.validation_profile_sha256 if allow_dirty else None
+        with (
+            mock.patch.object(
+                profile, "current_validation_profile", return_value=snapshot
+            ),
+            self.assertRaises(profile.ValidationProfileError) as context,
+        ):
+            profile.require_live_profile(
+                allow_dirty=allow_dirty,
+                expected_sha256=expected_sha256,
+            )
+        self.assertEqual(context.exception.code, expected_code)
+
     def copied_profile_root(self, destination: Path) -> Path:
         for relative in profile.REQUIRED_PROFILE_PATHS:
             source = ROOT / relative
@@ -24,6 +49,10 @@ class ValidationProfileTests(unittest.TestCase):
             shutil.copyfile(source, target)
         for pattern in profile.PROFILE_GLOBS:
             for source in ROOT.glob(pattern):
+                if not profile._profile_relative_path(
+                    source.relative_to(ROOT).as_posix()
+                ):
+                    continue
                 target = destination / source.relative_to(ROOT)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(source, target)
@@ -120,6 +149,9 @@ class ValidationProfileTests(unittest.TestCase):
             clean = profile.build_validation_profile(copied)
             self.assertEqual(clean.source_control.kind, "git")
             self.assertFalse(clean.source_control.dirty)
+            self.assertTrue(clean.source_control.profile_paths_match_head)
+            self.assertTrue(clean.source_control.profile_bytes_match_head)
+            self.assertTrue(clean.source_control.profile_index_flags_clean)
             with mock.patch.object(
                 profile, "current_validation_profile", return_value=clean
             ):
@@ -130,11 +162,254 @@ class ValidationProfileTests(unittest.TestCase):
             validation_path.write_bytes(original + b"\n# tracked change\n")
             tracked = profile.build_validation_profile(copied)
             self.assertTrue(tracked.source_control.dirty)
+            self.assertTrue(tracked.source_control.profile_paths_match_head)
+            self.assertFalse(tracked.source_control.profile_bytes_match_head)
+            self.assertTrue(tracked.source_control.profile_index_flags_clean)
+            with mock.patch.object(
+                profile, "current_validation_profile", return_value=tracked
+            ):
+                self.assertIs(
+                    profile.require_live_profile(
+                        allow_dirty=True,
+                        expected_sha256=tracked.validation_profile_sha256,
+                    ),
+                    tracked,
+                )
 
             validation_path.write_bytes(original)
             (copied / "untracked.txt").write_text("untracked\n", encoding="utf-8")
             untracked = profile.build_validation_profile(copied)
             self.assertTrue(untracked.source_control.dirty)
+            self.assertTrue(untracked.source_control.profile_paths_match_head)
+            self.assertTrue(untracked.source_control.profile_bytes_match_head)
+            self.assertTrue(untracked.source_control.profile_index_flags_clean)
+
+    def test_missing_head_is_never_accepted_for_live_use(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            copied = self.copied_profile_root(Path(directory))
+            git_bin = profile._git_executable()
+            if git_bin is None:
+                self.skipTest("no trusted Git executable is available")
+            subprocess.run(
+                [git_bin, "-C", str(copied), "init", "--quiet"],
+                check=True,
+                capture_output=True,
+            )
+            (copied / ".git" / "info" / "exclude").write_text("*\n", encoding="utf-8")
+            unborn = profile.build_validation_profile(copied)
+
+        self.assertEqual(unborn.source_control.kind, "git")
+        self.assertIsNone(unborn.source_control.git_head)
+        self.assertIsNone(unborn.source_control.dirty)
+        for allow_dirty in (False, True):
+            with self.subTest(allow_dirty=allow_dirty):
+                self.assert_live_profile_error(
+                    unborn,
+                    "profile.source_unversioned",
+                    allow_dirty=allow_dirty,
+                )
+
+    def test_unrelated_head_with_ignored_profile_files_is_not_live(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            copied = self.copied_profile_root(Path(directory))
+            git_bin = profile._git_executable()
+            if git_bin is None:
+                self.skipTest("no trusted Git executable is available")
+            unrelated = copied / "unrelated.txt"
+            unrelated.write_text("unrelated\n", encoding="utf-8")
+            subprocess.run(
+                [git_bin, "-C", str(copied), "init", "--quiet"],
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                [git_bin, "-C", str(copied), "add", "unrelated.txt"],
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                [
+                    git_bin,
+                    "-C",
+                    str(copied),
+                    "-c",
+                    "user.name=CAM Tests",
+                    "-c",
+                    "user.email=cam-tests@example.invalid",
+                    "commit",
+                    "--quiet",
+                    "-m",
+                    "unrelated fixture",
+                ],
+                check=True,
+                capture_output=True,
+            )
+            (copied / ".git" / "info" / "exclude").write_text(
+                "cam-1.schema.json\nrequirements.txt\nschemas/\ntools/\n",
+                encoding="utf-8",
+            )
+            unrelated_head = profile.build_validation_profile(copied)
+
+        self.assertTrue(unrelated_head.source_control.dirty)
+        self.assertFalse(unrelated_head.source_control.profile_paths_match_head)
+        self.assert_live_profile_error(
+            unrelated_head,
+            "profile.path_set_mismatch",
+            allow_dirty=True,
+        )
+
+    def test_ignored_profile_addition_is_not_a_live_override(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            copied, _ = self.initialized_git_profile_root(Path(directory))
+            relative = Path("tools/cam1lib/ignored_extension.py")
+            (copied / relative).write_text("IGNORED = True\n", encoding="utf-8")
+            (copied / ".git" / "info" / "exclude").write_text(
+                f"{relative.as_posix()}\n", encoding="utf-8"
+            )
+            hidden = profile.build_validation_profile(copied)
+
+        self.assertTrue(hidden.source_control.dirty)
+        self.assertFalse(hidden.source_control.profile_paths_match_head)
+        self.assert_live_profile_error(
+            hidden,
+            "profile.path_set_mismatch",
+            allow_dirty=True,
+        )
+
+    def test_ignored_python_shadow_module_is_not_a_live_override(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            copied, _ = self.initialized_git_profile_root(Path(directory))
+            relative = Path("tools/platform.py")
+            (copied / relative).write_text(
+                "def python_implementation():\n"
+                "    return 'shadow'\n\n"
+                "def python_version():\n"
+                "    return '0'\n",
+                encoding="utf-8",
+            )
+            (copied / ".git" / "info" / "exclude").write_text(
+                f"{relative.as_posix()}\n", encoding="utf-8"
+            )
+            hidden = profile.build_validation_profile(copied)
+
+        self.assertTrue(hidden.source_control.dirty)
+        self.assertFalse(hidden.source_control.profile_paths_match_head)
+        self.assert_live_profile_error(
+            hidden,
+            "profile.path_set_mismatch",
+            allow_dirty=True,
+        )
+
+    def test_supported_entry_points_ignore_adjacent_profile_bytecode(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            copied, _ = self.initialized_git_profile_root(Path(directory))
+            profile_path = copied / "tools" / "cam1lib" / "profile.py"
+            marker = copied / "poison-executed"
+            original = profile_path.read_bytes()
+            metadata = profile_path.stat()
+            payload = (
+                "from pathlib import Path\n"
+                f"Path({str(marker)!r}).write_text('executed', encoding='utf-8')\n"
+                "raise RuntimeError('poisoned profile bytecode executed')\n"
+            ).encode()
+            self.assertLess(len(payload) + 2, len(original))
+            payload += b"#" + b" " * (len(original) - len(payload) - 2) + b"\n"
+            self.assertEqual(len(payload), len(original))
+
+            cache_path = Path(importlib.util.cache_from_source(str(profile_path)))
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            profile_path.write_bytes(payload)
+            os.utime(profile_path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+            py_compile.compile(
+                str(profile_path),
+                cfile=str(cache_path),
+                doraise=True,
+            )
+            profile_path.write_bytes(original)
+            os.utime(profile_path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+
+            environment = os.environ.copy()
+            environment.pop("PYTHONPYCACHEPREFIX", None)
+            commands = (
+                ("tools/cam1.py", "validation-profile"),
+                ("tools/cam1_project.py", "--help"),
+                ("tools/cam1_transport.py", "--help"),
+            )
+            for command in commands:
+                with self.subTest(entry_point=command[0]):
+                    result = subprocess.run(
+                        [sys.executable, *command],
+                        cwd=copied,
+                        env=environment,
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertFalse(marker.exists())
+            report = json.loads(
+                subprocess.run(
+                    [sys.executable, "tools/cam1.py", "validation-profile"],
+                    cwd=copied,
+                    env=environment,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout
+            )
+            self.assertTrue(report["available"])
+
+    def test_profile_index_concealment_is_not_a_live_override(self) -> None:
+        for flag in ("--assume-unchanged", "--skip-worktree"):
+            with self.subTest(flag=flag), tempfile.TemporaryDirectory() as directory:
+                copied, git_bin = self.initialized_git_profile_root(Path(directory))
+                relative = Path("tools/cam1lib/profile.py")
+                subprocess.run(
+                    [git_bin, "-C", str(copied), "update-index", flag, str(relative)],
+                    check=True,
+                    capture_output=True,
+                )
+                target = copied / relative
+                target.write_bytes(target.read_bytes() + b"\n# concealed\n")
+                hidden = profile.build_validation_profile(copied)
+
+                self.assertTrue(hidden.source_control.dirty)
+                self.assertTrue(hidden.source_control.profile_paths_match_head)
+                self.assertFalse(hidden.source_control.profile_bytes_match_head)
+                self.assertFalse(hidden.source_control.profile_index_flags_clean)
+                self.assert_live_profile_error(
+                    hidden,
+                    "profile.index_concealment",
+                    allow_dirty=True,
+                )
+
+    def test_sparse_profile_omission_is_not_a_live_override(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            copied, git_bin = self.initialized_git_profile_root(Path(directory))
+            relative = Path("tools/cam1lib/errors.py")
+            subprocess.run(
+                [
+                    git_bin,
+                    "-C",
+                    str(copied),
+                    "update-index",
+                    "--skip-worktree",
+                    str(relative),
+                ],
+                check=True,
+                capture_output=True,
+            )
+            (copied / relative).unlink()
+            sparse = profile.build_validation_profile(copied)
+
+        self.assertTrue(sparse.source_control.dirty)
+        self.assertFalse(sparse.source_control.profile_paths_match_head)
+        self.assertFalse(sparse.source_control.profile_index_flags_clean)
+        self.assert_live_profile_error(
+            sparse,
+            "profile.path_set_mismatch",
+            allow_dirty=True,
+        )
 
     def test_missing_required_schema_and_unusable_git_metadata_fail_closed(
         self,
@@ -164,7 +439,14 @@ class ValidationProfileTests(unittest.TestCase):
         dirty = profile.ValidationProfile(
             validation_profile_sha256="a" * 64,
             component_count=1,
-            source_control=profile.SourceControlState("git", "b" * 40, True),
+            source_control=profile.SourceControlState(
+                "git",
+                "b" * 40,
+                True,
+                profile_paths_match_head=True,
+                profile_bytes_match_head=False,
+                profile_index_flags_clean=True,
+            ),
             python_implementation="TestPython",
             python_version="3.test",
             jsonschema_version="test",

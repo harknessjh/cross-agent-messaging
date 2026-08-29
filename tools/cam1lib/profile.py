@@ -15,7 +15,7 @@ import stat
 import subprocess
 from dataclasses import dataclass
 from functools import lru_cache
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -49,10 +49,22 @@ REQUIRED_PROFILE_PATHS = (
     "tools/cam1lib/state.py",
     "tools/cam1lib/validation.py",
 )
-PROFILE_GLOBS = (
+REQUIRED_PROFILE_GLOBS = (
     "schemas/*.schema.json",
-    "tools/cam1*.py",
-    "tools/cam1lib/*.py",
+    "tools/**/*.py",
+)
+OPTIONAL_PROFILE_GLOBS = (
+    "tools/**/*.pyc",
+    "tools/**/*.pyo",
+    "tools/**/*.so",
+    "tools/**/*.pyd",
+)
+PROFILE_GLOBS = REQUIRED_PROFILE_GLOBS + OPTIONAL_PROFILE_GLOBS
+PROFILE_TREE_ROOTS = (
+    "cam-1.schema.json",
+    "requirements.txt",
+    "schemas",
+    "tools",
 )
 _GIT_OBJECT_ID = re.compile(r"[0-9a-f]{40,64}")
 
@@ -73,12 +85,18 @@ class SourceControlState:
     kind: str
     git_head: str | None
     dirty: bool | None
+    profile_paths_match_head: bool | None = None
+    profile_bytes_match_head: bool | None = None
+    profile_index_flags_clean: bool | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "kind": self.kind,
             "git_head": self.git_head,
             "dirty": self.dirty,
+            "profile_paths_match_head": self.profile_paths_match_head,
+            "profile_bytes_match_head": self.profile_bytes_match_head,
+            "profile_index_flags_clean": self.profile_index_flags_clean,
         }
 
 
@@ -115,14 +133,24 @@ class ValidationProfile:
 
 def _profile_paths(root: Path) -> tuple[Path, ...]:
     paths = {root / relative for relative in REQUIRED_PROFILE_PATHS}
-    for pattern in PROFILE_GLOBS:
-        matches = tuple(root.glob(pattern))
+    for pattern in REQUIRED_PROFILE_GLOBS:
+        matches = tuple(
+            path
+            for path in root.glob(pattern)
+            if _profile_relative_path(path.relative_to(root).as_posix())
+        )
         if not matches:
             raise ValidationProfileError(
                 "profile.component_missing",
                 f"validation profile pattern has no components: {pattern}",
             )
         paths.update(matches)
+    for pattern in OPTIONAL_PROFILE_GLOBS:
+        paths.update(
+            path
+            for path in root.glob(pattern)
+            if _profile_relative_path(path.relative_to(root).as_posix())
+        )
     return tuple(sorted(paths, key=lambda path: path.relative_to(root).as_posix()))
 
 
@@ -157,8 +185,10 @@ def _component_bytes(path: Path) -> bytes:
     return raw
 
 
-def _profile_digest(root: Path, paths: tuple[Path, ...]) -> str:
-    components: list[dict[str, Any]] = []
+def _profile_components(
+    paths: tuple[Path, ...],
+) -> tuple[tuple[Path, bytes], ...]:
+    components: list[tuple[Path, bytes]] = []
     total_bytes = 0
     for path in paths:
         raw = _component_bytes(path)
@@ -167,7 +197,17 @@ def _profile_digest(root: Path, paths: tuple[Path, ...]) -> str:
             raise ValidationProfileError(
                 "profile.total_size", "validation profile components are too large"
             )
-        components.append(
+        components.append((path, raw))
+    return tuple(components)
+
+
+def _profile_digest(
+    root: Path,
+    components: tuple[tuple[Path, bytes], ...],
+) -> str:
+    framed_components: list[dict[str, Any]] = []
+    for path, raw in components:
+        framed_components.append(
             {
                 "path": path.relative_to(root).as_posix(),
                 "byte_length": len(raw),
@@ -176,7 +216,7 @@ def _profile_digest(root: Path, paths: tuple[Path, ...]) -> str:
         )
     payload = {
         "format": PROFILE_FORMAT,
-        "components": components,
+        "components": framed_components,
     }
     canonical = json.dumps(
         payload,
@@ -209,11 +249,16 @@ def _git_environment() -> dict[str, str]:
         "GIT_CONFIG_GLOBAL": os.devnull,
         "GIT_OPTIONAL_LOCKS": "0",
         "GIT_TERMINAL_PROMPT": "0",
+        "GIT_LITERAL_PATHSPECS": "1",
+        "GIT_NO_REPLACE_OBJECTS": "1",
     }
 
 
 def _run_git(
-    git_bin: str, root: Path, *arguments: str
+    git_bin: str,
+    root: Path,
+    *arguments: str,
+    input_bytes: bytes | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     try:
         return subprocess.run(
@@ -229,7 +274,8 @@ def _run_git(
                 *arguments,
             ],
             check=False,
-            stdin=subprocess.DEVNULL,
+            input=input_bytes,
+            stdin=subprocess.DEVNULL if input_bytes is None else None,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             timeout=5,
@@ -252,7 +298,177 @@ def _single_git_line(raw: bytes) -> str | None:
     return text
 
 
-def _source_control_state(root: Path) -> SourceControlState:
+def _profile_relative_path(path_text: str) -> bool:
+    if path_text in REQUIRED_PROFILE_PATHS:
+        return True
+    path = PurePosixPath(path_text)
+    if (
+        len(path.parts) == 2
+        and path.parts[0] == "schemas"
+        and path.name.endswith(".schema.json")
+    ):
+        return True
+    if len(path.parts) < 2 or path.parts[0] != "tools":
+        return False
+    if path.suffix == ".py":
+        return True
+    if "__pycache__" in path.parts:
+        return False
+    return path.suffix in {".pyc", ".pyo", ".so", ".pyd"}
+
+
+def _decode_git_path(raw: bytes) -> str:
+    try:
+        value = raw.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as error:
+        raise ValidationProfileError(
+            "profile.source_unavailable",
+            "validation source-control paths were not valid UTF-8",
+        ) from error
+    path = PurePosixPath(value)
+    if not value or path.is_absolute() or ".." in path.parts or "\x00" in value:
+        raise ValidationProfileError(
+            "profile.source_unavailable",
+            "validation source-control paths were malformed",
+        )
+    return value
+
+
+def _head_profile_entries(
+    git_bin: str,
+    root: Path,
+    git_head: str,
+) -> dict[str, tuple[str, str]]:
+    result = _run_git(
+        git_bin,
+        root,
+        "ls-tree",
+        "-r",
+        "-z",
+        "--full-tree",
+        git_head,
+        "--",
+        *PROFILE_TREE_ROOTS,
+    )
+    if result.returncode != 0:
+        raise ValidationProfileError(
+            "profile.source_unavailable",
+            "validation source-control tree could not be inspected",
+        )
+    entries: dict[str, tuple[str, str]] = {}
+    for record in result.stdout.split(b"\x00"):
+        if not record:
+            continue
+        try:
+            metadata, raw_path = record.split(b"\t", 1)
+            raw_mode, raw_kind, raw_object_id = metadata.split(b" ", 2)
+            mode = raw_mode.decode("ascii", errors="strict")
+            kind = raw_kind.decode("ascii", errors="strict")
+            object_id = raw_object_id.decode("ascii", errors="strict")
+        except (UnicodeDecodeError, ValueError) as error:
+            raise ValidationProfileError(
+                "profile.source_unavailable",
+                "validation source-control tree output was malformed",
+            ) from error
+        path_text = _decode_git_path(raw_path)
+        if not _profile_relative_path(path_text):
+            continue
+        if path_text in entries or _GIT_OBJECT_ID.fullmatch(object_id) is None:
+            raise ValidationProfileError(
+                "profile.source_unavailable",
+                "validation source-control tree output was inconsistent",
+            )
+        entries[path_text] = (mode, kind, object_id)
+    return entries
+
+
+def _index_profile_tags(
+    git_bin: str,
+    root: Path,
+) -> tuple[dict[str, str], bool]:
+    result = _run_git(
+        git_bin,
+        root,
+        "ls-files",
+        "-v",
+        "-z",
+        "--",
+        *PROFILE_TREE_ROOTS,
+    )
+    if result.returncode != 0:
+        raise ValidationProfileError(
+            "profile.source_unavailable",
+            "validation source-control index could not be inspected",
+        )
+    tags: dict[str, str] = {}
+    duplicate = False
+    for record in result.stdout.split(b"\x00"):
+        if not record:
+            continue
+        if len(record) < 3 or record[1:2] != b" ":
+            raise ValidationProfileError(
+                "profile.source_unavailable",
+                "validation source-control index output was malformed",
+            )
+        try:
+            tag = record[:1].decode("ascii", errors="strict")
+        except UnicodeDecodeError as error:
+            raise ValidationProfileError(
+                "profile.source_unavailable",
+                "validation source-control index output was malformed",
+            ) from error
+        path_text = _decode_git_path(record[2:])
+        if not _profile_relative_path(path_text):
+            continue
+        if path_text in tags:
+            duplicate = True
+        tags[path_text] = tag
+    return tags, duplicate
+
+
+def _working_blob_id(git_bin: str, root: Path, raw: bytes) -> str:
+    result = _run_git(git_bin, root, "hash-object", "--stdin", input_bytes=raw)
+    object_id = _single_git_line(result.stdout) if result.returncode == 0 else None
+    if object_id is None or _GIT_OBJECT_ID.fullmatch(object_id) is None:
+        raise ValidationProfileError(
+            "profile.source_unavailable",
+            "validation source-control blob identity could not be computed",
+        )
+    return object_id
+
+
+def _profile_head_state(
+    git_bin: str,
+    root: Path,
+    git_head: str,
+    components: tuple[tuple[Path, bytes], ...],
+) -> tuple[bool, bool, bool]:
+    working = {path.relative_to(root).as_posix(): raw for path, raw in components}
+    head = _head_profile_entries(git_bin, root, git_head)
+    head_paths_are_regular = all(
+        mode in {"100644", "100755"} and kind == "blob"
+        for mode, kind, _ in head.values()
+    )
+    paths_match = set(working) == set(head) and head_paths_are_regular
+
+    index_tags, duplicate_index_paths = _index_profile_tags(git_bin, root)
+    index_flags_clean = (
+        not duplicate_index_paths
+        and set(index_tags) == set(head)
+        and all(tag == "H" for tag in index_tags.values())
+    )
+
+    bytes_match = paths_match and all(
+        _working_blob_id(git_bin, root, raw) == head[path_text][2]
+        for path_text, raw in working.items()
+    )
+    return paths_match, bytes_match, index_flags_clean
+
+
+def _source_control_state(
+    root: Path,
+    components: tuple[tuple[Path, bytes], ...],
+) -> SourceControlState:
     try:
         marker = root.joinpath(".git").lstat()
     except FileNotFoundError:
@@ -280,13 +496,19 @@ def _source_control_state(root: Path) -> SourceControlState:
         return SourceControlState("unavailable", None, None)
 
     try:
-        head_result = _run_git(git_bin, root, "rev-parse", "--verify", "HEAD")
+        head_result = _run_git(
+            git_bin,
+            root,
+            "rev-parse",
+            "--verify",
+            "HEAD^{commit}",
+        )
     except ValidationProfileError:
         return SourceControlState("unavailable", None, None)
-    git_head = (
-        _single_git_line(head_result.stdout) if head_result.returncode == 0 else None
-    )
-    if git_head is not None and _GIT_OBJECT_ID.fullmatch(git_head) is None:
+    if head_result.returncode != 0:
+        return SourceControlState("git", None, None)
+    git_head = _single_git_line(head_result.stdout)
+    if git_head is None or _GIT_OBJECT_ID.fullmatch(git_head) is None:
         return SourceControlState("unavailable", None, None)
 
     try:
@@ -303,7 +525,26 @@ def _source_control_state(root: Path) -> SourceControlState:
         return SourceControlState("unavailable", git_head, None)
     if status_result.returncode != 0:
         return SourceControlState("unavailable", git_head, None)
-    return SourceControlState("git", git_head, bool(status_result.stdout))
+    try:
+        paths_match, bytes_match, index_flags_clean = _profile_head_state(
+            git_bin,
+            root,
+            git_head,
+            components,
+        )
+    except ValidationProfileError:
+        return SourceControlState("unavailable", git_head, None)
+    dirty = bool(status_result.stdout) or not (
+        paths_match and bytes_match and index_flags_clean
+    )
+    return SourceControlState(
+        "git",
+        git_head,
+        dirty,
+        profile_paths_match_head=paths_match,
+        profile_bytes_match_head=bytes_match,
+        profile_index_flags_clean=index_flags_clean,
+    )
 
 
 def _package_version(name: str) -> str | None:
@@ -324,10 +565,11 @@ def build_validation_profile(root: Path = REPOSITORY_ROOT) -> ValidationProfile:
             "validation profile source root is unavailable",
         ) from error
     paths = _profile_paths(resolved_root)
+    components = _profile_components(paths)
     return ValidationProfile(
-        validation_profile_sha256=_profile_digest(resolved_root, paths),
-        component_count=len(paths),
-        source_control=_source_control_state(resolved_root),
+        validation_profile_sha256=_profile_digest(resolved_root, components),
+        component_count=len(components),
+        source_control=_source_control_state(resolved_root, components),
         python_implementation=platform.python_implementation(),
         python_version=platform.python_version(),
         jsonschema_version=_package_version("jsonschema"),
@@ -386,6 +628,36 @@ def require_live_profile(
         raise ValidationProfileError(
             "profile.source_unversioned",
             "live CAM operations require a Git checkout with verifiable source state",
+        )
+    if source.git_head is None:
+        raise ValidationProfileError(
+            "profile.source_unversioned",
+            "live CAM operations require a Git checkout with a resolvable HEAD commit",
+        )
+    if source.profile_paths_match_head is None:
+        raise ValidationProfileError(
+            "profile.source_unavailable",
+            "live CAM operations cannot verify profile membership in Git HEAD",
+        )
+    if not source.profile_paths_match_head:
+        raise ValidationProfileError(
+            "profile.path_set_mismatch",
+            "live CAM profile paths must match regular tracked blobs in Git HEAD",
+        )
+    if source.profile_index_flags_clean is None:
+        raise ValidationProfileError(
+            "profile.source_unavailable",
+            "live CAM operations cannot verify profile index flags",
+        )
+    if not source.profile_index_flags_clean:
+        raise ValidationProfileError(
+            "profile.index_concealment",
+            "live CAM profile paths cannot use concealed or sparse index flags",
+        )
+    if source.profile_bytes_match_head is None:
+        raise ValidationProfileError(
+            "profile.source_unavailable",
+            "live CAM operations cannot compare profile bytes with Git HEAD",
         )
     if allow_dirty and expected_sha256 is None:
         raise ValidationProfileError(

@@ -121,14 +121,19 @@ Codex path explicitly to every live `codex-send` call. A `PATH` lookup is not
 transport authority, and an approved path remains subject to same-user
 replacement between checking and execution.
 
-`validation-profile` reports a deterministic digest of the reference Python
-tools, schemas, and runtime requirements. It reports the CAM checkout's Git
-HEAD and dirty state, plus Python and validation-library versions, as separate
-fields. Ordinary `doctor` and live sends require a clean CAM checkout. Do not
-tell another participant to validate "at" a commit when the reported checkout
-is dirty: the commit does not identify the uncommitted rules that actually ran.
-Both successful and rejected offline validations report the profile that
-produced their verdict.
+`validation-profile` reports a deterministic digest of every Python source
+below `tools/`, the schemas, runtime requirements, and importable binary or
+sourceless modules outside standard `__pycache__` directories. It reports the
+CAM checkout's Git HEAD and dirty state, exact profile-to-HEAD path and byte
+comparisons, index flag state, plus Python and validation-library versions as
+separate fields. Public facades ignore adjacent cached bytecode while loading
+audited modules. Live use requires a concrete HEAD and rejects profile paths
+missing from either HEAD or the working tree, non-regular blobs, and
+assume-unchanged, skip-worktree, or sparse index state. Ordinary `doctor` and
+live sends require a clean CAM checkout. Do not tell another participant to
+validate "at" a commit when the reported checkout is dirty: the commit does
+not identify the uncommitted rules that actually ran. Both successful and
+rejected offline validations report the profile that produced their verdict.
 
 A deliberate development-only `doctor` check or send from modified CAM source
 must repeat the exact reported digest with both global options before the
@@ -142,8 +147,10 @@ subcommand:
 `doctor` reports the selected profile and whether live use is blocked but does
 not append a journal event. An actual send records the profile and whether the
 override was used. The override does not make the source clean or suitable for
-a reproducible release. New-user onboarding should use a clean checkout and
-neither option.
+a reproducible release. It may cover ordinary edits to profile files already
+tracked in HEAD, but not a missing HEAD, a changed profile path set, or
+concealed/sparse index state. New-user onboarding should use a clean checkout
+and neither option.
 
 The reference tools use the mature `jsonschema` library and the official
 Python MCP SDK. They do not connect to raw Claude sockets. All results are

@@ -139,6 +139,9 @@ Ordinary live sends require a clean CAM checkout. A development-only override
 must repeat the exact current profile digest; recording it does not make the
 checkout clean or turn uncommitted source into a reproducible release. Older
 journal records without validation-profile attributes remain valid history.
+Live source evidence also requires a concrete HEAD, matching regular profile
+path sets, exact byte comparison, and unconcealed index state. The override may
+cover ordinary tracked byte changes but not the other requirements.
 
 HEAD, branch, and dirty state come from one Git status snapshot, while the tree
 is derived from that snapshot's immutable HEAD object ID. Working files are not
