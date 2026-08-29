@@ -126,6 +126,24 @@ class ValidationProfileTests(unittest.TestCase):
         self.assertIn("python_implementation", report["runtime"])
         self.assertIn("jsonschema", report["runtime"])
 
+    def test_current_profile_rejects_source_changed_after_bootstrap(self) -> None:
+        profile.current_validation_profile.cache_clear()
+        try:
+            with (
+                mock.patch.object(
+                    profile._cam1_bootstrap,
+                    "verify_captured_sources",
+                    side_effect=profile._cam1_bootstrap.BootstrapError(
+                        "synthetic source change"
+                    ),
+                ),
+                self.assertRaises(profile.ValidationProfileError) as context,
+            ):
+                profile.current_validation_profile()
+        finally:
+            profile.current_validation_profile.cache_clear()
+        self.assertEqual(context.exception.code, "profile.bootstrap_changed")
+
     def test_blob_identity_matches_git_hash_object(self) -> None:
         git_bin = profile._git_executable()
         if git_bin is None:
@@ -373,6 +391,242 @@ class ValidationProfileTests(unittest.TestCase):
                 ).stdout
             )
             self.assertTrue(report["available"])
+
+    def test_ignored_stdlib_shadow_cannot_run_before_live_profile_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            copied, git_bin = self.initialized_git_profile_root(Path(directory))
+            marker = copied / "shadow-executed"
+            relative = Path("tools/hashlib.py")
+            (copied / relative).write_text(
+                "from pathlib import Path\n"
+                f"Path({str(marker)!r}).write_text('executed', encoding='utf-8')\n"
+                "raise RuntimeError('ignored hashlib shadow executed')\n",
+                encoding="utf-8",
+            )
+            (copied / ".git" / "info" / "exclude").write_text(
+                f"{relative.as_posix()}\n", encoding="utf-8"
+            )
+            status = subprocess.run(
+                [git_bin, "-C", str(copied), "status", "--porcelain"],
+                check=True,
+                capture_output=True,
+            )
+            self.assertEqual(status.stdout, b"")
+
+            environment = os.environ.copy()
+            environment["PYTHONPATH"] = str(copied / "tools")
+            commands = (
+                (
+                    "doctor",
+                    [
+                        "--claude-bin",
+                        "/not/a/claude/executable",
+                        "--codex-bin",
+                        "/not/a/codex/executable",
+                        "doctor",
+                    ],
+                ),
+                (
+                    "claude-list",
+                    [
+                        "--claude-bin",
+                        "/not/a/claude/executable",
+                        "claude-list",
+                    ],
+                ),
+                (
+                    "claude-preflight",
+                    [
+                        "--claude-bin",
+                        "/not/a/claude/executable",
+                        "claude-preflight",
+                        "--participant",
+                        "example",
+                    ],
+                ),
+                ("claude-send", ["claude-send"]),
+                ("codex-send", ["codex-send"]),
+                ("codex-reply", ["codex-reply"]),
+            )
+            for command, arguments in commands:
+                with self.subTest(command=command):
+                    completed = subprocess.run(
+                        [sys.executable, "tools/cam1_transport.py", *arguments],
+                        cwd=copied,
+                        env=environment,
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        timeout=20,
+                    )
+                    self.assertEqual(completed.returncode, 2, completed.stderr)
+                    output = completed.stdout or completed.stderr
+                    payload = json.loads(output)
+                    code = payload.get("error", {}).get("code") or payload.get(
+                        "checks", {}
+                    ).get("validation_profile", {}).get("code")
+                    self.assertEqual(code, "profile.path_set_mismatch")
+                    self.assertFalse(marker.exists())
+
+    def test_legacy_profile_bytecode_cannot_replace_hidden_source(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            copied, git_bin = self.initialized_git_profile_root(Path(directory))
+            marker = copied / "legacy-bytecode-executed"
+            source = copied / "poison_profile.py"
+            legacy = copied / "tools" / "cam1lib" / "profile.pyc"
+            source.write_text(
+                "from pathlib import Path\n"
+                f"Path({str(marker)!r}).write_text('executed', encoding='utf-8')\n"
+                "raise RuntimeError('legacy profile bytecode executed')\n",
+                encoding="utf-8",
+            )
+            py_compile.compile(str(source), cfile=str(legacy), doraise=True)
+            source.unlink()
+            relative_source = "tools/cam1lib/profile.py"
+            subprocess.run(
+                [
+                    git_bin,
+                    "-C",
+                    str(copied),
+                    "update-index",
+                    "--skip-worktree",
+                    relative_source,
+                ],
+                check=True,
+                capture_output=True,
+            )
+            (copied / relative_source).unlink()
+            (copied / ".git" / "info" / "exclude").write_text(
+                "tools/cam1lib/profile.pyc\n", encoding="utf-8"
+            )
+            status = subprocess.run(
+                [
+                    git_bin,
+                    "-C",
+                    str(copied),
+                    "status",
+                    "--porcelain",
+                    "--untracked-files=all",
+                ],
+                check=True,
+                capture_output=True,
+            )
+            self.assertEqual(status.stdout, b"")
+
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "tools/cam1_transport.py",
+                    "--claude-bin",
+                    "/not/a/claude/executable",
+                    "--codex-bin",
+                    "/not/a/codex/executable",
+                    "doctor",
+                ],
+                cwd=copied,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            self.assertEqual(completed.returncode, 2, completed.stderr)
+            self.assertEqual(
+                json.loads(completed.stderr)["error"]["code"],
+                "bootstrap.invalid",
+            )
+            self.assertFalse(marker.exists())
+
+    def test_concealed_allowlisted_source_cannot_execute_before_git_check(
+        self,
+    ) -> None:
+        cases = (
+            (None, "profile.executable_source_dirty", False),
+            ("--assume-unchanged", "profile.index_concealment", True),
+        )
+        for index_flag, expected_code, expect_clean_status in cases:
+            with (
+                self.subTest(index_flag=index_flag),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                copied, git_bin = self.initialized_git_profile_root(Path(directory))
+                marker = copied / "allowlisted-source-executed"
+                relative = "tools/cam1lib/errors.py"
+                target = copied / relative
+                target.write_bytes(
+                    target.read_bytes()
+                    + (
+                        "\nfrom pathlib import Path as _MarkerPath\n"
+                        f"_MarkerPath({str(marker)!r}).write_text("
+                        "'executed', encoding='utf-8')\n"
+                    ).encode()
+                )
+                if index_flag is not None:
+                    subprocess.run(
+                        [
+                            git_bin,
+                            "-C",
+                            str(copied),
+                            "update-index",
+                            index_flag,
+                            relative,
+                        ],
+                        check=True,
+                        capture_output=True,
+                    )
+                status = subprocess.run(
+                    [git_bin, "-C", str(copied), "status", "--porcelain"],
+                    check=True,
+                    capture_output=True,
+                )
+                self.assertEqual(status.stdout == b"", expect_clean_status)
+
+                completed = subprocess.run(
+                    [
+                        sys.executable,
+                        "tools/cam1_transport.py",
+                        "--claude-bin",
+                        "/not/a/claude/executable",
+                        "--codex-bin",
+                        "/not/a/codex/executable",
+                        "doctor",
+                    ],
+                    cwd=copied,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
+                )
+                self.assertEqual(completed.returncode, 2, completed.stderr)
+                self.assertEqual(
+                    json.loads(completed.stderr)["error"]["code"], expected_code
+                )
+                self.assertFalse(marker.exists())
+
+    def test_offline_non_git_facades_remain_available(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            copied = self.copied_profile_root(Path(directory))
+            profile_result = subprocess.run(
+                [sys.executable, "tools/cam1.py", "validation-profile"],
+                cwd=copied,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            project_help = subprocess.run(
+                [sys.executable, "tools/cam1_project.py", "--help"],
+                cwd=copied,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+
+        self.assertEqual(profile_result.returncode, 0, profile_result.stderr)
+        report = json.loads(profile_result.stdout)
+        self.assertTrue(report["available"])
+        self.assertEqual(report["source_control"]["kind"], "not_git")
+        self.assertEqual(project_help.returncode, 0, project_help.stderr)
 
     def test_profile_index_concealment_is_not_a_live_override(self) -> None:
         for flag in ("--assume-unchanged", "--skip-worktree"):

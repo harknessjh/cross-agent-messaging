@@ -144,20 +144,24 @@ binary or sourceless modules outside standard `__pycache__` directories, plus
 separate Git and runtime metadata. It also requires a concrete HEAD commit,
 compares the complete profile path set and exact working bytes with regular
 blobs in that commit, and rejects assume-unchanged, skip-worktree, or sparse
-index state on those paths. The public tool facades do not consult adjacent
-ignored bytecode while loading those audited modules; standard bytecode caches
-remain derived, unaudited artifacts rather than alternate executable inputs.
-A clean checkout is required for ordinary live sends. `doctor` and the send
-commands refuse a dirty CAM checkout by default, so a commit name cannot
-silently describe different validation rules. Offline validation still reports
-its actual profile on both successful and rejected verdicts.
+index state on those paths. Direct public CLI invocations enter isolated Python
+mode before loading the implementation. They capture every allowed CAM module
+from an exact source-file map and compile those captured bytes without normal
+path lookup, adjacent bytecode, or native-module fallbacks. At the live gate,
+the source files must still equal that capture. Standard bytecode caches remain
+derived, unaudited artifacts rather than alternate executable inputs. A clean
+checkout is required for ordinary live operations. `doctor`, list, preflight,
+and send commands refuse a dirty CAM checkout before resolving or probing
+either product, so a commit name cannot silently describe different validation
+rules. Offline validation still reports its actual profile on both successful
+and rejected verdicts.
 
 Offline building and validation may run from an unpacked source archive, but
 the supported live adapters require a verifiable Git checkout. A profile digest
 identifies source bytes; by itself it does not provide the clean/dirty revision
 evidence required for a live send.
 
-For deliberate local development only, a dirty-source `doctor` check or send
+For deliberate local development only, any dirty-source product operation
 requires both global options before the subcommand:
 
 ```text
@@ -165,9 +169,10 @@ requires both global options before the subcommand:
 --expected-validation-profile-sha256 EXACT_REPORTED_DIGEST
 ```
 
-That override may cover ordinary edits to profile files already tracked in
-HEAD. It cannot override a missing HEAD, a changed profile path set, or
-concealed/sparse index flags.
+That override may cover ordinary edits to non-executable profile inputs already
+tracked in HEAD. Executable Python source must match HEAD before it can be
+imported for a live operation. The override also cannot cover a missing HEAD, a
+changed profile path set, or concealed/sparse index flags.
 
 `doctor` reports the selected profile and whether live use is blocked. An
 actual send records the profile and any override used in the outbound journal;

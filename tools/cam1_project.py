@@ -5,39 +5,35 @@
 
 from __future__ import annotations
 
+import posix as _posix
+import sys
+
+if __name__ == "__main__":
+    _entry = f"{__file__.rsplit('/', 1)[0]}/_cam1_entry.py"
+    if not _entry.startswith("/"):
+        _entry = f"{_posix.getcwd()}/{_entry}"
+    try:
+        _posix.execv(
+            sys.executable,
+            [sys.executable, "-I", "-B", _entry, "cam1_project", *sys.argv[1:]],
+        )
+    except OSError:
+        sys.stderr.write(
+            '{"error":{"code":"bootstrap.isolation_failed",'
+            '"detail":"could not enter isolated Python mode"},"ok":false}\n'
+        )
+        raise SystemExit(2) from None
+
 import argparse
 import datetime as dt
 import json
-import sys
 import uuid
 from pathlib import Path
 from typing import Any
 
-# Do not execute adjacent, ignored bytecode while loading the audited modules.
-_previous_dont_write_bytecode = sys.dont_write_bytecode
-_previous_pycache_prefix = sys.pycache_prefix
-sys.dont_write_bytecode = True
-sys.pycache_prefix = "/dev/null/cam1"
-try:
-    if __package__:
-        from .cam1lib import journal, lifecycle, participants, profile, project, state
-        from .cam1lib.protocol import (
-            CamUsageError,
-            CamValidationError,
-            parse_exact_bytes,
-        )
-        from .cam1lib.state import StateStore
-    else:
-        from cam1lib import journal, lifecycle, participants, profile, project, state
-        from cam1lib.protocol import (
-            CamUsageError,
-            CamValidationError,
-            parse_exact_bytes,
-        )
-        from cam1lib.state import StateStore
-finally:
-    sys.dont_write_bytecode = _previous_dont_write_bytecode
-    sys.pycache_prefix = _previous_pycache_prefix
+from tools.cam1lib import journal, lifecycle, participants, profile, project, state
+from tools.cam1lib.protocol import CamUsageError, CamValidationError, parse_exact_bytes
+from tools.cam1lib.state import StateStore
 
 
 class JsonArgumentParser(argparse.ArgumentParser):
