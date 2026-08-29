@@ -266,7 +266,7 @@ class ProjectTransportGuardTests(ProjectBoundTransportTestCase):
 
     def test_direct_send_functions_cannot_bypass_validation_source_guard(self) -> None:
         blocked = cam1.ValidationProfileError(
-            "profile.dirty_source", "synthetic dirty source"
+            "profile.path_set_mismatch", "synthetic profile path mismatch"
         )
         with (
             mock.patch.object(cam1, "require_live_profile", side_effect=blocked),
@@ -301,8 +301,8 @@ class ProjectTransportGuardTests(ProjectBoundTransportTestCase):
                     )
                 )
 
-        self.assertEqual(codex_error.exception.code, "profile.dirty_source")
-        self.assertEqual(claude_error.exception.code, "profile.dirty_source")
+        self.assertEqual(codex_error.exception.code, "profile.path_set_mismatch")
+        self.assertEqual(claude_error.exception.code, "profile.path_set_mismatch")
         state_store.assert_not_called()
 
     def test_claude_root_to_codex_reply_returns_through_project_claude_send(

@@ -353,7 +353,14 @@ class PeerParsingTests(unittest.TestCase):
         clean = cam1.ValidationProfile(
             validation_profile_sha256="a" * 64,
             component_count=1,
-            source_control=cam1.SourceControlState("git", "b" * 40, False),
+            source_control=cam1.SourceControlState(
+                "git",
+                "b" * 40,
+                False,
+                profile_paths_match_head=True,
+                profile_bytes_match_head=True,
+                profile_index_flags_clean=True,
+            ),
             python_implementation="TestPython",
             python_version="3.test",
             jsonschema_version="test",

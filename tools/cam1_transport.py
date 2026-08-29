@@ -11,32 +11,41 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
-if __package__:
-    from . import cam1
-    from . import cam1_transport_native as _native
-    from . import cam1_transport_retry as _retry
-    from .cam1lib import (
-        journal,
-        lifecycle,
-        participants,
-        project,
-        routing,
-        state,
-    )
-    from .cam1lib import transport_cli as _transport_cli
-else:  # Direct execution adds tools/ rather than the repo to sys.path.
-    import cam1  # type: ignore[no-redef]
-    import cam1_transport_native as _native  # type: ignore[no-redef]
-    import cam1_transport_retry as _retry  # type: ignore[no-redef]
-    from cam1lib import (  # type: ignore[no-redef]
-        journal,
-        lifecycle,
-        participants,
-        project,
-        routing,
-        state,
-    )
-    from cam1lib import transport_cli as _transport_cli  # type: ignore[no-redef]
+# Do not execute adjacent, ignored bytecode while loading the audited modules.
+_previous_dont_write_bytecode = sys.dont_write_bytecode
+_previous_pycache_prefix = sys.pycache_prefix
+sys.dont_write_bytecode = True
+sys.pycache_prefix = "/dev/null/cam1"
+try:
+    if __package__:
+        from . import cam1
+        from . import cam1_transport_native as _native
+        from . import cam1_transport_retry as _retry
+        from .cam1lib import (
+            journal,
+            lifecycle,
+            participants,
+            project,
+            routing,
+            state,
+        )
+        from .cam1lib import transport_cli as _transport_cli
+    else:  # Direct execution adds tools/ rather than the repo to sys.path.
+        import cam1  # type: ignore[no-redef]
+        import cam1_transport_native as _native  # type: ignore[no-redef]
+        import cam1_transport_retry as _retry  # type: ignore[no-redef]
+        from cam1lib import (  # type: ignore[no-redef]
+            journal,
+            lifecycle,
+            participants,
+            project,
+            routing,
+            state,
+        )
+        from cam1lib import transport_cli as _transport_cli  # type: ignore[no-redef]
+finally:
+    sys.dont_write_bytecode = _previous_dont_write_bytecode
+    sys.pycache_prefix = _previous_pycache_prefix
 
 TransportError = _native.TransportError
 ValidatedEnvelope = _native.ValidatedEnvelope

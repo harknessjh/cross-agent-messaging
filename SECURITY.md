@@ -129,6 +129,15 @@ and queues, transcripts, backups, or the required journal may retain copies.
 - Use a clean CAM checkout for ordinary live sends. A development-only dirty
   override must repeat the exact current profile digest and is recorded in the
   journal. Never present an overridden run as a clean or reproducible release.
+- Require a resolvable HEAD commit and the same complete set of regular profile
+  blobs in HEAD and the working tree. The reference profile includes every
+  Python source below `tools/` and importable binary or sourceless modules
+  outside standard `__pycache__` directories. Compare the exact profiled bytes
+  with those blobs and reject assume-unchanged, skip-worktree, or sparse index
+  state. The public facades redirect bytecode lookup while importing audited
+  modules so ignored adjacent caches cannot replace tracked source. The dirty
+  override may cover ordinary tracked edits, but never missing or untracked
+  profile paths or concealed index state.
 - Do not use an unpacked or otherwise unversioned source tree for live sends.
   Offline validation remains available, but live use requires verifiable Git
   revision and clean/dirty state in addition to the content profile.

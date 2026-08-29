@@ -31,11 +31,17 @@ For every cross-session message:
    `ListAgents` results. Never use a mutable name, short ref, cwd, or UDS as
    stable identity.
 5. Run `tools/cam1.py validation-profile` and require an available profile from
-   a clean CAM checkout before a supported live send. The profile digest covers
-   the reference Python tools, schemas, and runtime requirements; the adjacent
-   source and runtime fields remain separate audit evidence. `doctor` and live
-   sends fail closed when this checkout is dirty. A development-only override
-   must supply both `--allow-dirty-validator` and the exact reported
+   a clean CAM checkout before a supported live send. The source check requires
+   a concrete HEAD, the same complete set of regular profile blobs in HEAD and
+   the working tree, exact byte comparison, and ordinary index flags. The
+   profile digest covers every Python source below `tools/`, the schemas,
+   runtime requirements, and importable modules outside standard bytecode-cache
+   directories; the adjacent source and runtime fields remain separate audit
+   evidence. Public facades ignore adjacent cached bytecode while loading the
+   audited modules. `doctor` and live sends fail closed when this checkout is
+   dirty. A development-only override may cover ordinary tracked edits, but
+   not a missing HEAD, a changed profile path set, or concealed/sparse index
+   flags. It must supply both `--allow-dirty-validator` and the exact reported
    `--expected-validation-profile-sha256`; the outbound journal records that
    override. Never use it to claim a clean or reproducible release.
 6. Run `tools/cam1_transport.py doctor` and run `claude-preflight` with

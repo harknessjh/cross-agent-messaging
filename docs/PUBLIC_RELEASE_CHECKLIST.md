@@ -60,11 +60,16 @@ Use this checklist against the exact commit proposed for publication. A green so
   board, raw-socket, or remote behavior. The explicit journal-gated retry must
   remain the only retry path.
 - Confirm `cam1.py validation-profile` reports an available deterministic
-  digest, clean CAM source state, and bounded runtime metadata. Verify valid and
-  invalid verdicts plus inbound/outbound journal events carry that profile.
+  digest covering every Python source below `tools/` and non-cache importable
+  modules, a concrete HEAD, matching regular profile path sets and bytes,
+  unconcealed index flags, clean CAM source state, and bounded runtime metadata.
+  Confirm the public facades ignore adjacent cached bytecode while loading
+  audited modules. Verify valid and invalid verdicts plus inbound/outbound
+  journal events carry that profile.
 - Confirm ordinary `doctor` and live sends refuse a dirty CAM checkout. A
   development override must require the exact reported digest and record
-  `dirty_validator_override`; it is not release evidence.
+  `dirty_validator_override`; it is not release evidence and cannot override a
+  missing HEAD, a changed profile path set, or concealed/sparse index state.
 - Confirm that every live list, preflight, send, and reply requires an
   operator-approved absolute product executable path; every project preflight,
   send, and reply must also resolve the bound project. Doctor may discover and

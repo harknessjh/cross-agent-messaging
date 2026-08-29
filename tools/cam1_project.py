@@ -13,14 +13,31 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-if __package__:
-    from .cam1lib import journal, lifecycle, participants, profile, project, state
-    from .cam1lib.protocol import CamUsageError, CamValidationError, parse_exact_bytes
-    from .cam1lib.state import StateStore
-else:
-    from cam1lib import journal, lifecycle, participants, profile, project, state
-    from cam1lib.protocol import CamUsageError, CamValidationError, parse_exact_bytes
-    from cam1lib.state import StateStore
+# Do not execute adjacent, ignored bytecode while loading the audited modules.
+_previous_dont_write_bytecode = sys.dont_write_bytecode
+_previous_pycache_prefix = sys.pycache_prefix
+sys.dont_write_bytecode = True
+sys.pycache_prefix = "/dev/null/cam1"
+try:
+    if __package__:
+        from .cam1lib import journal, lifecycle, participants, profile, project, state
+        from .cam1lib.protocol import (
+            CamUsageError,
+            CamValidationError,
+            parse_exact_bytes,
+        )
+        from .cam1lib.state import StateStore
+    else:
+        from cam1lib import journal, lifecycle, participants, profile, project, state
+        from cam1lib.protocol import (
+            CamUsageError,
+            CamValidationError,
+            parse_exact_bytes,
+        )
+        from cam1lib.state import StateStore
+finally:
+    sys.dont_write_bytecode = _previous_dont_write_bytecode
+    sys.pycache_prefix = _previous_pycache_prefix
 
 
 class JsonArgumentParser(argparse.ArgumentParser):
