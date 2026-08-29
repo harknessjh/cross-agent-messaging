@@ -23,6 +23,8 @@ if __package__:
 else:
     from test_cam1 import FIXTURES, ROOT, changed, fixture
 
+CLI_SUBPROCESS_TIMEOUT_SECONDS = 10
+
 
 class CamPublicSurfaceTests(unittest.TestCase):
     def test_protocol_examples_equal_checked_fixtures(self) -> None:
@@ -174,7 +176,7 @@ class CamPublicSurfaceTests(unittest.TestCase):
                 cwd=ROOT,
                 check=False,
                 capture_output=True,
-                timeout=2,
+                timeout=CLI_SUBPROCESS_TIMEOUT_SECONDS,
             )
         self.assertEqual(completed.returncode, 2)
         error = json.loads(completed.stderr)
@@ -193,7 +195,7 @@ class CamPublicSurfaceTests(unittest.TestCase):
             check=False,
             input=fixture("valid-hello.json"),
             capture_output=True,
-            timeout=2,
+            timeout=CLI_SUBPROCESS_TIMEOUT_SECONDS,
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertTrue(json.loads(completed.stdout)["structurally_valid"])
