@@ -899,7 +899,14 @@ async def _preflight_claude_session(
         "notify_when_idle_supported": _supports_notify_when_idle(
             schemas["SendMessage"]
         ),
+        # The full session UUID, product name, and project context are the
+        # human-verifiable identity. The short MCP ref is transient routing
+        # metadata and must not be presented as something an operator can
+        # independently authenticate.
         "operator_correlation_required": True,
+        "operator_correlation_subject": "stable_session_identity",
+        "operator_identity_confirmation_required": True,
+        "transient_route_confirmation_required": False,
     }
 
 

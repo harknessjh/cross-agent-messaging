@@ -38,11 +38,13 @@ does not deliver, wake, or instruct a session. The reference implementation
 stores it outside repositories and worktrees beneath `~/CAM/Journals`, with a
 private pointer in the Git common directory.
 
-The reference participant state records active bound sessions and
-operator-correlated routes. It does not add a cryptographic or mandatory
-challenge-based enrollment layer. The optional CAM challenge builders can
-record reachability evidence, but that evidence neither authenticates a peer
-nor authorizes work.
+The reference participant state records operator-bound stable sessions and
+separately journaled, tool-derived route observations. A uniquely correlated
+fresh Claude route does not require a human to approve its MCP short ref, which
+is not normally visible in `/status`. This does not add a cryptographic or
+mandatory challenge-based enrollment layer. The optional CAM challenge
+builders can record reachability evidence, but that evidence neither
+authenticates a peer nor authorizes work.
 
 ## 2. Reference environment
 
@@ -82,6 +84,15 @@ The full session UUID shown by the target session's `/status` and Agent View is
 the stable identity used in the project roster and `reply_to.address`. A product
 name is mutable and may be shared. The MCP short ref is transient. A UDS peer
 address is product-internal correlation metadata and is never used by CAM/1.
+The operator confirms the full UUID and intended project-local name and role in
+the intended CAM project, using `/status` cwd as project-membership evidence.
+The exact cwd is not persisted as stable identity; every fresh discovery checks
+the live cwd independently. The helper, not the operator, resolves the short
+ref. When that stable binding maps uniquely through both discovery surfaces,
+the helper may use the resulting route and records it in the project journal.
+It asks for operator help only when the mapping is ambiguous, the UUID or
+project differs, the binding generation changed, or evidence conflicts,
+including unexpected product session-label or kind drift.
 
 For each Claude send, the helper:
 
@@ -97,7 +108,8 @@ For each Claude send, the helper:
    Agent View row;
 7. requires the Agent View cwd to resolve inside the bound Git project,
    including initialized linked worktrees sharing its Git common directory;
-8. optionally verifies an operator-supplied exact `name [ref]` guard;
+8. optionally verifies an exact `name [ref]` guard supplied by automation or a
+   diagnostic caller, without treating that guard as human identity evidence;
 9. validates the envelope and its intended recipient session;
 10. performs at most one `SendMessage` call; and
 11. reports `success:true` plus a canonical `msg_id` as transport acceptance
@@ -298,8 +310,17 @@ conforming. Each lifecycle reply correlates to one root request.
 
 `ListAgents` alone supplied a name and short ref, not the operator-provided
 session UUID or human role. Conversely, the UUID shown by `/status` was not the
-literal MCP route. Fresh two-surface discovery plus operator correlation keeps
-identity, human role, and route distinct.
+literal MCP route. Fresh two-surface discovery plus an operator-bound stable
+identity keeps identity, human role, and route distinct.
+
+The live onboarding trial also showed that requiring the operator to approve
+the `ListAgents` ref creates an impossible check: Claude `/status` exposed the
+full UUID, product name, and cwd, but not the MCP ref. The corrected workflow
+binds those stable, operator-inspectable facts once and automatically uses a
+unique fresh Agent View-to-`ListAgents` correlation. The transient ref remains
+in the journal so the actual send target is auditable. Ref churn alone does not
+trigger another prompt; ambiguity, UUID/project mismatch, a binding-generation
+change, or conflicting evidence does.
 
 Claude Code 2.1.251 field captures also showed that Agent View is not one row
 per logical session: a background lifecycle row with `id`/`state` and an
@@ -333,8 +354,9 @@ The project-aware live adapter also requires the selected recipient and
 claimed sender to match active bound roster entries by vendor, common name,
 and full session UUID. A Codex binding confirms its queue route; a Claude
 binding records the full UUID while a fresh `name [ref]` route is resolved by
-explicit preflight and again whenever Claude is the current send target. This
-is consistency checking, not cryptographic authentication.
+preflight and again whenever Claude is the current send target. A unique route
+is tool-correlated and journaled without separate human approval of the ref.
+This is consistency checking, not cryptographic authentication.
 
 ### A commit name does not identify dirty validator bytes
 

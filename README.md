@@ -55,6 +55,11 @@ Human-friendly names and transport addresses are not identity.
   return address.
 - A Claude Code session uses the full session UUID shown by `/status` as its
   stable identity and return address.
+- Before first contact, the operator binds that UUID to the intended
+  project-local name and role in the intended CAM project, using the `/status`
+  cwd to confirm project membership. The exact cwd is supporting evidence, not
+  persisted identity; every fresh route must independently pass the Git-project
+  check below.
 - Before every Claude send, the helper correlates that UUID through fresh
   `claude agents --json` and MCP `ListAgents` output. Agent View JSON is a
   heterogeneous inventory: process-backed rows may carry `pid`/`status` while
@@ -67,7 +72,14 @@ Human-friendly names and transport addresses are not identity.
   the full UUID when present and reports `null` when absent; it never invents or
   borrows one. A process ID is transient liveness evidence and is never exposed,
   journaled, or used as identity.
-- The resulting `name [ref]` is a transient route for that send only. The
+- The resulting `name [ref]` is tool-derived transient routing metadata for
+  that send only. Claude `/status` does not normally expose the MCP short ref,
+  so CAM MUST NOT ask an operator to recognize or approve it. Once the stable
+  UUID, intended name and role, and CAM project are operator-bound, the helper
+  may automatically use a fresh route when Agent View and `ListAgents`
+  correlate that identity to exactly one eligible same-host peer. It records
+  the observed name and ref in the journal for audit. A changed transient ref
+  alone does not require another operator confirmation. The
   selected Agent View cwd must resolve inside the bound Git project, including
   an initialized linked worktree that shares its Git common directory. MCP
   locality and activity are evaluated separately: an eligible `busy` local peer
@@ -138,8 +150,14 @@ investigation-only.
 
 Claude Code's Agent View and MCP `ListAgents` results are discovery evidence,
 not proof of a human role, authorship, or authority. The operator must correlate
-the intended session before first contact and whenever the mapping becomes
-ambiguous or stale.
+the intended full `/status` session UUID, project-local name and role, and
+the intended CAM project before first contact, using `/status` cwd as
+supporting evidence. CAM resolves the MCP `name [ref]` itself and
+does not present that normally non-inspectable ref as a human identity check.
+It fails closed and requests operator help when discovery is ambiguous, the
+UUID or project does not match, the binding generation changes, or evidence
+conflicts. An unexpected product session label or kind is conflicting evidence
+and requires binding review; it is not solved by approving a route ref.
 
 ## Install and verify
 

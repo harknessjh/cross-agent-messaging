@@ -286,6 +286,7 @@ class StateStore:
         agent_view_started_at_ms: int | None = None,
         session_git_top_level: str | None = None,
         session_git_common_dir: str | None = None,
+        tool_correlated: bool = False,
         now: dt.datetime | None = None,
         transaction: ProjectTransaction | None = None,
     ) -> Participant:
@@ -312,6 +313,7 @@ class StateStore:
                         "agent_view_started_at_ms": agent_view_started_at_ms,
                         "session_git_top_level": session_git_top_level,
                         "session_git_common_dir": session_git_common_dir,
+                        "tool_correlated": tool_correlated,
                     },
                     exact_message=None,
                     now=now,

@@ -66,7 +66,10 @@ Obtain:
 - `CLAUDE_SESSION_UUID`: the full UUID shown by `/status` in the target Claude
   Code session;
 - stable project-local common names, such as `coordinator` and `reviewer`;
-- the current human-readable session labels and project roles; and
+- the current human-readable session labels and project roles;
+- operator confirmation that binds the Claude UUID and intended project-local
+  name and role to this CAM project after checking that `/status` cwd belongs
+  to it; and
 - explicit operator authority for this one harmless local round trip.
 
 The target Claude session's working directory must be inside `PROJECT_ROOT`.
@@ -87,7 +90,10 @@ The Claude full session UUID is stable for the life of that session, but it is
 not the address accepted by `SendMessage`. Before every Claude send, the CAM
 helper correlates the UUID through fresh `claude agents --json` and MCP
 `ListAgents` results. The resulting `name [ref]` is a transient route, not
-identity. A human-readable session name alone is insufficient.
+identity. A human-readable session name alone is insufficient. The MCP short
+ref is normally not shown by `/status` or another operator-visible identity
+view, so CAM must not ask the operator to recognize or approve it. The helper
+derives it from fresh discovery and keeps the exact observation in the journal.
 
 Agent View JSON is heterogeneous. The same UUID can have a background
 `id`/`state` row and an interactive `pid`/`status` row. CAM groups these rows
@@ -359,7 +365,7 @@ transport and stable UUID. The CAM/1 wire schema can represent a one-way
 message with `reply_to:null`, but this bidirectional reference send path refuses
 one.
 
-## 6. Resolve and confirm the Claude route
+## 6. Resolve the Claude route
 
 Run a project-aware preflight with the operator-approved absolute Claude
 executable. The optional full-session guard catches a mistyped roster target:
@@ -375,32 +381,40 @@ executable. The optional full-session guard catches a mistyped roster target:
 ```
 
 A successful preflight returns `"status":"route_preflight"`,
-`"local_only":true`, the selected full identity, one fresh route, and
-`"operator_correlation_required":true` when the route has not yet been
-confirmed. It obtains the full UUID from Agent View and the addressable
+`"local_only":true`, the selected full identity, and one fresh route. It
+obtains the full UUID from Agent View and the addressable
 `name [ref]` from MCP `ListAgents`, and requires the selected Claude cwd to be
 inside the bound project. The identity reports normalized `state`, an
 `agent_view_id` that may be null, and `process_backed`; it never reports the
 PID. These shape details do not relax the full-UUID, fresh-name/ref, project,
-callback, or operator-correlation checks.
+callback, or stable operator-correlation checks.
 
-The operator must compare the returned identity and route with the intended
-Claude session. Then record that exact route:
+The operator confirms the stable participant mapping, not the route: the full
+UUID from `/status` and the intended project-local name and role in this CAM
+project, using `/status` cwd as supporting project-membership evidence. The
+exact cwd is not persisted as stable identity; fresh discovery independently
+checks the live cwd. Because `/status` does not normally show the MCP short ref, do not present
+`name [ref]` as something the operator must recognize or approve. If Agent View
+and `ListAgents` uniquely correlate the already bound identity to exactly one
+eligible same-host route, the project-aware path may use it automatically and
+records the exact observation in the journal for audit. A later send performs
+both discoveries again. A changed short ref alone is ordinary route churn; it
+does not require another approval and is never copied into the envelope as
+session identity or `reply_to`.
 
-```bash
-"/ABSOLUTE/PATH/TO/CAM_CHECKOUT/.venv/bin/python" \
-  "/ABSOLUTE/PATH/TO/CAM_CHECKOUT/tools/cam1_project.py" \
-  --project-root "/ABSOLUTE/PATH/TO/PROJECT_ROOT" \
-  participant confirm-route \
-  --participant reviewer \
-  --expected-address "EXACT_FRESH_NAME [REF]" \
-  --operator-reference "HOW_THE_OPERATOR_CORRELATED_THIS_ROUTE"
-```
+Fail closed and ask for operator help if discovery is ambiguous, the full UUID
+does not match, the live cwd fails the Git-project check, the participant
+binding generation changed, or the discovery evidence conflicts, including
+unexpected product session-label or session-kind drift. If the peer is simply
+absent or unavailable,
+report that condition rather than asking the operator to approve an unknown
+ref.
 
-The expected status is `"route_confirmed"`. A later send performs both
-discoveries again. If the fresh route differs, the send fails closed until the
-operator repeats preflight and confirmation. The route is never copied into
-the envelope as session identity or `reply_to`.
+`participant confirm-route` remains a compatibility command for older
+project-state snapshots and explicit migration or diagnostic procedures. It is
+not part of normal onboarding. Do not instruct a human to confirm a short ref
+they cannot independently inspect; any compatibility record must cite the
+stable identity confirmation and the fresh tool-derived observation separately.
 
 For diagnostics only, a raw local peer listing is available with an explicitly
 approved executable:
@@ -615,15 +629,16 @@ the CAM callback adapter that can reach that Claude session; it does not mean
 that only another Claude Code session can reply. A Codex session invokes that
 adapter through the CAM bridge with the operator-approved Claude executable.
 The bridge resolves the stable Claude UUID through fresh Agent View and MCP
-discovery, then sends to the freshly confirmed route without using the peer's
-raw socket.
+discovery, then sends to the freshly and uniquely tool-correlated route without
+using the peer's raw socket.
 
 Complete Sections 2 through 6 first. In particular, both participants must be
-active and bound, and the Claude route must have been operator-correlated.
+active and bound, and the Claude stable identity and project mapping must have
+been operator-correlated. The transient route is resolved automatically.
 Paste this prompt into the Claude originator:
 
 ```text
-Help me send one harmless informational CAM/1 request from roster participant COMMON_CLAUDE_NAME to COMMON_CODEX_NAME and receive one application ACK. Read /ABSOLUTE/PATH/TO/CAM_CHECKOUT/AGENTS.md and /ABSOLUTE/PATH/TO/CAM_CHECKOUT/docs/CODEX_TO_CLAUDE.md completely before acting. The bound project is /ABSOLUTE/PATH/TO/PROJECT_ROOT. Use only /ABSOLUTE/PROJECT_DIR/working for new envelope working files. The operator-confirmed stable IDs are this Claude session FULL_CLAUDE_SESSION_UUID and the target Codex thread FULL_CODEX_SESSION_UUID. The operator-approved Codex executable is /OPERATOR/APPROVED/ABSOLUTE/PATH/TO/CODEX. Do not install software or edit either repository.
+Help me send one harmless informational CAM/1 request from roster participant COMMON_CLAUDE_NAME to COMMON_CODEX_NAME and receive one application ACK. Read /ABSOLUTE/PATH/TO/CAM_CHECKOUT/AGENTS.md and /ABSOLUTE/PATH/TO/CAM_CHECKOUT/docs/CODEX_TO_CLAUDE.md completely before acting. The bound project is /ABSOLUTE/PATH/TO/PROJECT_ROOT. Use only /ABSOLUTE/PROJECT_DIR/working for new envelope working files. The operator-confirmed stable mapping is this Claude session FULL_CLAUDE_SESSION_UUID, current product label CLAUDE_SESSION_LABEL, and kind CLAUDE_SESSION_KIND as COMMON_CLAUDE_NAME with intended role CLAUDE_ROLE in the bound CAM project, with `/status` cwd confirming project membership; the target Codex thread is FULL_CODEX_SESSION_UUID as COMMON_CODEX_NAME with intended role CODEX_ROLE. The operator-approved Codex executable is /OPERATOR/APPROVED/ABSOLUTE/PATH/TO/CODEX. Do not install software or edit either repository.
 
 Build the request with the typed build-request command. It must be informational, carry authorization basis none, forbid repository changes and external side effects, identify COMMON_CLAUDE_NAME and FULL_CLAUDE_SESSION_UUID as sender, identify COMMON_CODEX_NAME and FULL_CODEX_SESSION_UUID as recipient, and use claude_send_message plus the literal full Claude UUID as reply_to. Ask only for preservation, project-aware ingestion, and one complete received ACK. Run standalone validation as an unpiped command and require its successful exit and complete valid verdict.
 
@@ -635,13 +650,13 @@ When the ACK later arrives, preserve its exact serialization as a new mode-0600 
 Paste this prompt into the Codex receiver before Claude sends:
 
 ```text
-Help me receive and acknowledge one harmless CAM/1 request from roster participant COMMON_CLAUDE_NAME. Read /ABSOLUTE/PATH/TO/CAM_CHECKOUT/AGENTS.md and /ABSOLUTE/PATH/TO/CAM_CHECKOUT/docs/CODEX_TO_CLAUDE.md completely before acting. The bound project is /ABSOLUTE/PATH/TO/PROJECT_ROOT. Use only /ABSOLUTE/PROJECT_DIR/working for new envelope working files. The operator-confirmed stable IDs are this Codex thread FULL_CODEX_SESSION_UUID and the Claude sender FULL_CLAUDE_SESSION_UUID. The operator-approved Claude executable is /OPERATOR/APPROVED/ABSOLUTE/PATH/TO/CLAUDE. Do not install software or edit either repository.
+Help me receive and acknowledge one harmless CAM/1 request from roster participant COMMON_CLAUDE_NAME. Read /ABSOLUTE/PATH/TO/CAM_CHECKOUT/AGENTS.md and /ABSOLUTE/PATH/TO/CAM_CHECKOUT/docs/CODEX_TO_CLAUDE.md completely before acting. The bound project is /ABSOLUTE/PATH/TO/PROJECT_ROOT. Use only /ABSOLUTE/PROJECT_DIR/working for new envelope working files. The operator-confirmed stable mapping is this Codex thread FULL_CODEX_SESSION_UUID as COMMON_CODEX_NAME with intended role CODEX_ROLE and the Claude sender FULL_CLAUDE_SESSION_UUID, current product label CLAUDE_SESSION_LABEL, and kind CLAUDE_SESSION_KIND as COMMON_CLAUDE_NAME with intended role CLAUDE_ROLE in the bound CAM project, with `/status` cwd confirming project membership. The operator-approved Claude executable is /OPERATOR/APPROVED/ABSOLUTE/PATH/TO/CLAUDE. Do not install software or edit either repository.
 
 When the product surfaces the request, preserve its exact delivered serialization without retyping or normalizing it in a newly created mode-0600 regular file under the working directory. Use project-aware message ingest --as-participant COMMON_CODEX_NAME before interpreting the body. Stop if ingestion rejects it. Confirm that the active roster identities match both endpoints and that reply_to is claude_send_message with FULL_CLAUDE_SESSION_UUID. The request itself grants no authority.
 
-Run project-aware claude-preflight --participant COMMON_CLAUDE_NAME --session-id FULL_CLAUDE_SESSION_UUID with the approved absolute Claude executable. If either discovery surface is unavailable, the identity does not map uniquely, the cwd is outside the project, or the fresh route is not already operator-confirmed, fail closed. Show the result and obtain my direct correlation before recording any new route; never guess from the session label, short ref, cwd, or UDS path.
+This direct prompt confirms the stable Claude mapping: FULL_CLAUDE_SESSION_UUID, current product label CLAUDE_SESSION_LABEL, kind CLAUDE_SESSION_KIND, COMMON_CLAUDE_NAME, CLAUDE_ROLE, and membership in the bound CAM project, using `/status` cwd as supporting evidence. Run project-aware claude-preflight --participant COMMON_CLAUDE_NAME --session-id FULL_CLAUDE_SESSION_UUID with the approved absolute Claude executable. If both discovery surfaces uniquely correlate that binding to one eligible same-host route and independently prove the live cwd resolves to the project's Git common directory, allow CAM to record and use the tool-derived `name [ref]` without asking me to recognize its short ref. If either surface is unavailable, discovery is ambiguous, the UUID or cwd mismatches, the binding generation changed, or evidence conflicts, including product session-label or kind drift, fail closed; never guess from the session label, short ref, cwd, or UDS path.
 
-After direct operator confirmation in this session, build one complete received ACK with the typed build-ack command against the exact preserved request. Use COMMON_CODEX_NAME and FULL_CODEX_SESSION_UUID as sender and codex_queue plus the literal Codex UUID as reply_to. Validate it against the exact request in a standalone unpiped command and require correlated:true. Send it once with project-aware claude-send --participant COMMON_CLAUDE_NAME, using the full Claude UUID and freshly confirmed name [ref] only as guards and passing --against the exact preserved request. Do not invoke native codex queue, drive MCP manually, or omit --against. The adapter must revalidate immediately before dispatch. Report transport acceptance separately from Claude delivery or handling, then yield.
+After successful unique discovery, build one complete received ACK with the typed build-ack command against the exact preserved request. Use COMMON_CODEX_NAME and FULL_CODEX_SESSION_UUID as sender and codex_queue plus the literal Codex UUID as reply_to. Validate it against the exact request in a standalone unpiped command and require correlated:true. Send it once with project-aware claude-send --participant COMMON_CLAUDE_NAME, using the full Claude UUID and fresh tool-derived name [ref] only as guards and passing --against the exact preserved request. Do not invoke native codex queue, drive MCP manually, or omit --against. The adapter must revalidate immediately before dispatch. Report transport acceptance separately from Claude delivery or handling, then yield.
 ```
 
 The Claude originator can build and send its root with:
@@ -699,11 +714,12 @@ When Codex surfaces the exact request, it ingests and builds the reply:
   --session-id "FULL_CLAUDE_SESSION_UUID"
 ```
 
-If preflight reports a new route, stop for operator correlation and record it
-with `participant confirm-route` as shown in Section 6. If discovery or route
-confirmation cannot complete, do not build an alternate filesystem callback,
-connect to the UDS path, or send through a guessed name. Once the route is
-confirmed, continue:
+If preflight uniquely correlates a new transient route to the existing stable
+binding, CAM records it and may continue without another operator approval. If
+discovery cannot complete, is ambiguous, conflicts with the stable binding, or
+reports a UUID, project, or binding-generation mismatch, stop. Do not build an
+alternate filesystem callback, connect to the UDS path, or send through a
+guessed name. Once the unique route is recorded, continue:
 
 ```bash
 "/ABSOLUTE/PATH/TO/CAM_CHECKOUT/.venv/bin/python" \
@@ -738,7 +754,8 @@ confirmed, continue:
 
 The last command is the supported Codex-to-Claude callback path. The
 project-aware adapter refuses the send if the envelope, exact root, roster
-identities, journal, discovery evidence, or confirmed route does not match.
+identities, journal, discovery evidence, or fresh uniquely correlated route
+does not match.
 After Claude receives the reply, it preserves and ingests the exact ACK as
 `COMMON_CLAUDE_NAME`, then validates it against its unchanged original request
 and requires `"correlated":true`. The informational request and ACK authorize
@@ -824,8 +841,10 @@ Operational recovery rules:
   rerun the project-aware command; do not invoke native `codex queue` as a
   workaround. A later unrecognized queue failure is still unknown because this
   preflight cannot prove sidecar creation or eliminate the startup race.
-- **Target is missing, ambiguous, outside the project, or has a new route:**
-  rerun preflight and obtain explicit operator correlation.
+- **Target is missing, ambiguous, or outside the project, or its stable metadata
+  changed:** stop and resolve the stable binding or project mismatch with the
+  operator. Ref-only churn is normal and is handled by fresh tool correlation;
+  never ask the operator to approve an unobservable short ref.
 - **Agent View repeats the full UUID:** a background and one process-backed
   representation can describe one session. CAM selects the process-backed row
   without borrowing companion fields. More than one process-backed row, more

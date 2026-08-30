@@ -37,6 +37,7 @@ class ParticipantStatus(StrEnum):
 class RouteStatus(StrEnum):
     NOT_DISCOVERED = "not_discovered"
     CANDIDATE = "candidate"
+    TOOL_CORRELATED = "tool_correlated"
     OPERATOR_CORRELATED = "operator_correlated"
     STALE = "stale"
 
@@ -414,6 +415,7 @@ class ParticipantRoster:
         agent_view_started_at_ms: int | None = None,
         session_git_top_level: str | None = None,
         session_git_common_dir: str | None = None,
+        tool_correlated: bool = False,
     ) -> Participant:
         current = self._select(selector)
         if current.binding is None or current.status == ParticipantStatus.RETIRED:
@@ -508,6 +510,7 @@ class ParticipantRoster:
             transport=transport,
             address=route_address,
         )
+        normalized_source = _bounded_text(source, field_name="source", maximum=128)
         preserve_correlation = (
             current.status == ParticipantStatus.BOUND
             and current.route is not None
@@ -523,10 +526,27 @@ class ParticipantRoster:
             and current.route.session_git_top_level == top_level
             and current.route.session_git_common_dir == common_dir
         )
+        if not isinstance(tool_correlated, bool):
+            raise CamUsageError(
+                "roster.route_evidence", "tool_correlated must be a boolean"
+            )
+        if tool_correlated and (
+            current.vendor != "claude-code"
+            or normalized_source != "claude_agent_view_and_list_agents"
+            or product_state is None
+            or agent_view_kind is None
+            or agent_view_started_at_ms is None
+            or top_level is None
+            or common_dir is None
+        ):
+            raise CamUsageError(
+                "roster.route_evidence",
+                "tool-correlated Claude routes require complete discovery evidence",
+            )
         route = RouteObservation(
             transport=transport,
             address=route_address,
-            source=_bounded_text(source, field_name="source", maximum=128),
+            source=normalized_source,
             observed_at=observed,
             binding_generation=current.binding.generation,
             agent_view_id=_optional_text(
@@ -563,7 +583,11 @@ class ParticipantRoster:
             status=(
                 RouteStatus.OPERATOR_CORRELATED
                 if preserve_correlation
-                else RouteStatus.CANDIDATE
+                else (
+                    RouteStatus.TOOL_CORRELATED
+                    if tool_correlated
+                    else RouteStatus.CANDIDATE
+                )
             ),
             operator_reference=(
                 current.route.operator_reference if preserve_correlation else None
@@ -598,12 +622,13 @@ class ParticipantRoster:
                 "roster.route_missing",
                 "participant has no observed route to confirm",
             )
-        if current.status != ParticipantStatus.BOUND or (
-            current.route.status != RouteStatus.CANDIDATE
-        ):
+        if current.status != ParticipantStatus.BOUND or current.route.status not in {
+            RouteStatus.CANDIDATE,
+            RouteStatus.TOOL_CORRELATED,
+        }:
             raise CamUsageError(
                 "roster.route_not_candidate",
-                "only the current candidate route may be confirmed",
+                "only the current candidate or tool-correlated route may be confirmed",
             )
         if current.route.address != expected_address:
             raise CamUsageError(
@@ -671,7 +696,11 @@ class ParticipantRoster:
             current.status != ParticipantStatus.BOUND
             or current.binding is None
             or current.route is None
-            or current.route.status != RouteStatus.OPERATOR_CORRELATED
+            or current.route.status
+            not in {
+                RouteStatus.TOOL_CORRELATED,
+                RouteStatus.OPERATOR_CORRELATED,
+            }
             or current.route.binding_generation != current.binding.generation
         ):
             raise CamUsageError(

@@ -280,6 +280,11 @@ class TransportCliRoundTripTests(unittest.TestCase):
         self.assertEqual(result["target_session_id"], CLAUDE_SESSION)
         self.assertEqual(result["target"], "local-worker [abcdef]")
         self.assertEqual(preflight["identity"]["session_id"], CLAUDE_SESSION)
+        self.assertTrue(preflight["operator_identity_confirmation_required"])
+        self.assertEqual(
+            preflight["operator_correlation_subject"], "stable_session_identity"
+        )
+        self.assertFalse(preflight["transient_route_confirmation_required"])
 
     def test_live_transport_rejects_schema_valid_oversized_envelope(self) -> None:
         raw = cam1.build_request(

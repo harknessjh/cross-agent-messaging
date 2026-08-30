@@ -37,6 +37,11 @@ Use this checklist against the exact commit proposed for publication. A green so
   name, product label, role, stable full session UUID, optional Agent View ID,
   and fresh route. Confirm a missing Agent View ID remains null and that the
   roster never stores a Claude process ID or UDS.
+- Confirm the operator approves the stable Claude UUID, current session name
+  and kind, and intended CAM project—not the transient MCP `name [ref]`, which
+  is normally absent from `/status`. Keep the exact discovered ref in the
+  journal as tool-derived audit evidence without presenting it as a human
+  authentication factor.
 - Use synthetic identifiers, paths, receipts, messages, and timestamps in every public artifact.
 - Scan tracked content and Git history for credentials, personal paths, callback/session IDs, queue IDs, peer listings, email addresses, and transcripts.
 - Confirm that examples do not imply authentication, authorization, guaranteed
@@ -127,6 +132,10 @@ Use this checklist against the exact commit proposed for publication. A green so
   a live Claude send selects a full session UUID through fresh Agent View plus
   `ListAgents` route correlation and requires its cwd inside the bound project;
   optional `--to` only guards that fresh route.
+  Confirm ref-only churn is freshly tool-correlated without another operator
+  prompt, while UUID, product-name, configured-kind, project, binding-generation,
+  duplicate-name, and same-attempt evidence drift fail before journal intent or
+  product dispatch.
   Confirm live transport refuses stdin, FIFO inputs fail before waiting for a
   writer, and offline stdin validation remains available.
 - Exercise heterogeneous Agent View fixtures in which background `id`/`state`

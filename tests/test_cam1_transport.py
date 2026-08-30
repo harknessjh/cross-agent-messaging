@@ -792,7 +792,7 @@ class ProjectBoundTransportTestCase(unittest.TestCase):
             "--session-id",
             CLAUDE_SESSION,
             "--session-label",
-            "Local Claude worker",
+            "local-worker",
             "--session-kind",
             "interactive",
             "--operator-reference",
@@ -843,6 +843,7 @@ class ProjectBoundTransportTestCase(unittest.TestCase):
         cwd: Path | None = None,
         peer_name: str = "local-worker",
         peer_ref: str = "abcdef",
+        peer_kind: str = "interactive",
         peer_state: str = "idle",
         peer_listing: str | None = None,
         agent_view_shape: str = "process",
@@ -858,7 +859,7 @@ class ProjectBoundTransportTestCase(unittest.TestCase):
             else None
         )
         listing = peer_listing or (
-            f"Peer sessions (1):\n  {peer_name} [{peer_ref}]  ·  interactive  ·  "
+            f"Peer sessions (1):\n  {peer_name} [{peer_ref}]  ·  {peer_kind}  ·  "
             f"{peer_state}  ·  started now"
         )
         source = textwrap.dedent(
@@ -922,6 +923,7 @@ class ProjectBoundTransportTestCase(unittest.TestCase):
             with_agent_view(
                 source,
                 name=peer_name,
+                kind=peer_kind,
                 state=peer_state,
                 cwd=str(cwd or self.repo),
                 shape=agent_view_shape,
@@ -931,7 +933,7 @@ class ProjectBoundTransportTestCase(unittest.TestCase):
         executable.chmod(0o700)
         return executable
 
-    def preflight_and_confirm(self, claude_bin: Path) -> None:
+    def preflight_tool_correlated_route(self, claude_bin: Path) -> None:
         preflight = self.run_transport(
             "claude-preflight",
             "--participant",
@@ -943,18 +945,12 @@ class ProjectBoundTransportTestCase(unittest.TestCase):
             claude_bin=claude_bin,
         )
         self.assertEqual(preflight.returncode, 0, preflight.stderr)
-        self.assertTrue(json.loads(preflight.stdout)["operator_correlation_required"])
-        confirmed = self.run_project(
-            "participant",
-            "confirm-route",
-            "--participant",
-            "local-worker",
-            "--expected-address",
-            "local-worker [abcdef]",
-            "--operator-reference",
-            "test operator correlated Agent View with ListAgents",
-        )
-        self.assertEqual(confirmed.returncode, 0, confirmed.stderr)
+        payload = json.loads(preflight.stdout)
+        self.assertFalse(payload["operator_correlation_required"])
+        self.assertIsNone(payload["operator_correlation_subject"])
+        self.assertFalse(payload["operator_identity_confirmation_required"])
+        self.assertFalse(payload["transient_route_confirmation_required"])
+        self.assertEqual(payload["participant"]["route_status"], "tool_correlated")
 
     def _post_attempt_lock_failure_transaction(self):
         real_transaction = project.project_transaction

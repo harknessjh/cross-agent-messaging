@@ -65,9 +65,11 @@ Shell examples assume a POSIX environment such as macOS, Linux, or WSL. Other pl
 - **Stable session ID**: the product's full session or thread UUID, used as
   identity and callback address in this profile.
 - **Route**: a currently addressable transport value. A Claude `name [ref]`
-  route is transient and is resolved again before every send.
+  route is transient, tool-derived metadata and is resolved again before every
+  send. It is not a value the operator is normally able or required to inspect.
 - **Project roster**: journal-backed operator correlation between a common
-  name, role, product metadata, stable session ID, and observed route.
+  name, role, product metadata, stable session ID, and project binding, plus
+  separately journaled tool-derived route observations.
 - **Project journal**: the required owner-only append-only record for one
   Git-bound CAM project; it is not a transport or authority source.
 - **Operator**: a human responsible for a session. Sender and recipient may have different operators.
@@ -142,9 +144,29 @@ not make it a second enrollment or authentication layer.
 The project roster MUST identify each participant's project-local common name,
 human-readable display or product label, role, vendor, full stable session ID,
 and the evidence used for operator correlation. It MAY retain a current route
-observation, but a route is never identity. A changed or missing stable session
-ID, conflicting retransmission, ambiguous discovery result, or inconsistent
-project binding MUST make the mapping stale or return it to `unknown`.
+observation, but a route is never identity. For Claude, the operator-confirmed
+mapping MUST cover the full UUID shown by `/status`, the intended project-local
+name and role, the current product session label and kind, and the intended CAM
+project. The operator SHOULD use the current `/status` cwd to confirm project
+membership, but the exact cwd is supporting evidence rather than stable
+identity. Every fresh discovery MUST
+independently prove that its Agent View cwd resolves to that Git project's
+common directory. The MCP short ref is not normally exposed by `/status`; an
+implementation MUST NOT present that ref as something the operator must
+recognize or approve. After the stable mapping is recorded,
+fresh discovery MAY automatically use a route when the bound UUID maps through
+Agent View to exactly one eligible representation and that representation maps
+through `ListAgents` to exactly one addressable same-host peer. The exact
+observed name and ref MUST remain visible in the project journal for audit.
+A changed transient ref alone does not require operator confirmation.
+
+A changed or missing stable session ID, binding-generation change, conflicting
+retransmission, ambiguous discovery result, or inconsistent project binding
+MUST make the mapping stale or return it to `unknown` and require operator
+help. Unavailable discovery MUST stop the send, but it MUST NOT be converted
+into a request that the operator approve an unobservable short ref.
+Unexpected product session-label or session-kind drift is conflicting evidence
+and requires binding review or rebinding; route approval cannot cure it.
 Resuming the same product session under the same full UUID does not by itself
 change identity; a newly created session UUID requires fresh operator
 correlation. Claude routes MUST be rediscovered before every send regardless
@@ -384,10 +406,13 @@ hello acknowledgment; a receiver MAY additionally perform this challenge:
 
 1. Both endpoints resolve the same Git-bound project, verify its journal, and
    record their stable full session IDs and operator-confirmed common names and
-   roles in the project roster.
+   roles in the project roster. For Claude, the operator also binds that stable
+   mapping to the intended CAM project, using `/status` cwd as supporting
+   project-membership evidence.
 2. The sender's operator confirms which stable target session is intended. For
    Claude, the sender resolves that session through fresh Agent View and
-   `ListAgents` results.
+   `ListAgents` results. A unique route is selected and journaled by the tool;
+   the operator is not asked to recognize the MCP short ref.
 3. Agent A sends a `challenge` with a fresh `nonce_a`, its claimed identity, and its stable session UUID as its callback address.
 4. B journals the exact delivered bytes before parsing and validates the exact
    envelope. If A is not already correlated, B enters
@@ -402,7 +427,7 @@ hello acknowledgment; a receiver MAY additionally perform this challenge:
    `operator_correlated`, and action authorization remains separate under
    section 14.
 
-Nonces MUST be unpredictable, single-use, at least 128 bits, and short-lived. A challenge-response transcript provides evidence only that messages carrying the two nonces traversed the configured routes during the challenge window and that the relevant operators correlated the displayed mappings. It does not establish cryptographic identity, prove route control against a relay or compromised same-user process, prove who authored a message, make either agent trustworthy, or grant authority for later actions. Sensitive reads and all side effects require receiver-verifiable operator authority or an applicable receiver-owned policy.
+Nonces MUST be unpredictable, single-use, at least 128 bits, and short-lived. A challenge-response transcript provides evidence only that messages carrying the two nonces traversed the configured routes during the challenge window and that the relevant operators correlated the stable identity and project mappings. It does not establish cryptographic identity, prove route control against a relay or compromised same-user process, prove who authored a message, make either agent trustworthy, or grant authority for later actions. Sensitive reads and all side effects require receiver-verifiable operator authority or an applicable receiver-owned policy.
 
 ## 8. Universal preflight
 
@@ -421,9 +446,13 @@ Before sending, the agent MUST:
    eligible representation without merging companion evidence, require one
    addressable same-host `name [ref]` route, and require the selected Agent View
    cwd to resolve inside the bound Git project, including an initialized linked
-   worktree sharing its Git common directory.
-4. Confirm the intended repository, worktree, common name, role, and product
-   label. Stop for operator correlation when the roster or discovery differs.
+   worktree sharing its Git common directory. When those facts uniquely match
+   the active operator-bound identity, automatically use and journal the fresh
+   route; do not require approval of its short ref.
+4. Confirm the intended repository, worktree, common name, role, product label,
+   and binding generation. Stop for operator help on ambiguity, UUID or project
+   mismatch, a binding-generation change, or conflicting evidence. A transient
+   ref change with otherwise unique, consistent evidence is not such a change.
 5. Use explicit operator-approved absolute executable paths for every live
    transport operation and check the required capabilities instead of assuming
    a version or trusting a current `PATH` lookup as authority.
@@ -650,7 +679,10 @@ The sender then calls:
 ListAgents({})
 ```
 
-An operator can inspect the same capability with `/list-agents` or `/peers` in supported Claude Code versions.
+Some Claude Code versions expose a peer listing through `/list-agents` or
+`/peers`, but that is not a portable operator-visible identity surface and may
+not expose the same ref alongside the stable `/status` UUID. Conformance MUST
+NOT depend on the operator comparing those values manually.
 
 Agent View JSON is a heterogeneous inventory. An interactive process row may
 carry `pid` and `status` while omitting `id` and `state`. A background lifecycle
@@ -681,6 +713,17 @@ fresh route. It MUST fail closed on duplicate names, missing rows, multiple live
 representations, nonlocal rows, unavailable rows, or conflicting metadata. A
 bare name is acceptable only when the live interface exposes no ref and the name
 uniquely identifies the selected full session UUID.
+
+The MCP short ref is not normally available in the target session's `/status`
+or other operator-visible identity display. A sender MUST NOT ask the operator
+to identify, recognize, or approve that ref. When the already operator-bound
+full UUID, intended project-local name and role, and intended CAM project
+correlate uniquely through both discovery surfaces, the sender MAY select the
+route automatically and MUST journal the exact observed `name [ref]`, discovery
+source, and observation time. It MUST fail closed and request operator help on
+ambiguity, UUID or project mismatch, a binding-generation change, or conflicting
+evidence. Unexpected product session-label or session-kind drift is conflicting
+evidence. A fresh short ref by itself is normal route churn.
 
 Through the locally verified MCP interface, the `ListAgents` payload is nested under `result.content[0].text`; that text contains a JSON object whose `listing` field is human-readable. Inspect the live result rather than assuming this nesting will never change.
 
@@ -756,7 +799,8 @@ directory. Then list current addressable Claude agents through MCP:
 ```
 
 After uniquely correlating the selected Agent View name to the fresh
-`ListAgents` `name [ref]`, send the CAM/1 envelope:
+`ListAgents` `name [ref]`, journal that tool-derived observation and send the
+CAM/1 envelope. No separate human approval of the short ref is required:
 
 ```json
 {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"SendMessage","arguments":{"to":"EXACT PEER NAME [FRESH REF]","summary":"Short purpose","message":"SERIALIZED CAM/1 ENVELOPE","notify_when_idle":true}}}
@@ -768,7 +812,8 @@ Every `tools/call` send MUST produce a parsed result with the expected JSON-RPC 
 
 The envelope's `recipient.session_id` MUST equal the selected full Claude
 session UUID. The fresh `name [ref]` is an ephemeral route for this one send and
-MUST NOT replace that UUID in the roster, recipient identity, or callback.
+MUST NOT replace that UUID in the roster, recipient identity, or callback. It
+MUST remain visible in the journal as audit evidence of the actual route used.
 
 The bundled one-shot transport helper accepts envelopes of at most 65,536 UTF-8 bytes. This deliberately narrows live transport below the wire validator's 1 MiB parsing bound so the Codex callback remains below common single-argument operating-system limits. Larger artifacts should remain in an operator-approved shared local scope and be referenced by exact path and digest rather than copied into an envelope.
 
@@ -1125,6 +1170,12 @@ participant's supported transport and stable UUID. This reference-path check
 prevents a mutable display name or retyped callback from silently selecting a
 different participant; it does not authenticate either participant.
 
+A Claude route observation is tool-correlated to that stable binding, not
+operator-authenticated. Unique fresh correlation permits its automatic use.
+The operator MUST NOT be asked to approve a short ref that the product does not
+expose through `/status`. Operator help is required only for ambiguity, UUID or
+project mismatch, a binding-generation change, or conflicting evidence.
+
 The roster MUST NOT store or use a Claude runtime UDS as a route. A full session
 UUID is identity; a name, short ref, optional Agent View ID, cwd, process ID,
 and `name [ref]` are supporting or transient discovery data. A missing Agent
@@ -1207,11 +1258,14 @@ Remote Control, cloud sessions, cross-host delivery, and locally observed Codex 
 - Run fresh MCP `ListAgents` and require that the selected Agent View name maps
   to one addressable local `name [ref]`. A local `busy` peer is addressable; a
   local terminal or unknown state is unavailable, and remote or cloud peers are
-  nonlocal.
+  nonlocal. Do not ask the operator to recognize or approve the short ref;
+  journal a unique tool-derived route automatically.
 - Confirm that the target is an eligible session and that inbound messaging is enabled under the receiver's policy.
 - Check documented provider, feature-flag, container, platform, and Remote Control constraints.
 - If a previously working session cannot be correlated, mark its route stale
-  and stop. Do not use an old ref, guess a new name, or connect to its UDS.
+  and stop. Request operator help only when the stable UUID/project binding is
+  ambiguous, changed, or contradicted. Do not use an old ref, guess a new name,
+  or connect to its UDS.
 
 ### A transport accepted a message but the recipient has not responded
 

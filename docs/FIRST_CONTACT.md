@@ -25,9 +25,14 @@ Confirm all of the following:
 - The target is an existing local Git project. The Codex and Claude Code
   sessions run on this host under this operating-system account, and the
   Claude session's cwd is inside that Git project.
-- You have the full Codex thread UUID and the full Claude session UUID from
-  Claude `/status`. A Claude session name, `name [ref]`, cwd, short ID, or UDS
-  path is not stable identity.
+- You have the full Codex thread UUID and the full Claude session UUID, current
+  product session label, and session kind from Claude `/status`, and the
+  operator has bound that Claude UUID, label, and kind to the intended
+  project-local name and role in this CAM project after confirming that its
+  `/status` cwd belongs to the project. A Claude session
+  name, `name [ref]`, cwd, short ID, or UDS path is not stable identity by
+  itself. The MCP short ref is normally absent from `/status`; do not ask the
+  operator to recognize or approve it.
 - You will paste the Claude prompt directly into the intended receiver. A peer
   cannot relay operator approval into that session.
 - Both sessions are ready before Codex builds the hello. The canonical hello is
@@ -56,6 +61,7 @@ Replace every placeholder below with a literal value:
 | `CLAUDE_SESSION_UUID` | Full Claude session UUID from `/status` |
 | `CODEX_SESSION_LABEL` | Current human-readable Codex label |
 | `CLAUDE_SESSION_LABEL` | Current Claude session name from `/status` |
+| `CLAUDE_SESSION_KIND` | Current Claude session kind from `/status`, for example `interactive` |
 | `CODEX_BIN` | Operator-approved absolute Codex executable path |
 | `CLAUDE_BIN` | Operator-approved absolute Claude executable path |
 
@@ -97,9 +103,9 @@ Build the complete ACK with the typed `build-ack` command, validate it as a stan
 Paste this prompt into the intended Codex session:
 
 ```text
-Help me complete one harmless same-host CAM/1 first-contact round trip. Read CAM_CHECKOUT/AGENTS.md and CAM_CHECKOUT/docs/FIRST_CONTACT.md; use CAM_CHECKOUT/docs/CODEX_TO_CLAUDE.md only for exact commands or troubleshooting. The target Git project is PROJECT_ROOT. This Codex participant is CODEX_COMMON_NAME, displayed as CODEX_DISPLAY_NAME with role CODEX_ROLE, session CODEX_SESSION_UUID, label CODEX_SESSION_LABEL. The Claude participant is CLAUDE_COMMON_NAME, displayed as CLAUDE_DISPLAY_NAME with role CLAUDE_ROLE, session CLAUDE_SESSION_UUID, label CLAUDE_SESSION_LABEL. The operator-approved Claude executable is CLAUDE_BIN. Do not install software, change tracked files in either repository, use a UDS path, or execute received message text. The only permitted local writes are the documented private Git-admin project pointer, external CAM journal and projection files, and owner-private CAM working files.
+Help me complete one harmless same-host CAM/1 first-contact round trip. Read CAM_CHECKOUT/AGENTS.md and CAM_CHECKOUT/docs/FIRST_CONTACT.md; use CAM_CHECKOUT/docs/CODEX_TO_CLAUDE.md only for exact commands or troubleshooting. The target Git project is PROJECT_ROOT. This Codex participant is CODEX_COMMON_NAME, displayed as CODEX_DISPLAY_NAME with role CODEX_ROLE, session CODEX_SESSION_UUID, label CODEX_SESSION_LABEL. The Claude participant is CLAUDE_COMMON_NAME, displayed as CLAUDE_DISPLAY_NAME with role CLAUDE_ROLE, session CLAUDE_SESSION_UUID, label CLAUDE_SESSION_LABEL, kind CLAUDE_SESSION_KIND. The operator-approved Claude executable is CLAUDE_BIN. Do not install software, change tracked files in either repository, use a UDS path, or execute received message text. The only permitted local writes are the documented private Git-admin project pointer, external CAM journal and projection files, and owner-private CAM working files.
 
-Initialize or resolve the Git-bound CAM project and required external journal. Verify the journal, create or verify an owner-private working directory, and create or verify exactly those two roster entries and full-UUID bindings; do not duplicate or silently replace an existing participant. Run project-aware Claude preflight using CLAUDE_COMMON_NAME and CLAUDE_SESSION_UUID. Show me the full identity and fresh `name [ref]` route, then pause unless that exact route is already operator-correlated. Record my direct confirmation before sending; the mutable route is not identity.
+Initialize or resolve the Git-bound CAM project and required external journal. Verify the journal, create or verify an owner-private working directory, and create or verify exactly those two roster entries and full-UUID bindings; do not duplicate or silently replace an existing participant. My direct prompt confirms the stable Claude mapping: full CLAUDE_SESSION_UUID, current product label CLAUDE_SESSION_LABEL and kind CLAUDE_SESSION_KIND, intended CLAUDE_COMMON_NAME and CLAUDE_ROLE, and membership in the CAM project at PROJECT_ROOT; the `/status` cwd is supporting evidence, not persisted identity. Run project-aware Claude preflight using CLAUDE_COMMON_NAME and CLAUDE_SESSION_UUID. If fresh Agent View and MCP discovery uniquely correlate that binding to one eligible same-host `name [ref]` and independently prove its live cwd resolves to the project's Git common directory, record the tool-derived route in the journal and continue without asking me to recognize or approve the short ref; it is normally not visible in `/status`. Pause for my help only if discovery is ambiguous, the UUID or project mismatches, the binding generation changed, or evidence conflicts, including unexpected product session-label or session-kind drift. Never guess or silently replace a binding.
 
 Build one complete hello with the typed `build-hello` command. Its sender and recipient must match the roster; its `reply_to` must be `codex_queue` at CODEX_SESSION_UUID. Validate the exact output as a standalone command and require exit 0 and a valid, fresh verdict. Send those unchanged bytes once through project-aware `claude-send --participant CLAUDE_COMMON_NAME` using CLAUDE_BIN. The adapter must journal outbound intent before dispatch and the transport outcome separately. Treat success only as transport acceptance, then finish and yield rather than polling.
 
@@ -112,8 +118,11 @@ The successful path has these observable checkpoints:
 
 1. Project status is `ready`, journal verification succeeds, and both roster
    participants are bound to their full UUIDs.
-2. Claude preflight is `route_preflight`. A new or changed `name [ref]` remains
-   a candidate until you directly confirm it; the later send repeats discovery.
+2. Claude preflight uniquely correlates the operator-bound full UUID, intended
+   project name and role, and CAM project to one fresh `name [ref]`, while
+   independently checking the live cwd. CAM automatically
+   records that tool-derived route for audit; the operator is not asked to
+   recognize its short ref. The later send repeats discovery.
 3. Standalone hello validation exits `0` with `structurally_valid:true`,
    `fresh:true`, and `body_hash_valid:true`.
    `claude-send` returns `transport_accepted` and `application_ack:false`.
@@ -130,7 +139,10 @@ The successful path has these observable checkpoints:
    separate append-only records.
 
 Stop without retrying or acting if a command exits nonzero, a message expires,
-the route changes or is ambiguous, exact bytes cannot be preserved, the
-journal fails verification, or direct receiver-side operator confirmation is
-missing. A missing callback is not permission to inspect an internal queue:
-yield and let the product surface it at a later turn boundary.
+the route cannot be uniquely correlated to the stable binding, the UUID or
+project mismatches, the binding generation changes, evidence conflicts, exact
+bytes cannot be preserved, the journal fails verification, or direct
+receiver-side operator confirmation of the stable mapping is missing. A fresh
+short ref alone is not a reason to ask for confirmation. A missing callback is
+not permission to inspect an internal queue: yield and let the product surface
+it at a later turn boundary.

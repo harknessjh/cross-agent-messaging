@@ -192,20 +192,23 @@ these concepts separate:
   operator;
 - **session label**: the current human-readable product conversation or
   session name, which may change; and
-- **route observation**: a fresh, transient transport address and the evidence
-  used to observe it. Claude observations include the Agent View session kind
-  and start time, the optional validated Agent View ID (null when absent), and
-  the resolved Git worktree/common-directory context. They contain only the
-  selected representation's evidence: a process ID and companion-row fields
-  are never persisted. Raw peer sockets are also excluded.
+- **route observation**: a fresh, tool-derived transient transport address and
+  the evidence used to observe it. Claude observations include the Agent View
+  session kind and start time, the optional validated Agent View ID (null when
+  absent), and the resolved Git worktree/common-directory context. They contain
+  only the selected representation's evidence: a process ID and companion-row
+  fields are never persisted. Raw peer sockets are also excluded.
 
 Never use a display name, session label, short reference, working directory,
 or Unix-domain socket as stable identity. Never store the Claude peer UDS in
 the roster.
 
 For Claude Code, the operator supplies the full session UUID shown by the
-target session's `/status`. Before every send, the helper performs both forms
-of current discovery:
+target session's `/status` and binds it to the intended project-local name and
+role in the intended CAM project. The operator uses `/status` cwd to confirm
+project membership, but the exact cwd is not persisted as stable identity.
+Before every send, the helper independently checks the live cwd and performs
+both forms of current discovery:
 
 1. `claude agents --json` groups representations by exact full `sessionId`.
    The same UUID can have a background `id`/`state` row and an interactive
@@ -224,10 +227,20 @@ of current discovery:
    including an initialized linked worktree sharing its Git common directory.
 
 The full session UUID remains the identity and the envelope callback address.
-The `name [ref]` value is only the route for that send. If discovery is missing,
-has multiple process-backed or eligible fallback representations, is
-ambiguous, nonlocal, stale, or inconsistent, stop and obtain operator
-correlation; do not guess or silently retarget.
+The `name [ref]` value is only the route for that send. The short ref is not
+normally visible in Claude `/status`, so it is not a value the operator must
+recognize or approve. If the already bound UUID and project context map
+uniquely through both discovery surfaces, CAM automatically records the exact
+route observation in the journal and may use it. A changed ref alone does not
+require another operator confirmation.
+
+If discovery is missing, has multiple process-backed or eligible fallback
+representations, is ambiguous, nonlocal, stale, or inconsistent, stop; do not
+guess or silently retarget. Request operator help when the ambiguity concerns
+the stable mapping, the UUID or project mismatches, the binding generation
+changed, or evidence conflicts, including unexpected product session-label or
+session-kind drift. Do not substitute a request to approve an unobservable
+short ref.
 
 For Codex, the full thread UUID is both the stable session identity and the
 `codex queue` address. A Codex session should receive that literal UUID from the
@@ -274,9 +287,17 @@ Create and bind participants from the CAM/1 checkout. For example:
 
 Binding a Codex participant also records its UUID as the operator-correlated
 `codex_queue` route. A Claude binding deliberately does not guess a live route.
-Run project-aware `claude-preflight --participant reviewer`, inspect its
-fresh Agent View and `ListAgents` correlation, then explicitly record the exact
-returned route:
+Run project-aware `claude-preflight --participant reviewer`. When its fresh
+Agent View and `ListAgents` evidence uniquely correlate the bound UUID and
+CAM project to one eligible same-host peer, including a fresh live-cwd project
+check, the project-aware path records the tool-derived route observation
+automatically. No human confirmation of the MCP short ref is required.
+
+The following command is retained only for compatibility with older
+project-state snapshots and explicit migration or diagnostic procedures. It is
+not a normal onboarding step, and its operator reference must cite the stable
+identity decision separately from the tool-derived route observation; it must
+not claim that the operator recognized an MCP ref that `/status` did not show:
 
 ```bash
 .venv/bin/python tools/cam1_project.py \
@@ -284,7 +305,7 @@ returned route:
   participant confirm-route \
   --participant reviewer \
   --expected-address "EXACT FRESH NAME [REF]" \
-  --operator-reference "HOW THE OPERATOR CORRELATED THIS ROUTE"
+  --operator-reference "STABLE IDENTITY CONFIRMATION PLUS PREFLIGHT EVIDENCE"
 ```
 
 Routine roster output redacts identifiers. Reveal them only for an explicit

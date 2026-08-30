@@ -23,8 +23,12 @@ For every cross-session message:
    `--project-root` option on project and live transport commands.
 3. Use the project roster to distinguish the participant's common name, role,
    product label, stable full session ID, and transient transport route. Obtain
-   operator correlation when any identity mapping is new, stale, missing, or
-   ambiguous.
+   operator correlation for the full Claude `/status` UUID, intended
+   project-local name and role, current product session label and kind, and
+   intended CAM project when that stable
+   identity mapping is new, stale, missing, or ambiguous. Use `/status` cwd as
+   project-membership evidence, not persisted identity; each fresh discovery
+   must independently pass the Git-project check.
 4. Use a full Codex thread UUID for Codex identity and callbacks. For Claude,
    use the full session UUID from operator-trusted `/status` metadata; before
    every send, resolve it through fresh `claude agents --json` and MCP
@@ -51,7 +55,13 @@ For every cross-session message:
 6. Run `tools/cam1_transport.py doctor` and run `claude-preflight` with
    `--participant COMMON_NAME`; use `--session-id UUID` only as an optional
    exact guard. Stop if the roster participant does not map uniquely to one
-   eligible same-host `name [ref]` route. The operator must approve the
+   eligible same-host `name [ref]` route. That ref is transient tool-derived
+   routing metadata and is not normally exposed in Claude `/status`; never ask
+   the operator to recognize or approve it. Automatically use and journal a
+   unique fresh correlation to the already operator-bound stable identity.
+   Ask for operator help only on ambiguity, UUID/project mismatch, a binding
+   generation change, or conflicting evidence such as unexpected product-label
+   or session-kind drift. The operator must approve the
    absolute product paths reported by doctor; pass `--claude-bin` or
    `--codex-bin` explicitly to every live list, preflight, send, or reply.
 7. Build complete envelopes with the typed commands in `tools/cam1.py`.

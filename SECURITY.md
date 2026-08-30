@@ -43,22 +43,33 @@ audit record, not a delivery mechanism or authority source.
   `claude agents --json` and MCP `ListAgents` results, and require its cwd to
   resolve inside the bound Git project, including an initialized linked
   worktree that shares its Git common directory.
+- Bind that Claude UUID to the operator-confirmed intended project-local name,
+  role, and CAM project. Use `/status` cwd as human-inspectable
+  project-membership evidence, but do not persist it as identity; fresh
+  discovery independently checks the live cwd against the Git project.
 - Treat Agent View as a heterogeneous inventory. Group rows by full UUID and,
   when a process-backed `pid`/`status` row exists, require one eligible such
   row; only use one eligible legacy `id`/`state` row when no process row is
   emitted. Never combine fields from companion representations. Validate an
   Agent View ID when present and retain null when absent. Use a PID only for
   transient selection and refresh checks; never serialize or persist it.
-- Treat the resulting Claude `name [ref]` as transient routing metadata. Do not
-  treat a mutable name, short ID, working directory, process ID, or UDS path as
-  identity.
+- Treat the resulting Claude `name [ref]` as transient, tool-derived routing
+  metadata. Do not treat a mutable name, short ID, working directory, process
+  ID, or UDS path as identity. Because `/status` does not normally expose the
+  MCP ref, never ask the operator to recognize or approve it. Automatically use
+  and journal a fresh route only when both discovery surfaces correlate the
+  existing stable binding to exactly one eligible same-host peer.
 - Keep MCP locality separate from activity and addressability. An eligible
   same-host `busy` peer remains addressable; local terminal or unknown states
   are unavailable, and cloud or Remote Control rows remain nonlocal.
 - Fail closed on absent, ambiguous, nonlocal, or inconsistent discovery,
   including multiple process-backed rows or multiple eligible fallback rows.
   A companion background and process row sharing one UUID is not by itself
-  ambiguity. Never guess or silently retarget.
+  ambiguity. Never guess or silently retarget. Request operator help when the
+  stable mapping is ambiguous, the UUID or project mismatches, the binding
+  generation changed, or evidence conflicts, including product session-label
+  or kind drift; do not replace those checks with approval of an unobservable
+  short ref. A changed ref alone is not an identity change.
 - Treat paths reported by `doctor` as candidates. The operator must approve an
   absolute Claude or Codex executable path, and every live operation must use
   it explicitly. This avoids ordinary `PATH` substitution but cannot eliminate

@@ -209,6 +209,48 @@ class ProjectCliTests(ProjectTestCase):
         )
         self.assertEqual(json.loads(rebuild_result.stdout)["status"], "rebuilt")
 
+    def test_participant_cli_requires_kind_for_new_claude_binding(self) -> None:
+        binding = self.initialize()
+        added = self.run_tool(
+            "participant",
+            "add",
+            "--common-name",
+            "bob-reviewer",
+            "--display-name",
+            "Example code review",
+            "--role",
+            "review",
+            "--vendor",
+            "claude-code",
+            "--participant-id",
+            CLAUDE_PARTICIPANT,
+        )
+        self.assertEqual(added.returncode, 0, added.stderr)
+
+        rejected = self.run_tool(
+            "participant",
+            "bind",
+            "--participant",
+            "bob-reviewer",
+            "--session-id",
+            CLAUDE_SESSION,
+            "--session-label",
+            "Example code review",
+            "--operator-reference",
+            "operator matched Claude status output",
+        )
+
+        self.assertEqual(rejected.returncode, 2, rejected.stderr)
+        self.assertEqual(
+            json.loads(rejected.stderr)["error"]["code"],
+            "roster.session_kind_required",
+        )
+        records = journal.replay_records(binding)
+        self.assertEqual(
+            [record["event_type"] for record in records],
+            [state.PARTICIPANT_ADDED],
+        )
+
     def test_participant_cli_confirms_an_observed_claude_route(self) -> None:
         binding = self.initialize()
         add = self.run_tool(

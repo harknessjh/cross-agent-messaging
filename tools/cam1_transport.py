@@ -113,6 +113,42 @@ def _require_bound_participant(
     return participant
 
 
+def _require_complete_claude_binding(
+    participant: participants.Participant,
+) -> participants.SessionBinding:
+    """Require the operator-visible Claude metadata used by live discovery."""
+
+    binding = participant.binding
+    assert binding is not None
+    if binding.session_kind is None:
+        raise TransportError(
+            "claude.binding_incomplete",
+            "Claude binding has no operator-confirmed session kind; rebind the "
+            "participant before discovery or sending",
+        )
+    return binding
+
+
+def _require_bound_claude_metadata(
+    participant: participants.Participant,
+    session: routing.AgentViewSession,
+) -> None:
+    """Keep mutable product metadata inside the operator-confirmed binding."""
+
+    binding = _require_complete_claude_binding(participant)
+    if session.product_name != binding.session_label:
+        raise TransportError(
+            "claude.session_label_mismatch",
+            "fresh Claude product name does not match the operator-confirmed "
+            "session label; update the stable binding before sending",
+        )
+    if session.kind.casefold() != binding.session_kind.casefold():
+        raise TransportError(
+            "claude.session_kind_mismatch",
+            "fresh Claude session kind does not match the operator-confirmed binding",
+        )
+
+
 def _require_safe_retry(
     binding: project.ProjectBinding,
     validated: ValidatedEnvelope,
@@ -726,6 +762,8 @@ async def preflight_project_claude(
             label="session_id",
         )
         bound_session_id = participant.binding.session_id
+        bound_generation = participant.binding.generation
+        _require_complete_claude_binding(participant)
 
     result = await _preflight_claude_session(
         claude_bin=claude_bin,
@@ -764,11 +802,15 @@ async def preflight_project_claude(
             transaction=transaction,
         )
         assert participant.binding is not None
-        if participant.binding.session_id != bound_session_id:
+        if (
+            participant.binding.session_id != bound_session_id
+            or participant.binding.generation != bound_generation
+        ):
             raise TransportError(
-                "claude.session_changed",
+                "claude.binding_changed",
                 "participant binding changed during Claude route discovery",
             )
+        _require_bound_claude_metadata(participant, route.session)
         event_now, observed_at = _utc_now()
         try:
             observed = store.participant_observe_route(
@@ -785,6 +827,7 @@ async def preflight_project_claude(
                 agent_view_started_at_ms=route.session.started_at_ms,
                 session_git_top_level=str(session_context.top_level),
                 session_git_common_dir=str(session_context.common_dir),
+                tool_correlated=True,
                 now=event_now,
                 transaction=transaction,
             )
@@ -797,9 +840,10 @@ async def preflight_project_claude(
             "display_name": observed.display_name,
             "route_status": observed.route.status.value,
         }
-        result["operator_correlation_required"] = (
-            observed.route.status != participants.RouteStatus.OPERATOR_CORRELATED
-        )
+        result["operator_correlation_required"] = False
+        result["operator_correlation_subject"] = None
+        result["operator_identity_confirmation_required"] = False
+        result["transient_route_confirmation_required"] = False
         return result
 
 
@@ -841,6 +885,8 @@ async def send_project_claude(
         )
         participant_id = participant.participant_id
         bound_session_id = participant.binding.session_id
+        bound_generation = participant.binding.generation
+        _require_complete_claude_binding(participant)
 
     attempt = _SendAttempt(
         participant_id=participant_id,
@@ -863,12 +909,14 @@ async def send_project_claude(
             assert current.binding is not None
             if (
                 current.binding.session_id != bound_session_id
+                or current.binding.generation != bound_generation
                 or route.session.session_id != bound_session_id
             ):
                 raise TransportError(
-                    "claude.session_changed",
+                    "claude.binding_changed",
                     "fresh Claude discovery no longer matches the participant binding",
                 )
+            _require_bound_claude_metadata(current, route.session)
             event_now, observed_at = _utc_now()
             try:
                 observed = store.participant_observe_route(
@@ -885,17 +933,18 @@ async def send_project_claude(
                     agent_view_started_at_ms=route.session.started_at_ms,
                     session_git_top_level=str(session_context.top_level),
                     session_git_common_dir=str(session_context.common_dir),
+                    tool_correlated=True,
                     now=event_now,
                     transaction=transaction,
                 )
-                if (
-                    observed.route is None
-                    or observed.route.status
-                    != participants.RouteStatus.OPERATOR_CORRELATED
-                ):
+                if observed.route is None or observed.route.status not in {
+                    participants.RouteStatus.TOOL_CORRELATED,
+                    participants.RouteStatus.OPERATOR_CORRELATED,
+                }:
                     raise cam1.CamUsageError(
                         "roster.route_not_ready",
-                        "fresh Claude route requires explicit operator correlation",
+                        "fresh Claude route was not uniquely correlated to the bound "
+                        "session identity",
                     )
                 attempt.route_address = route.peer.qualified_address
                 _prepare_and_journal_intent(

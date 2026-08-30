@@ -141,11 +141,18 @@ def _parser() -> argparse.ArgumentParser:
     participant_bind.add_argument("--participant", required=True)
     participant_bind.add_argument("--session-id", required=True)
     participant_bind.add_argument("--session-label", required=True)
-    participant_bind.add_argument("--session-kind")
+    participant_bind.add_argument(
+        "--session-kind",
+        help="required for Claude Code bindings; optional for Codex",
+    )
     participant_bind.add_argument("--operator-reference", required=True)
 
     participant_confirm = participant_commands.add_parser(
-        "confirm-route", help="confirm the currently observed route"
+        "confirm-route",
+        help=(
+            "record an optional operator guard for the currently observed route; "
+            "not required for a uniquely tool-correlated Claude route"
+        ),
     )
     participant_confirm.add_argument("--participant", required=True)
     participant_confirm.add_argument("--expected-address", required=True)
@@ -962,6 +969,14 @@ def _bind_participant(
 ) -> state.Participant:
     event_now, bound_at = _utc_now()
     with project.project_transaction(binding) as transaction:
+        existing = store.snapshot(transaction=transaction).roster.select(
+            args.participant
+        )
+        if existing.vendor == "claude-code" and args.session_kind is None:
+            raise CamUsageError(
+                "roster.session_kind_required",
+                "Claude bindings require the session kind shown by /status",
+            )
         participant = store.participant_bind(
             args.participant,
             session_id=args.session_id,

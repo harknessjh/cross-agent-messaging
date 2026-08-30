@@ -203,7 +203,7 @@ class ProjectTransportOutcomeTests(ProjectBoundTransportTestCase):
             context.exception.audit["transport_error_code"], "codex.queue_failed"
         )
 
-    def test_claude_route_requires_confirmation_then_send_is_fully_audited(
+    def test_tool_correlated_claude_route_sends_and_is_fully_audited(
         self,
     ) -> None:
         self.add_claude_participant()
@@ -233,8 +233,13 @@ class ProjectTransportOutcomeTests(ProjectBoundTransportTestCase):
         )
         self.assertEqual(preflight.returncode, 0, preflight.stderr)
         preflight_payload = json.loads(preflight.stdout)
-        self.assertTrue(preflight_payload["operator_correlation_required"])
-        self.assertEqual(preflight_payload["participant"]["route_status"], "candidate")
+        self.assertFalse(preflight_payload["operator_correlation_required"])
+        self.assertIsNone(preflight_payload["operator_correlation_subject"])
+        self.assertFalse(preflight_payload["operator_identity_confirmation_required"])
+        self.assertFalse(preflight_payload["transient_route_confirmation_required"])
+        self.assertEqual(
+            preflight_payload["participant"]["route_status"], "tool_correlated"
+        )
         self.assertEqual(preflight_payload["route"]["state"], "busy")
         preflight_records = journal.replay_records(self.binding)
         self.assertEqual(
@@ -252,35 +257,6 @@ class ProjectTransportOutcomeTests(ProjectBoundTransportTestCase):
         )
         self.assertNotIn("uds:", json.dumps(preflight_records[-1]))
 
-        refused = self.run_transport(
-            "claude-send",
-            "--participant",
-            "local-worker",
-            "--envelope",
-            str(envelope),
-            claude_bin=claude_bin,
-        )
-        self.assertEqual(refused.returncode, 2)
-        self.assertEqual(
-            json.loads(refused.stderr)["error"]["code"], "roster.route_not_ready"
-        )
-        self.assertFalse(marker.exists())
-        self.assertNotIn(
-            "message.outbound.intent",
-            [record["event_type"] for record in journal.replay_records(self.binding)],
-        )
-
-        confirmed = self.run_project(
-            "participant",
-            "confirm-route",
-            "--participant",
-            "local-worker",
-            "--expected-address",
-            "local-worker [abcdef]",
-            "--operator-reference",
-            "test operator confirmed fresh route",
-        )
-        self.assertEqual(confirmed.returncode, 0, confirmed.stderr)
         sent = self.run_transport(
             "claude-send",
             "--participant",
@@ -379,7 +355,7 @@ class ProjectTransportOutcomeTests(ProjectBoundTransportTestCase):
             expected_message=raw,
             during_send_command=ingest_command,
         )
-        self.preflight_and_confirm(claude_bin)
+        self.preflight_tool_correlated_route(claude_bin)
 
         sent = self.run_transport(
             "claude-send",
@@ -429,7 +405,7 @@ class ProjectTransportOutcomeTests(ProjectBoundTransportTestCase):
             expected_message=raw,
             marker=marker,
         )
-        self.preflight_and_confirm(claude_bin)
+        self.preflight_tool_correlated_route(claude_bin)
 
         completed = self.run_transport(
             "claude-send",
@@ -486,7 +462,7 @@ class ProjectTransportOutcomeTests(ProjectBoundTransportTestCase):
             },
             marker=marker,
         )
-        self.preflight_and_confirm(claude_bin)
+        self.preflight_tool_correlated_route(claude_bin)
         raw = cam1.build_hello(
             sender_vendor="codex",
             sender_name="example-coordinator",
@@ -551,7 +527,7 @@ class ProjectTransportOutcomeTests(ProjectBoundTransportTestCase):
             },
             marker=marker,
         )
-        self.preflight_and_confirm(claude_bin)
+        self.preflight_tool_correlated_route(claude_bin)
         raw = cam1.build_hello(
             sender_vendor="codex",
             sender_name="example-coordinator",
@@ -633,7 +609,7 @@ class ProjectTransportOutcomeTests(ProjectBoundTransportTestCase):
             expected_message=raw,
             marker=marker,
         )
-        self.preflight_and_confirm(claude_bin)
+        self.preflight_tool_correlated_route(claude_bin)
 
         completed = self.run_transport(
             "claude-send",
@@ -724,7 +700,7 @@ class ProjectTransportOutcomeTests(ProjectBoundTransportTestCase):
             },
             marker=marker,
         )
-        self.preflight_and_confirm(claude_bin)
+        self.preflight_tool_correlated_route(claude_bin)
         message_id = json.loads(raw)["message_id"]
         orphaned = journal.append_record(
             self.binding,
@@ -799,7 +775,7 @@ class ProjectTransportOutcomeTests(ProjectBoundTransportTestCase):
             expected_message=raw,
             marker=marker,
         )
-        self.preflight_and_confirm(claude_bin)
+        self.preflight_tool_correlated_route(claude_bin)
         message_id = json.loads(raw)["message_id"]
         prior_intent = journal.append_record(
             self.binding,

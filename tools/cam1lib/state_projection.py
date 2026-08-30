@@ -520,11 +520,22 @@ def _participant_route_observed(
             "session_git_common_dir",
         }
     )
+    correlation_fields = frozenset({"tool_correlated"})
     if set(attributes) == legacy_fields:
         values = dict(attributes)
         values.update(dict.fromkeys(evidence_fields))
+        values["tool_correlated"] = False
+    elif set(attributes) == legacy_fields | evidence_fields:
+        values = dict(attributes)
+        values["tool_correlated"] = False
     else:
-        values = _attributes(attributes, required=legacy_fields | evidence_fields)
+        values = _attributes(
+            attributes,
+            required=legacy_fields | evidence_fields | correlation_fields,
+        )
+    tool_correlated = values.get("tool_correlated")
+    if not isinstance(tool_correlated, bool):
+        raise StateError("state.attribute_type", "tool_correlated must be a boolean")
     return snapshot.roster.observe_route(
         _required_text(values, "participant_id"),
         transport=_required_text(values, "transport"),
@@ -539,6 +550,7 @@ def _participant_route_observed(
         agent_view_started_at_ms=values.get("agent_view_started_at_ms"),
         session_git_top_level=_optional_text(values, "session_git_top_level"),
         session_git_common_dir=_optional_text(values, "session_git_common_dir"),
+        tool_correlated=tool_correlated,
     )
 
 
