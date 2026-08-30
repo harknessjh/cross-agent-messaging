@@ -519,7 +519,12 @@ def parse_peers(listing: str) -> tuple[Peer, ...]:
 
 async def list_local_peers(
     *, claude_bin: str, timeout_seconds: float
-) -> tuple[str | None, tuple[Peer, ...], tuple[Peer, ...]]:
+) -> tuple[
+    str | None,
+    tuple[Peer, ...],
+    tuple[Peer, ...],
+    tuple[Peer, ...],
+]:
     try:
         async with asyncio.timeout(timeout_seconds):
             async with _claude_client(
@@ -539,7 +544,8 @@ async def list_local_peers(
     peers = parse_peers(_listing_text(response))
     return (
         response.protocol_version,
-        tuple(peer for peer in peers if peer.local),
+        tuple(peer for peer in peers if peer.local and peer.addressable),
+        tuple(peer for peer in peers if peer.local and not peer.addressable),
         tuple(peer for peer in peers if not peer.local),
     )
 
@@ -553,7 +559,7 @@ def _resolve_local_peer(target: str, peers: Sequence[Peer]) -> Peer:
 
 def _discover_agent_view_sessions(
     *, claude_bin: str, timeout_seconds: float
-) -> dict[str, routing.AgentViewSession]:
+) -> dict[str, tuple[routing.AgentViewSession, ...]]:
     """Run one bounded full-session discovery without retaining runtime endpoints."""
 
     try:
@@ -580,7 +586,7 @@ def _discover_agent_view_sessions(
 
 
 def _select_agent_view_session(
-    sessions: dict[str, routing.AgentViewSession], session_id: str
+    sessions: dict[str, tuple[routing.AgentViewSession, ...]], session_id: str
 ) -> routing.AgentViewSession:
     try:
         return routing.select_agent_view_session(sessions, session_id)
@@ -611,6 +617,7 @@ _STABLE_AGENT_VIEW_FIELDS = (
     "cwd",
     "kind",
     "started_at_ms",
+    "process_id",
 )
 
 
@@ -859,7 +866,9 @@ async def _preflight_claude_session(
                     arguments={},
                 )
                 peers = parse_peers(_listing_text(listing_response))
-                local_peers = tuple(peer for peer in peers if peer.local)
+                local_peers = tuple(
+                    peer for peer in peers if peer.local and peer.addressable
+                )
                 route = _correlate_route(
                     selected,
                     local_peers,
@@ -929,7 +938,9 @@ async def _send_to_claude(
                     arguments={},
                 )
                 peers = parse_peers(_listing_text(listing_response))
-                local_peers = tuple(peer for peer in peers if peer.local)
+                local_peers = tuple(
+                    peer for peer in peers if peer.local and peer.addressable
+                )
                 route = _correlate_route(
                     selected,
                     local_peers,

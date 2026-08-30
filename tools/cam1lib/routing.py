@@ -18,7 +18,7 @@ MAX_LIST_AGENTS_PEERS = 512
 LOCAL_SESSION_KINDS = frozenset(
     {"background", "headless", "interactive", "non-interactive", "print"}
 )
-ELIGIBLE_SESSION_STATES = frozenset({"idle", "running", "waiting"})
+ADDRESSABLE_SESSION_STATES = frozenset({"busy", "idle", "running", "waiting"})
 NONLOCAL_MARKERS = ("cloud", "remote control", "other machine")
 PEER_NAME_PATTERN = re.compile(r"^(?P<name>.+?) \[(?P<ref>[0-9a-fA-F]{6})\]$")
 AGENT_VIEW_ID_PATTERN = re.compile(r"^[0-9a-fA-F]{8}$")
@@ -38,12 +38,19 @@ class AgentViewSession:
     """One allowlisted row from ``claude agents --json``."""
 
     session_id: str
-    agent_view_id: str
+    agent_view_id: str | None
     product_name: str
     cwd: str
     kind: str
     state: str
     started_at_ms: int
+    process_id: int | None = None
+
+    @property
+    def process_backed(self) -> bool:
+        """Return whether Agent View observed a live process for this row."""
+
+        return self.process_id is not None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -54,6 +61,7 @@ class AgentViewSession:
             "kind": self.kind,
             "state": self.state,
             "started_at_ms": self.started_at_ms,
+            "process_backed": self.process_backed,
         }
 
 
@@ -67,6 +75,7 @@ class Peer:
     state: str
     details: tuple[str, ...]
     local: bool
+    addressable: bool
 
     @property
     def qualified_address(self) -> str:
@@ -80,6 +89,7 @@ class Peer:
             "state": self.state,
             "details": list(self.details),
             "local": self.local,
+            "addressable": self.addressable,
         }
 
 
@@ -168,8 +178,16 @@ def _reject_nonfinite_constant(_value: str) -> None:
     )
 
 
-def parse_agent_view_sessions(raw: bytes) -> dict[str, AgentViewSession]:
-    """Parse bounded ``claude agents --json`` bytes keyed by full session UUID."""
+def _optional_bounded_text(
+    value: Any, *, label: str, maximum: int
+) -> str | None:
+    if value is None:
+        return None
+    return _bounded_text(value, label=label, maximum=maximum)
+
+
+def parse_agent_view_sessions(raw: bytes) -> dict[str, tuple[AgentViewSession, ...]]:
+    """Parse heterogeneous Agent View rows grouped by full session UUID."""
 
     if len(raw) > MAX_AGENT_VIEW_BYTES:
         raise RoutingError(
@@ -192,28 +210,59 @@ def parse_agent_view_sessions(raw: bytes) -> dict[str, AgentViewSession]:
             "claude agents must return a bounded JSON array",
         )
 
-    sessions: dict[str, AgentViewSession] = {}
+    grouped: dict[str, list[AgentViewSession]] = {}
     for row in value:
         if not isinstance(row, dict):
             raise RoutingError(
                 "claude.agents_format", "claude agents rows must be JSON objects"
             )
         session_id = _canonical_session_id(row.get("sessionId"))
-        agent_view_id = _bounded_text(row.get("id"), label="id", maximum=8).lower()
-        if AGENT_VIEW_ID_PATTERN.fullmatch(agent_view_id) is None:
-            raise RoutingError(
-                "claude.agents_format",
-                "id must be the eight-hexadecimal Agent View identifier",
-            )
-        if agent_view_id != session_id.split("-", 1)[0]:
-            raise RoutingError(
-                "claude.agent_id_mismatch",
-                "Agent View id does not match the full sessionId prefix",
-            )
+        agent_view_id = _optional_bounded_text(
+            row.get("id"), label="id", maximum=8
+        )
+        if agent_view_id is not None:
+            agent_view_id = agent_view_id.lower()
+            if AGENT_VIEW_ID_PATTERN.fullmatch(agent_view_id) is None:
+                raise RoutingError(
+                    "claude.agents_format",
+                    "id must be the eight-hexadecimal Agent View identifier",
+                )
+            if agent_view_id != session_id.split("-", 1)[0]:
+                raise RoutingError(
+                    "claude.agent_id_mismatch",
+                    "Agent View id does not match the full sessionId prefix",
+                )
         product_name = _bounded_text(row.get("name"), label="name", maximum=256)
         cwd = _bounded_text(row.get("cwd"), label="cwd", maximum=4_096)
         kind = _bounded_text(row.get("kind"), label="kind", maximum=64)
-        state = _bounded_text(row.get("state"), label="state", maximum=64)
+        background_state = _optional_bounded_text(
+            row.get("state"), label="state", maximum=64
+        )
+        process_status = _optional_bounded_text(
+            row.get("status"), label="status", maximum=64
+        )
+        has_process_id = "pid" in row
+        has_process_status = "status" in row
+        if has_process_id != has_process_status:
+            raise RoutingError(
+                "claude.agents_format",
+                "pid and status must either both be present or both be absent",
+            )
+        process_id: int | None = None
+        if has_process_id:
+            process_id = row.get("pid")
+            if type(process_id) is not int or process_id <= 0 or process_id > 2**31:
+                raise RoutingError(
+                    "claude.agents_format",
+                    "pid must be a bounded positive integer",
+                )
+        if process_status is None and background_state is None:
+            raise RoutingError(
+                "claude.agents_format",
+                "each Agent View row must contain state or a pid/status pair",
+            )
+        state = process_status if process_status is not None else background_state
+        assert state is not None
         started_at_ms = row.get("startedAt")
         if (
             type(started_at_ms) is not int
@@ -224,21 +273,19 @@ def parse_agent_view_sessions(raw: bytes) -> dict[str, AgentViewSession]:
                 "claude.agents_format",
                 "startedAt must be a bounded non-negative integer",
             )
-        if session_id in sessions:
-            raise RoutingError(
-                "claude.session_duplicate",
-                "claude agents returned the same full sessionId more than once",
+        grouped.setdefault(session_id, []).append(
+            AgentViewSession(
+                session_id=session_id,
+                agent_view_id=agent_view_id,
+                product_name=product_name,
+                cwd=cwd,
+                kind=kind,
+                state=state,
+                started_at_ms=started_at_ms,
+                process_id=process_id,
             )
-        sessions[session_id] = AgentViewSession(
-            session_id=session_id,
-            agent_view_id=agent_view_id,
-            product_name=product_name,
-            cwd=cwd,
-            kind=kind,
-            state=state,
-            started_at_ms=started_at_ms,
         )
-    return sessions
+    return {session_id: tuple(rows) for session_id, rows in grouped.items()}
 
 
 def parse_list_agents_peers(listing: str) -> tuple[Peer, ...]:
@@ -266,11 +313,10 @@ def parse_list_agents_peers(listing: str) -> tuple[Peer, ...]:
         kind = metadata[0] if metadata else ""
         state = metadata[1] if len(metadata) > 1 else ""
         metadata_text = " ".join(metadata).lower()
-        local = (
-            kind.lower() in LOCAL_SESSION_KINDS
-            and state.lower() in ELIGIBLE_SESSION_STATES
-            and not any(marker in metadata_text for marker in NONLOCAL_MARKERS)
+        local = kind.lower() in LOCAL_SESSION_KINDS and not any(
+            marker in metadata_text for marker in NONLOCAL_MARKERS
         )
+        addressable = local and state.lower() in ADDRESSABLE_SESSION_STATES
         peer = Peer(
             name=_bounded_text(
                 matched.group("name"), label="ListAgents name", maximum=256
@@ -280,6 +326,7 @@ def parse_list_agents_peers(listing: str) -> tuple[Peer, ...]:
             state=state,
             details=metadata[2:],
             local=local,
+            addressable=addressable,
         )
         if peer.qualified_address in qualified_addresses:
             raise RoutingError(
@@ -297,33 +344,45 @@ def parse_list_agents_peers(listing: str) -> tuple[Peer, ...]:
 
 
 def select_agent_view_session(
-    sessions: dict[str, AgentViewSession], session_id: str
+    sessions: dict[str, tuple[AgentViewSession, ...]], session_id: str
 ) -> AgentViewSession:
     """Select one exact full session UUID without accepting a short ID or name."""
 
     canonical = _canonical_session_id(session_id)
-    selected = sessions.get(canonical)
-    if selected is None:
+    representations = sessions.get(canonical)
+    if representations is None:
         raise RoutingError(
             "claude.session_not_found",
             "full sessionId was not present in fresh claude agents output",
         )
-    if (
-        selected.kind.lower() not in LOCAL_SESSION_KINDS
-        or selected.state.lower() not in ELIGIBLE_SESSION_STATES
-    ):
+    process_backed = tuple(row for row in representations if row.process_backed)
+    if len(process_backed) > 1:
         raise RoutingError(
-            "claude.session_not_local",
-            "selected sessionId is not an eligible live local Claude session",
+            "claude.session_ambiguous",
+            "selected sessionId has more than one live process-backed representation",
         )
-    same_name = [
-        session
-        for session in sessions.values()
-        if session.product_name == selected.product_name
-        and session.kind.lower() in LOCAL_SESSION_KINDS
-        and session.state.lower() in ELIGIBLE_SESSION_STATES
-    ]
-    if len(same_name) != 1:
+    candidates = process_backed if process_backed else representations
+    eligible = tuple(
+        row
+        for row in candidates
+        if row.kind.lower() in LOCAL_SESSION_KINDS
+        and row.state.lower() in ADDRESSABLE_SESSION_STATES
+    )
+    if len(eligible) != 1:
+        raise RoutingError(
+            "claude.session_not_local" if not eligible else "claude.session_ambiguous",
+            "selected sessionId does not have one eligible live local representation",
+        )
+    selected = eligible[0]
+    same_name_session_ids = {
+        row.session_id
+        for rows in sessions.values()
+        for row in rows
+        if row.product_name == selected.product_name
+        and row.kind.lower() in LOCAL_SESSION_KINDS
+        and row.state.lower() in ADDRESSABLE_SESSION_STATES
+    }
+    if same_name_session_ids != {selected.session_id}:
         raise RoutingError(
             "claude.agent_name_ambiguous",
             "multiple active Claude sessions share the selected mutable product name",

@@ -88,13 +88,13 @@ def with_agent_view(
     listing = json.dumps(
         [
             {
-                "id": CLAUDE_SESSION.split("-", 1)[0],
                 "cwd": cwd,
                 "kind": kind,
                 "startedAt": 1_784_241_375_111,
                 "sessionId": CLAUDE_SESSION,
                 "name": name,
-                "state": state,
+                "pid": 4242,
+                "status": state,
                 "peerAddress": "uds:/tmp/cam1-test-peer.sock",
             }
         ]
@@ -120,6 +120,7 @@ class PeerParsingTests(unittest.TestCase):
             kind="interactive",
             state="idle",
             started_at_ms=1_784_241_375_111,
+            process_id=4242,
         )
         changes = {
             "session_id": "00000000-0000-4000-8000-000000000103",
@@ -128,6 +129,7 @@ class PeerParsingTests(unittest.TestCase):
             "cwd": "/different/project",
             "kind": "background",
             "started_at_ms": selected.started_at_ms + 1,
+            "process_id": selected.process_id + 1,
         }
         for field_name, changed_value in changes.items():
             with self.subTest(field_name=field_name):
@@ -136,7 +138,7 @@ class PeerParsingTests(unittest.TestCase):
                     mock.patch.object(
                         cam1_transport_native,
                         "_discover_agent_view_sessions",
-                        return_value={CLAUDE_SESSION: refreshed},
+                        return_value={CLAUDE_SESSION: (refreshed,)},
                     ),
                     self.assertRaises(cam1_transport.TransportError) as context,
                 ):
@@ -415,10 +417,17 @@ class PeerParsingTests(unittest.TestCase):
   exited-worker [456789]  ·  interactive  ·  exited  ·  started earlier
 """
         peers = cam1_transport.parse_peers(listing)
-        self.assertEqual([peer.name for peer in peers if peer.local], ["local-worker"])
+        self.assertEqual(
+            [peer.name for peer in peers if peer.local],
+            ["local-worker", "exited-worker"],
+        )
+        self.assertEqual(
+            [peer.name for peer in peers if peer.local and peer.addressable],
+            ["local-worker"],
+        )
         self.assertEqual(
             [peer.name for peer in peers if not peer.local],
-            ["web-worker", "desktop-worker", "future-worker", "exited-worker"],
+            ["web-worker", "desktop-worker", "future-worker"],
         )
 
     def test_target_requires_fresh_qualified_address(self) -> None:
@@ -430,6 +439,7 @@ class PeerParsingTests(unittest.TestCase):
                 state="idle",
                 details=(),
                 local=True,
+                addressable=True,
             ),
             cam1_transport.Peer(
                 name="worker",
@@ -438,6 +448,7 @@ class PeerParsingTests(unittest.TestCase):
                 state="idle",
                 details=(),
                 local=True,
+                addressable=True,
             ),
         )
         with self.assertRaises(cam1_transport.TransportError) as context:
@@ -462,7 +473,9 @@ class PeerParsingTests(unittest.TestCase):
             ]
         ).encode()
         sessions = cam1_transport.routing.parse_agent_view_sessions(raw)
-        session = sessions[CLAUDE_SESSION]
+        session = cam1_transport.routing.select_agent_view_session(
+            sessions, CLAUDE_SESSION
+        )
         self.assertEqual(session.session_id, CLAUDE_SESSION)
         self.assertEqual(session.agent_view_id, "00000000")
         self.assertEqual(session.product_name, "local-worker")
@@ -476,6 +489,7 @@ class PeerParsingTests(unittest.TestCase):
             state="idle",
             details=(),
             local=True,
+            addressable=True,
         )
         route = cam1_transport.routing.correlate_route(session, (peer,))
         self.assertEqual(route.session.agent_view_id, "00000000")
@@ -553,6 +567,7 @@ class PeerParsingTests(unittest.TestCase):
             state="idle",
             details=(),
             local=True,
+            addressable=True,
         )
         with self.assertRaises(cam1_transport.routing.RoutingError) as context:
             cam1_transport.routing.correlate_route(

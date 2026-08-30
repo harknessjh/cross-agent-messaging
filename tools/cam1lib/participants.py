@@ -453,17 +453,22 @@ class ParticipantRoster:
                     "Claude route must be a qualified ListAgents name and ref",
                 )
             if (
-                agent_view_id is None
-                or AGENT_VIEW_ID_PATTERN.fullmatch(agent_view_id) is None
-                or agent_view_id.lower() != current.binding.session_id.split("-", 1)[0]
+                (
+                    agent_view_id is not None
+                    and (
+                        AGENT_VIEW_ID_PATTERN.fullmatch(agent_view_id) is None
+                        or agent_view_id.lower()
+                        != current.binding.session_id.split("-", 1)[0]
+                    )
+                )
                 or list_agents_name != matched.group("name")
                 or list_agents_ref is None
                 or list_agents_ref.lower() != matched.group("ref").lower()
             ):
                 raise CamUsageError(
                     "roster.route_identity",
-                    "Claude route must correlate the bound session, Agent View, "
-                    "and ListAgents identifiers",
+                    "Claude route must correlate the bound session and ListAgents "
+                    "identifiers; an observed Agent View id must match the session",
                 )
         top_level = _optional_text(
             session_git_top_level,

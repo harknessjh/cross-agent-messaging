@@ -752,6 +752,7 @@ async def preflight_project_claude(
             state=route_data["state"],
             details=(),
             local=True,
+            addressable=True,
         ),
     )
     session_context = _require_project_session_cwd(binding, route.session)

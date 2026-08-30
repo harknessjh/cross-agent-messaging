@@ -234,7 +234,7 @@ def main(
                 expected_sha256=args.expected_validation_profile_sha256,
             )
             claude_bin = api.resolve_binary(args.claude_bin, label="claude")
-            protocol, local_peers, excluded = asyncio.run(
+            protocol, local_peers, unavailable, excluded = asyncio.run(
                 api.list_local_peers(
                     claude_bin=claude_bin, timeout_seconds=timeout_seconds
                 )
@@ -246,6 +246,9 @@ def main(
                         "local_only": True,
                         "mcp_protocol": protocol,
                         "agents": [peer.as_dict() for peer in local_peers],
+                        "excluded_local_unavailable": [
+                            peer.as_dict() for peer in unavailable
+                        ],
                         "excluded_nonlocal_or_unknown": [
                             peer.as_dict() for peer in excluded
                         ],
