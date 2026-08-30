@@ -142,6 +142,56 @@ class InteractiveAgentViewDiscoveryTests(unittest.TestCase):
 
         self.assertEqual(context.exception.code, "claude.agent_id_mismatch")
 
+    def test_legacy_fallback_requires_id_and_process_status_cannot_be_null(
+        self,
+    ) -> None:
+        missing_id = interactive_row()
+        missing_id.pop("pid")
+        missing_id.pop("status")
+        missing_id["state"] = "idle"
+        grouped = routing.parse_agent_view_sessions(json.dumps([missing_id]).encode())
+        with self.assertRaises(routing.RoutingError) as fallback:
+            routing.select_agent_view_session(grouped, CLAUDE_SESSION)
+        self.assertEqual(fallback.exception.code, "claude.session_not_local")
+
+        invalid_process = interactive_row()
+        invalid_process["status"] = None
+        invalid_process["state"] = "idle"
+        with self.assertRaises(routing.RoutingError) as status:
+            routing.parse_agent_view_sessions(json.dumps([invalid_process]).encode())
+        self.assertEqual(status.exception.code, "claude.agents_format")
+
+    def test_stale_companion_name_does_not_create_false_cross_uuid_ambiguity(
+        self,
+    ) -> None:
+        other_session = "bbbbbbbb-0000-4000-8000-000000000002"
+        rows = [
+            interactive_row(),
+            {
+                "id": "bbbbbbbb",
+                "cwd": "/example/other-background",
+                "kind": "background",
+                "startedAt": 3_000,
+                "sessionId": other_session,
+                "name": "live-worker",
+                "state": "idle",
+            },
+            {
+                "cwd": "/example/other-live",
+                "kind": "interactive",
+                "startedAt": 4_000,
+                "sessionId": other_session,
+                "name": "other-live-worker",
+                "pid": 4_244,
+                "status": "busy",
+            },
+        ]
+        grouped = routing.parse_agent_view_sessions(json.dumps(rows).encode())
+
+        selected = routing.select_agent_view_session(grouped, CLAUDE_SESSION)
+
+        self.assertEqual(selected.product_name, "live-worker")
+
     def test_list_agents_separates_locality_from_addressability(self) -> None:
         listing = """Peer sessions (3):
   busy-worker [aaaaaa]  ·  interactive  ·  busy  ·  started now

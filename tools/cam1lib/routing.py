@@ -217,6 +217,11 @@ def _agent_view_activity(row: dict[str, Any]) -> tuple[str, int | None]:
         )
     process_id: int | None = None
     if has_process_id:
+        if process_status is None:
+            raise RoutingError(
+                "claude.agents_format",
+                "a process-backed Agent View row requires a nonempty status",
+            )
         process_id = row.get("pid")
         if type(process_id) is not int or process_id <= 0 or process_id > 2**31 - 1:
             raise RoutingError(
@@ -347,6 +352,15 @@ def parse_list_agents_peers(listing: str) -> tuple[Peer, ...]:
     return tuple(peers)
 
 
+def _current_agent_view_rows(
+    representations: tuple[AgentViewSession, ...],
+) -> tuple[AgentViewSession, ...]:
+    process_backed = tuple(row for row in representations if row.process_backed)
+    if process_backed:
+        return process_backed
+    return tuple(row for row in representations if row.agent_view_id is not None)
+
+
 def select_agent_view_session(
     sessions: dict[str, tuple[AgentViewSession, ...]], session_id: str
 ) -> AgentViewSession:
@@ -365,7 +379,7 @@ def select_agent_view_session(
             "claude.session_ambiguous",
             "selected sessionId has more than one live process-backed representation",
         )
-    candidates = process_backed if process_backed else representations
+    candidates = _current_agent_view_rows(representations)
     eligible = tuple(
         row
         for row in candidates
@@ -381,7 +395,7 @@ def select_agent_view_session(
     same_name_session_ids = {
         row.session_id
         for rows in sessions.values()
-        for row in rows
+        for row in _current_agent_view_rows(rows)
         if row.product_name == selected.product_name
         and row.kind.lower() in LOCAL_SESSION_KINDS
         and row.state.lower() in ADDRESSABLE_SESSION_STATES

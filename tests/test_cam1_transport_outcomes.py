@@ -33,6 +33,33 @@ else:
 
 
 class ProjectTransportOutcomeTests(ProjectBoundTransportTestCase):
+    def test_claude_list_reports_addressable_unavailable_and_nonlocal_buckets(
+        self,
+    ) -> None:
+        listing = """Peer sessions (3):
+  busy-worker [aaaaaa]  ·  interactive  ·  busy  ·  started now
+  exited-worker [bbbbbb]  ·  interactive  ·  exited  ·  started earlier
+  remote-worker [cccccc]  ·  interactive  ·  idle  ·  Remote Control
+"""
+        claude_bin = self.fake_claude(
+            returned={"success": True},
+            peer_listing=listing,
+        )
+
+        completed = self.run_transport("claude-list", claude_bin=claude_bin)
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        payload = json.loads(completed.stdout)
+        self.assertEqual([peer["name"] for peer in payload["agents"]], ["busy-worker"])
+        self.assertEqual(
+            [peer["name"] for peer in payload["excluded_local_unavailable"]],
+            ["exited-worker"],
+        )
+        self.assertEqual(
+            [peer["name"] for peer in payload["excluded_nonlocal_or_unknown"]],
+            ["remote-worker"],
+        )
+
     def test_known_acceptance_survives_post_attempt_lock_contention(self) -> None:
         self.add_codex_participant()
         self.add_claude_participant()
@@ -168,6 +195,7 @@ class ProjectTransportOutcomeTests(ProjectBoundTransportTestCase):
             },
             expected_message=raw,
             marker=marker,
+            peer_state="busy",
         )
 
         preflight = self.run_transport(
@@ -184,6 +212,7 @@ class ProjectTransportOutcomeTests(ProjectBoundTransportTestCase):
         preflight_payload = json.loads(preflight.stdout)
         self.assertTrue(preflight_payload["operator_correlation_required"])
         self.assertEqual(preflight_payload["participant"]["route_status"], "candidate")
+        self.assertEqual(preflight_payload["route"]["state"], "busy")
         preflight_records = journal.replay_records(self.binding)
         self.assertEqual(
             preflight_records[-1]["event_type"], state.PARTICIPANT_ROUTE_OBSERVED

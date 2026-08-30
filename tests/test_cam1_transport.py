@@ -824,6 +824,8 @@ class ProjectBoundTransportTestCase(unittest.TestCase):
         cwd: Path | None = None,
         peer_name: str = "local-worker",
         peer_ref: str = "abcdef",
+        peer_state: str = "idle",
+        peer_listing: str | None = None,
         expected_message: bytes | None = None,
         marker: Path | None = None,
         during_send_command: list[str] | None = None,
@@ -834,6 +836,10 @@ class ProjectBoundTransportTestCase(unittest.TestCase):
             hashlib.sha256(expected_message).hexdigest()
             if expected_message is not None
             else None
+        )
+        listing = peer_listing or (
+            f"Peer sessions (1):\n  {peer_name} [{peer_ref}]  ·  interactive  ·  "
+            f"{peer_state}  ·  started now"
         )
         source = textwrap.dedent(
             f"""\
@@ -850,7 +856,7 @@ class ProjectBoundTransportTestCase(unittest.TestCase):
 
             @server.tool()
             def ListAgents():
-                return {{"listing": "Peer sessions (1):\\n  {peer_name} [{peer_ref}]  ·  interactive  ·  idle  ·  started now"}}
+                return {{"listing": {listing!r}}}
 
             @server.tool()
             def SendMessage(
@@ -896,6 +902,7 @@ class ProjectBoundTransportTestCase(unittest.TestCase):
             with_agent_view(
                 source,
                 name=peer_name,
+                state=peer_state,
                 cwd=str(cwd or self.repo),
             ),
             encoding="utf-8",
