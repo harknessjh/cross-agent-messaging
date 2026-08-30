@@ -128,13 +128,18 @@ receive, list, or wait operation. The supported callback path is:
 1. Claude appends the complete product-visible request serialization to the
    project journal before parsing it; hidden product framing is not observable.
 2. Claude validates it and builds a complete reply against the exact root.
-3. The helper invokes `codex queue` once with the sender's literal full thread
+3. The current helper opens the existing `state_5.sqlite` for write access
+   without modifying it. A restricted sandbox fails here before intent
+   journaling or product invocation. This Codex 0.151.0 compatibility check
+   does not initialize a missing database, test SQLite sidecar creation, or
+   eliminate the close/reopen race.
+4. The helper invokes `codex queue` once with the sender's literal full thread
    UUID and exact reply bytes.
-4. The helper requires the documented stdout receipt and confirms the returned
+5. The helper requires the documented stdout receipt and confirms the returned
    thread UUID.
-5. The originating Codex turn finishes and yields.
-6. Codex may surface the queued reply as a later user turn.
-7. Codex appends those delivered bytes before validation and then validates
+6. The originating Codex turn finishes and yields.
+7. Codex may surface the queued reply as a later user turn.
+8. Codex appends those delivered bytes before validation and then validates
    them against the exact root.
 
 A callback did not reliably interrupt a long active Codex turn. CAM/1 therefore

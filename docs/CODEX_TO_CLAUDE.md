@@ -180,6 +180,17 @@ validation. Use the project-aware `codex-send` or `claude-send` adapter; it
 revalidates the envelope and any required `--against` root immediately before
 the journaled dispatch attempt.
 
+For a Codex queue send, the current adapter first opens the account's existing
+`state_5.sqlite` for write access without modifying it. If the current sandbox
+cannot do so, the command returns `codex.state_write_access` before recording
+an outbound intent or invoking `codex queue`. Obtain explicit user approval for
+the required local filesystem access and run the same project-aware command
+again. If the database is missing, initialize Codex normally before sending.
+Do not bypass the preflight with a native queue command. This compatibility
+check covers the observed Codex 0.151.0 prerequisite only; it does not test
+SQLite sidecar creation or guarantee dispatch after the file is closed and the
+product process starts.
+
 ## 4. Initialize the project journal
 
 Initialize CAM state for the target Git project, not for the CAM/1 clone:
@@ -807,6 +818,12 @@ Operational recovery rules:
   delete the lock file or assume that a send was unattempted; consult the
   journaled intent and outcome first. This journal-lock condition is unrelated
   to a Claude peer whose activity is `busy`; that peer remains addressable.
+- **A command reports `codex.state_write_access`:** no queue dispatch or
+  outbound intent occurred. If `state_5.sqlite` is absent, initialize Codex
+  normally. Otherwise obtain user-approved access to the local Codex state and
+  rerun the project-aware command; do not invoke native `codex queue` as a
+  workaround. A later unrecognized queue failure is still unknown because this
+  preflight cannot prove sidecar creation or eliminate the startup race.
 - **Target is missing, ambiguous, outside the project, or has a new route:**
   rerun preflight and obtain explicit operator correlation.
 - **Agent View repeats the full UUID:** a background and one process-backed

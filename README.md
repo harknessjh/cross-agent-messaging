@@ -34,6 +34,13 @@ CAM/1 does not run a broker, daemon, database, GUI, queue reader, retry loop, or
 automatic executor. The journal is an audit record, not an inbox, delivery
 service, authority source, or shared conversation. Claude Code and Codex own
 their product transports and any product-internal queues or delivery timing.
+The current Codex adapter performs a non-mutating compatibility preflight by
+opening `state_5.sqlite` for write access before it journals an outbound intent.
+A sandbox that cannot open that file fails before dispatch; grant the CAM
+command the necessary local access and run it again rather than creating an
+unknown queue outcome. This narrow check covers the observed Codex 0.151.0
+failure. It does not initialize missing Codex state, test SQLite sidecar-file
+creation, or guarantee that the later queue call will succeed.
 
 The supported profile is deliberately local: both sessions must run on one
 host under the same operating-system account. Remote Control, cloud sessions,

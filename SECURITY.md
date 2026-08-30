@@ -168,6 +168,11 @@ and queues, transcripts, backups, or the required journal may retain copies.
 - Do not pipe standalone validation into a native transport command. A later
   process can mask the validator's nonzero status. Use the project-aware
   adapter, which validates the exact bytes again before dispatch.
+- Keep the current Codex `state_5.sqlite` write-access compatibility preflight
+  before outbound intent journaling. A restricted sandbox must fail before
+  invoking the product. The check does not prove SQLite sidecar creation or
+  eliminate the close/reopen race; arbitrary Codex stderr must never be
+  interpreted as proof that dispatch did not occur.
 - Validate the exact product-visible serialization captured on receipt. Do not
   reconstruct identifiers or fill in fields omitted by a peer.
 - Distinguish schema validity, semantic validity, correlation, lifecycle

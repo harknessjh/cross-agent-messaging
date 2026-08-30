@@ -658,6 +658,12 @@ class ProjectBoundTransportTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.base = Path(self.temporary.name).resolve()
+        self.codex_home = self.base / "codex-home"
+        self.codex_home.mkdir(mode=0o700)
+        write_private(
+            self.codex_home / cam1_transport_native.CODEX_STATE_DB_NAME,
+            b"",
+        )
         self.repo = self.base / "project"
         self.repo.mkdir(mode=0o700)
         subprocess.run(
@@ -737,6 +743,7 @@ class ProjectBoundTransportTestCase(unittest.TestCase):
         claude_bin: Path | None = None,
         codex_bin: Path | None = None,
         project_root: Path | None = None,
+        codex_home: Path | None = None,
     ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             self.transport_command(
@@ -746,11 +753,21 @@ class ProjectBoundTransportTestCase(unittest.TestCase):
                 project_root=project_root,
             ),
             cwd=project_root or self.repo,
+            env=self.transport_environment(codex_home=codex_home),
             check=False,
             capture_output=True,
             text=True,
             timeout=20,
         )
+
+    def transport_environment(
+        self,
+        *,
+        codex_home: Path | None = None,
+    ) -> dict[str, str]:
+        environment = os.environ.copy()
+        environment["CODEX_HOME"] = str(codex_home or self.codex_home)
+        return environment
 
     def add_claude_participant(self) -> None:
         added = self.run_project(

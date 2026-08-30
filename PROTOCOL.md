@@ -794,6 +794,16 @@ The pseudocode requires a structured process API. The sender MUST disable shell 
 
 The bundled helper enforces the same 65,536-byte whole-envelope limit before invoking `codex queue` and reports operating-system `E2BIG` failures explicitly. A schema-valid envelope larger than this limit remains valid stored CAM/1 data, but it is not eligible for this reference live transport.
 
+Before journaling an outbound Codex intent, the current reference adapter opens
+the account's existing `state_5.sqlite` for write access without changing its
+bytes. Failure stops before product invocation and therefore creates no send
+intent to retry. This version-specific compatibility check catches the observed
+Codex 0.151.0 restricted-sandbox failure. It does not initialize a missing
+database, prove that SQLite can create WAL or shared-memory sidecars, or close
+the race between this check and product startup. It does not classify or
+reinterpret arbitrary product stderr; once `codex queue` starts, an
+unrecognized nonzero exit remains unknown.
+
 The Claude session MUST apply its own permission policy before executing the command. On first contact, requesting operator confirmation before running even a harmless callback command is a conforming response.
 
 Because the Codex queue currently supplies no authenticated sender or automatic callback metadata, the CAM/1 envelope is mandatory. The mapping remains `unknown` until the mutual operator-correlation flow completes; completion does not authenticate the claimed Claude identity.

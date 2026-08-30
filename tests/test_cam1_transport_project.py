@@ -110,6 +110,55 @@ class ProjectTransportGuardTests(ProjectBoundTransportTestCase):
         self.assertLess(lifecycle_index, accepted_index)
         self.assertEqual(journal.decode_exact_message(records[intent_index]), raw)
 
+    def test_codex_state_preflight_precedes_journal_and_product_invocation(
+        self,
+    ) -> None:
+        self.add_codex_participant()
+        self.add_claude_participant()
+        raw = cam1.build_hello(
+            sender_vendor="claude-code",
+            sender_name="local-worker",
+            sender_session=CLAUDE_SESSION,
+            recipient_vendor="codex",
+            recipient_name="example-coordinator",
+            recipient_session=CODEX_THREAD,
+            reply_transport="claude_send_message",
+            reply_address=CLAUDE_SESSION,
+        )
+        envelope = self.private_envelope("codex-state-blocked.cam1.json", raw)
+        marker = self.base / "codex-state-preflight-product.called"
+        fake_product = self.base / "queue-helper-must-not-run"
+        fake_product.write_text(
+            f"#!{sys.executable}\n"
+            "from pathlib import Path\n"
+            f"Path({str(marker)!r}).write_text('called', encoding='utf-8')\n",
+            encoding="utf-8",
+        )
+        fake_product.chmod(0o700)
+        missing_state_home = self.base / "codex-home-without-state"
+        missing_state_home.mkdir(mode=0o700)
+        journal_before = self.binding.journal_path.read_bytes()
+
+        completed = self.run_transport(
+            "codex-send",
+            "--participant",
+            "example-coordinator",
+            "--thread",
+            CODEX_THREAD,
+            "--envelope",
+            str(envelope),
+            codex_bin=fake_product,
+            codex_home=missing_state_home,
+        )
+
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertEqual(
+            json.loads(completed.stderr)["error"]["code"],
+            "codex.state_write_access",
+        )
+        self.assertEqual(self.binding.journal_path.read_bytes(), journal_before)
+        self.assertFalse(marker.exists())
+
     def test_project_sends_reject_invalid_envelopes_before_intent_or_dispatch(
         self,
     ) -> None:
@@ -495,6 +544,7 @@ class ProjectTransportGuardTests(ProjectBoundTransportTestCase):
                 codex_bin=fake_codex,
             ),
             cwd=self.repo,
+            env=self.transport_environment(),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,

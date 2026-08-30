@@ -16,6 +16,7 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -29,10 +30,10 @@ from typing import Any
 
 if __package__:
     from . import cam1
-    from .cam1lib import project, routing, state
+    from .cam1lib import project, routing, secure_fs, state
 else:  # Direct execution adds tools/ rather than the repo to sys.path.
     import cam1  # type: ignore[no-redef]
-    from cam1lib import project, routing, state  # type: ignore[no-redef]
+    from cam1lib import project, routing, secure_fs, state  # type: ignore[no-redef]
 
 DEFAULT_TIMEOUT_SECONDS = 20.0
 MAX_TIMEOUT_SECONDS = 120.0
@@ -43,6 +44,10 @@ MAX_RECEIPT_BLOCKS = 8
 # ``codex queue`` currently receives the envelope as one argv value.
 MAX_TRANSPORT_ENVELOPE_BYTES = 64 * 1_024
 MIN_MCP_SDK_VERSION = (2, 1)
+CODEX_STATE_DB_NAME = "state_5.sqlite"
+_CODEX_STATE_FLAGS = (
+    os.O_RDWR | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
+)
 LOCAL_SESSION_KINDS = routing.LOCAL_SESSION_KINDS
 NONLOCAL_MARKERS = routing.NONLOCAL_MARKERS
 PEER_NAME_PATTERN = routing.PEER_NAME_PATTERN
@@ -1054,6 +1059,38 @@ def _codex_queue_receipt(stdout: str, *, expected_thread: str) -> dict[str, str]
     }
 
 
+def _require_codex_state_write_access() -> None:
+    """Fail before journaling or dispatch when local Codex state is read-only."""
+
+    configured_home = os.environ.get("CODEX_HOME")
+    state_root = (
+        Path(configured_home) if configured_home is not None else Path.home() / ".codex"
+    )
+    directory_descriptor: int | None = None
+    state_descriptor: int | None = None
+    try:
+        directory_descriptor = secure_fs._open_directory_fd(state_root)
+        state_descriptor = os.open(
+            CODEX_STATE_DB_NAME,
+            _CODEX_STATE_FLAGS,
+            dir_fd=directory_descriptor,
+        )
+        metadata = os.fstat(state_descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid():
+            raise OSError("Codex state database is not an owned regular file")
+    except (OSError, project.ProjectError):
+        raise TransportError(
+            "codex.state_write_access",
+            "Codex local state cannot be opened for write access; obtain "
+            "user-approved local filesystem access before queue dispatch",
+        ) from None
+    finally:
+        if state_descriptor is not None:
+            os.close(state_descriptor)
+        if directory_descriptor is not None:
+            os.close(directory_descriptor)
+
+
 def _send_to_codex_queue(
     *,
     codex_bin: str,
@@ -1086,6 +1123,7 @@ def _send_to_codex_queue(
         transport="codex_queue",
         address=thread,
     )
+    _require_codex_state_write_access()
     before_send(validated)
     try:
         completed = subprocess.run(

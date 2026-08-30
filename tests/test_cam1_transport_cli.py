@@ -143,9 +143,14 @@ class TransportCliRoundTripTests(unittest.TestCase):
             reply_path = temp / "ack.cam1.json"
             write_private(original_path, original)
             write_private(reply_path, reply)
-            with mock.patch.object(
-                cam1_transport.subprocess, "run", return_value=receipt
-            ) as run:
+            with (
+                mock.patch.object(
+                    cam1_transport_native, "_require_codex_state_write_access"
+                ),
+                mock.patch.object(
+                    cam1_transport.subprocess, "run", return_value=receipt
+                ) as run,
+            ):
                 result = cam1_transport._send_to_codex_queue(
                     codex_bin="/fake/codex",
                     thread=uppercase_thread,
@@ -319,6 +324,9 @@ class TransportCliRoundTripTests(unittest.TestCase):
             write_private(reply_path, reply)
             with (
                 mock.patch.object(
+                    cam1_transport_native, "_require_codex_state_write_access"
+                ),
+                mock.patch.object(
                     cam1_transport.subprocess,
                     "run",
                     side_effect=OSError(errno.E2BIG, "argument list too long"),
@@ -334,6 +342,98 @@ class TransportCliRoundTripTests(unittest.TestCase):
                     before_send=lambda _validated: None,
                 )
         self.assertEqual(context.exception.code, "transport.payload_too_large")
+
+    def test_codex_read_only_state_fails_before_journal_or_dispatch(self) -> None:
+        original = build_first_contact()
+        reply = cam1.build_ack(
+            original,
+            sender_vendor="claude-code",
+            sender_name="local-worker",
+            sender_session=CLAUDE_SESSION,
+            reply_transport="claude_send_message",
+            reply_address=CLAUDE_SESSION,
+            status_value="received",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            temp = Path(directory)
+            original_path = temp / "hello.cam1.json"
+            reply_path = temp / "ack.cam1.json"
+            write_private(original_path, original)
+            write_private(reply_path, reply)
+            fake_bin = temp / "bin" / "codex"
+            fake_bin.parent.mkdir()
+            fake_bin.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
+            fake_bin.chmod(0o700)
+            state_home = temp / "state"
+            state_home.mkdir(mode=0o700)
+            state_db = state_home / cam1_transport_native.CODEX_STATE_DB_NAME
+            state_db.write_bytes(b"not opened by sqlite")
+            state_db.chmod(0o600)
+            before_send = mock.Mock()
+
+            original_open = os.open
+
+            def deny_state_write(path, flags, *args, **kwargs):
+                if (
+                    path == cam1_transport_native.CODEX_STATE_DB_NAME
+                    and flags & os.O_RDWR
+                ):
+                    raise PermissionError("simulated read-only Codex state")
+                return original_open(path, flags, *args, **kwargs)
+
+            with (
+                mock.patch.dict(os.environ, {"CODEX_HOME": str(state_home)}),
+                mock.patch.object(os, "open", side_effect=deny_state_write),
+                mock.patch.object(cam1_transport.subprocess, "run") as run,
+                self.assertRaises(cam1_transport.TransportError) as context,
+            ):
+                cam1_transport._send_to_codex_queue(
+                    codex_bin=str(fake_bin),
+                    thread=CODEX_THREAD,
+                    envelope_path=str(reply_path),
+                    against_path=str(original_path),
+                    timeout_seconds=1,
+                    before_send=before_send,
+                )
+
+        self.assertEqual(context.exception.code, "codex.state_write_access")
+        before_send.assert_not_called()
+        run.assert_not_called()
+
+    def test_codex_state_probe_rejects_unsafe_shapes_and_preserves_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            temp = Path(directory)
+            missing = temp / "missing"
+            missing.mkdir(mode=0o700)
+
+            symlinked = temp / "symlinked"
+            symlinked.mkdir(mode=0o700)
+            target = temp / "target.sqlite"
+            target.write_bytes(b"target")
+            (symlinked / cam1_transport_native.CODEX_STATE_DB_NAME).symlink_to(target)
+
+            nonregular = temp / "nonregular"
+            nonregular.mkdir(mode=0o700)
+            (nonregular / cam1_transport_native.CODEX_STATE_DB_NAME).mkdir()
+
+            for state_home in (missing, symlinked, nonregular):
+                with self.subTest(state_home=state_home):
+                    with (
+                        mock.patch.dict(os.environ, {"CODEX_HOME": str(state_home)}),
+                        self.assertRaises(cam1_transport.TransportError) as context,
+                    ):
+                        cam1_transport_native._require_codex_state_write_access()
+                    self.assertEqual(context.exception.code, "codex.state_write_access")
+
+            writable = temp / "writable"
+            writable.mkdir(mode=0o700)
+            state_db = writable / cam1_transport_native.CODEX_STATE_DB_NAME
+            before = b"byte-stable state probe"
+            state_db.write_bytes(before)
+            state_db.chmod(0o600)
+            with mock.patch.dict(os.environ, {"CODEX_HOME": str(writable)}):
+                cam1_transport_native._require_codex_state_write_access()
+            self.assertEqual(state_db.read_bytes(), before)
 
     def test_codex_nonzero_and_timeout_are_failures(self) -> None:
         original = build_first_contact()
@@ -362,6 +462,10 @@ class TransportCliRoundTripTests(unittest.TestCase):
             for outcome, expected_code in cases:
                 with self.subTest(expected_code=expected_code):
                     with (
+                        mock.patch.object(
+                            cam1_transport_native,
+                            "_require_codex_state_write_access",
+                        ),
                         mock.patch.object(
                             cam1_transport.subprocess,
                             "run",
@@ -422,6 +526,10 @@ class TransportCliRoundTripTests(unittest.TestCase):
             for completed in cases:
                 with self.subTest(completed=completed):
                     with (
+                        mock.patch.object(
+                            cam1_transport_native,
+                            "_require_codex_state_write_access",
+                        ),
                         mock.patch.object(
                             cam1_transport.subprocess, "run", return_value=completed
                         ),
