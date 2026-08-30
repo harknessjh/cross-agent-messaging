@@ -33,6 +33,29 @@ else:
 
 
 class ProjectTransportOutcomeTests(ProjectBoundTransportTestCase):
+    def test_legacy_agent_view_shape_reaches_project_preflight(self) -> None:
+        self.add_claude_participant()
+        claude_bin = self.fake_claude(
+            returned={"success": True},
+            agent_view_shape="legacy",
+        )
+
+        completed = self.run_transport(
+            "claude-preflight",
+            "--participant",
+            "local-worker",
+            "--session-id",
+            CLAUDE_SESSION,
+            "--to",
+            "local-worker [abcdef]",
+            claude_bin=claude_bin,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        payload = json.loads(completed.stdout)
+        self.assertEqual(payload["identity"]["agent_view_id"], "00000000")
+        self.assertFalse(payload["identity"]["process_backed"])
+
     def test_claude_list_reports_addressable_unavailable_and_nonlocal_buckets(
         self,
     ) -> None:

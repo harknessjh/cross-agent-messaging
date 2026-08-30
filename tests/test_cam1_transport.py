@@ -82,23 +82,25 @@ def with_agent_view(
     kind: str = "interactive",
     state: str = "idle",
     cwd: str = "/example/project",
+    shape: str = "process",
 ) -> str:
     """Add the real CLI's ``agents --json`` mode to a fake Claude executable."""
     shebang, body = source.split("\n", 1)
-    listing = json.dumps(
-        [
-            {
-                "cwd": cwd,
-                "kind": kind,
-                "startedAt": 1_784_241_375_111,
-                "sessionId": CLAUDE_SESSION,
-                "name": name,
-                "pid": 4242,
-                "status": state,
-                "peerAddress": "uds:/tmp/cam1-test-peer.sock",
-            }
-        ]
-    )
+    row = {
+        "cwd": cwd,
+        "kind": kind,
+        "startedAt": 1_784_241_375_111,
+        "sessionId": CLAUDE_SESSION,
+        "name": name,
+        "peerAddress": "uds:/tmp/cam1-test-peer.sock",
+    }
+    if shape == "process":
+        row.update({"pid": 4242, "status": state})
+    elif shape == "legacy":
+        row.update({"id": CLAUDE_SESSION.split("-", 1)[0], "state": state})
+    else:
+        raise ValueError("Agent View fixture shape must be process or legacy")
+    listing = json.dumps([row])
     prelude = textwrap.dedent(
         f"""\
         import sys as _agent_view_sys
@@ -826,6 +828,7 @@ class ProjectBoundTransportTestCase(unittest.TestCase):
         peer_ref: str = "abcdef",
         peer_state: str = "idle",
         peer_listing: str | None = None,
+        agent_view_shape: str = "process",
         expected_message: bytes | None = None,
         marker: Path | None = None,
         during_send_command: list[str] | None = None,
@@ -904,6 +907,7 @@ class ProjectBoundTransportTestCase(unittest.TestCase):
                 name=peer_name,
                 state=peer_state,
                 cwd=str(cwd or self.repo),
+                shape=agent_view_shape,
             ),
             encoding="utf-8",
         )
