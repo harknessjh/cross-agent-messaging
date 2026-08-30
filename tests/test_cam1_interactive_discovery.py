@@ -7,6 +7,7 @@ import asyncio
 import json
 import unittest
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 from unittest import mock
 
@@ -14,6 +15,8 @@ from tools import cam1_transport_native
 from tools.cam1lib import routing
 
 CLAUDE_SESSION = "aaaaaaaa-0000-4000-8000-000000000001"
+ROOT = Path(__file__).resolve().parents[1]
+MIXED_ROWS_FIXTURE = ROOT / "tests" / "fixtures" / "claude-agents-mixed-rows.json"
 
 
 def background_row() -> dict[str, object]:
@@ -65,9 +68,7 @@ class InteractiveAgentViewDiscoveryTests(unittest.TestCase):
             [interactive_row(), background_row()],
         ):
             with self.subTest(order=[row["kind"] for row in rows]):
-                grouped = routing.parse_agent_view_sessions(
-                    json.dumps(rows).encode()
-                )
+                grouped = routing.parse_agent_view_sessions(json.dumps(rows).encode())
 
                 self.assertEqual(len(grouped[CLAUDE_SESSION]), 2)
                 selected = routing.select_agent_view_session(grouped, CLAUDE_SESSION)
@@ -99,6 +100,25 @@ class InteractiveAgentViewDiscoveryTests(unittest.TestCase):
                 self.assertIsNone(route["agent_view_id"])
                 self.assert_pid_not_serialized(route)
 
+    def test_seven_row_product_shape_selects_each_interactive_representation(
+        self,
+    ) -> None:
+        grouped = routing.parse_agent_view_sessions(MIXED_ROWS_FIXTURE.read_bytes())
+
+        self.assertEqual(sum(len(rows) for rows in grouped.values()), 7)
+        self.assertEqual(len(grouped), 4)
+        expected = {
+            "aaaaaaaa-0000-4000-8000-000000000001": "project-a-worker",
+            "cccccccc-0000-4000-8000-000000000003": "project-c-worker",
+            "dddddddd-0000-4000-8000-000000000004": "project-d-worker",
+        }
+        for session_id, product_name in expected.items():
+            with self.subTest(session_id=session_id):
+                selected = routing.select_agent_view_session(grouped, session_id)
+                self.assertEqual(selected.product_name, product_name)
+                self.assertTrue(selected.process_backed)
+                self.assertIsNone(selected.agent_view_id)
+
     def test_duplicate_live_process_representations_are_rejected(self) -> None:
         rows = [interactive_row(pid=4_242), interactive_row(pid=4_243)]
         grouped = routing.parse_agent_view_sessions(json.dumps(rows).encode())
@@ -117,9 +137,7 @@ class InteractiveAgentViewDiscoveryTests(unittest.TestCase):
 
         with self.assertRaises(routing.RoutingError) as context:
             routing.parse_agent_view_sessions(
-                json.dumps(
-                    [interactive_row(agent_view_id="deadbeef")]
-                ).encode()
+                json.dumps([interactive_row(agent_view_id="deadbeef")]).encode()
             )
 
         self.assertEqual(context.exception.code, "claude.agent_id_mismatch")
@@ -131,9 +149,7 @@ class InteractiveAgentViewDiscoveryTests(unittest.TestCase):
   remote-worker [cccccc]  ·  interactive  ·  idle  ·  Remote Control
 """
 
-        peers = {
-            peer.name: peer for peer in routing.parse_list_agents_peers(listing)
-        }
+        peers = {peer.name: peer for peer in routing.parse_list_agents_peers(listing)}
 
         self.assertTrue(peers["busy-worker"].local)
         self.assertTrue(peers["busy-worker"].addressable)

@@ -1,7 +1,7 @@
 # CAM/1 implementation notes
 
 - Status: non-normative compatibility notes
-- Reference snapshot: 2026-08-27
+- Reference snapshot: 2026-08-30
 
 These notes describe one tested same-host interoperability environment. They
 are not CAM/1 requirements or vendor commitments, and product behavior may
@@ -46,19 +46,23 @@ nor authorizes work.
 
 ## 2. Reference environment
 
-The 2026-08-26 compatibility pass used both products under one macOS account:
+The live-transport compatibility pass used both products under one macOS
+account. A later read-only discovery check captured the changed Claude field
+shapes:
 
 | Component | Observed value | Evidence |
 |---|---|---|
 | Codex CLI | `0.149.1` | local version and `codex queue --help` checks |
-| Claude Code | `2.1.246` | local version, Agent View, and MCP capability checks |
+| Claude Code live transport | `2.1.246` | local version, Agent View, MCP capability checks, and prior round trips |
+| Claude Code discovery fields | `2.1.251` | read-only Agent View JSON and MCP `ListAgents` capture plus synthetic fixtures; no live send |
 | MCP Python SDK | `2.1.1` | installed distribution and fake-server round trip |
 | MCP protocol selected with Claude | `2025-11-25` | local read-only MCP connection |
 | Python | `3.11` | local test run |
 
-The automated transport suite uses fake local Claude and Codex executables. It
-does not send a live cross-session message. CI covers Python 3.11 through 3.14
-without requiring either vendor product.
+The automated transport suite uses fake local Claude and Codex executables. Its
+2.1.251 compatibility cases reproduce captured field shapes but do not send a
+live cross-session message. CI covers Python 3.11 through 3.14 without requiring
+either vendor product.
 
 This snapshot does not establish behavior on native Windows, across accounts,
 in containers, through Remote Control, in cloud sessions, or between machines.
@@ -68,10 +72,11 @@ Those cases are outside this project's supported scope.
 
 Two Claude Code discovery surfaces provide different evidence:
 
-- `claude agents --json` exposes the full `sessionId`, an eight-character Agent
-  View ID, current product name, cwd, kind, state, and start time.
+- `claude agents --json` is a heterogeneous inventory. A process-backed row may
+  expose `pid`/`status` without `id`/`state`; a background lifecycle row may
+  expose `id`/`state`, and both representations can share a full `sessionId`.
 - MCP `ListAgents` exposes the current addressable `name [six-character-ref]`
-  route and peer state, but not the full session UUID.
+  route and peer activity, but not the full session UUID.
 
 The full session UUID shown by the target session's `/status` and Agent View is
 the stable identity used in the project roster and `reply_to.address`. A product
@@ -81,11 +86,14 @@ address is product-internal correlation metadata and is never used by CAM/1.
 For each Claude send, the helper:
 
 1. runs fresh `claude agents --json` discovery;
-2. selects the exact full session UUID;
+2. groups rows by exact full session UUID and, when process-backed evidence is
+   present, selects its sole eligible process row without merging companion
+   fields; one eligible legacy `id`/`state` row remains the fallback when no
+   process row is emitted;
 3. starts a local `claude mcp serve` child through the official MCP Python SDK;
 4. checks the live `ListAgents` and `SendMessage` tool schemas;
 5. obtains a fresh `ListAgents` result;
-6. requires one eligible local peer whose name uniquely matches the selected
+6. requires one addressable local peer whose name uniquely matches the selected
    Agent View row;
 7. requires the Agent View cwd to resolve inside the bound Git project,
    including initialized linked worktrees sharing its Git common directory;
@@ -95,10 +103,18 @@ For each Claude send, the helper:
 11. reports `success:true` plus a canonical `msg_id` as transport acceptance
     only.
 
+An Agent View `id` is optional. When present, the helper validates that it is
+eight hexadecimal characters matching the full UUID prefix; when absent, the
+public identity and route retain `agent_view_id: null`. The process ID is used
+only transiently for selection and refresh-incarnation checking. It is neither
+serialized nor stored in the journal or roster.
+
 The helper restarts and rediscovers for each operation; it never caches an MCP
-route across sends. Unknown, cloud, Remote Control, duplicate-name, ambiguous,
-and mismatched rows fail closed. It neither connects to the session UDS nor
-exposes an MCP URL.
+route across sends. It treats locality separately from activity: an eligible
+same-host `busy` peer is addressable, local terminal or unknown states are
+reported as unavailable, and cloud or Remote Control rows are nonlocal.
+Duplicate-name, multiple-live-representation, ambiguous, and mismatched rows
+fail closed. It neither connects to the session UDS nor exposes an MCP URL.
 
 Direct child-process stdio through the MCP SDK avoids the terminal canonical
 line-buffering and shell-quoting failures observed with hand-written long
@@ -126,9 +142,10 @@ does not inspect an internal queue database or poll a transcript as a receive
 workaround. The sender yields and the operator checks the target session if a
 reply remains absent.
 
-Claude Code idle notifications are similarly not receipts. They can arrange a
-future notification or turn, but do not prove that the target processed the
-message.
+Claude peer activity is scheduling state, not a receipt. A local `busy` peer
+remains addressable and can accept a send, but `busy` does not prove that the
+target displayed or processed the message. Idle notifications can arrange a
+future notification or turn and likewise do not prove processing.
 
 ## 5. Required project journal
 
@@ -167,7 +184,9 @@ Transport operations use two short project transactions: the first resolves
 current state and commits outbound intent; the second records the transport
 outcome and lifecycle change after product I/O returns. The project lock is not
 held while Claude MCP or Codex queue is running. Lock acquisition is bounded;
-contention reports `transaction.busy` instead of waiting indefinitely.
+contention reports `transaction.busy` instead of waiting indefinitely. That
+journal-lock condition is unrelated to a Claude peer whose activity is
+`busy`; the latter remains an addressable local discovery result.
 
 All project and provenance Git probes invoke the bound absolute executable
 with a minimal noninteractive environment, `--no-optional-locks`,
@@ -276,6 +295,17 @@ conforming. Each lifecycle reply correlates to one root request.
 session UUID or human role. Conversely, the UUID shown by `/status` was not the
 literal MCP route. Fresh two-surface discovery plus operator correlation keeps
 identity, human role, and route distinct.
+
+Claude Code 2.1.251 field captures also showed that Agent View is not one row
+per logical session: a background lifecycle row with `id`/`state` and an
+interactive process row with `pid`/`status` can share a full `sessionId`. CAM
+groups rows by that full UUID. When a process-backed representation exists it
+must yield one eligible selected row; only when none exists may one eligible
+legacy `id`/`state` row be used. CAM never fills a selected row from companion
+evidence. An Agent View ID is validated when present and stays null when
+absent, while the PID is transient selection/refresh evidence and is never
+serialized or persisted. This behavior is covered by captured field evidence
+and synthetic fixtures; no live 2.1.251 send or round trip has been claimed.
 
 ### A successful send does not keep correspondence alive
 

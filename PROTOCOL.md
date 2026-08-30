@@ -115,7 +115,7 @@ Within one Codex subagent tree, use Codex's native collaboration tools. Within o
 | `experimental` | Exposed by a current implementation but explicitly unstable |
 | `internal` | Undocumented implementation detail; diagnostic use only |
 
-At the reference snapshot, public Codex product documentation described subagents and agent threads but not the independent-session `codex queue` CLI. Codex CLI 0.149.0 and 0.149.1 were tested with `codex agents` and `codex queue`. Claude Code's cross-session messaging and stdio MCP server were both documented and tested through Claude Code 2.1.246.
+At the reference snapshot, public Codex product documentation described subagents and agent threads but not the independent-session `codex queue` CLI. Codex CLI 0.149.0 and 0.149.1 were tested with `codex agents` and `codex queue`. Claude Code's cross-session messaging and stdio MCP server were both documented and live-transport tested through Claude Code 2.1.246. Claude Code 2.1.251 Agent View and `ListAgents` field shapes were captured locally and added to synthetic compatibility tests; no 2.1.251 cross-session send or round trip is claimed.
 
 Because command surfaces can change, every agent MUST run the capability checks in section 8 before relying on them.
 
@@ -415,9 +415,11 @@ Before sending, the agent MUST:
    `reply_to`; the reference live path does not send one-way envelopes.
 3. Resolve the recipient's current route from the project roster. For
    Claude, correlate that UUID through fresh Agent View and MCP `ListAgents`
-   discovery, require one eligible same-host `name [ref]` route, and require
-   the Agent View cwd to resolve inside the bound Git project, including an
-   initialized linked worktree sharing its Git common directory.
+   discovery. Group heterogeneous Agent View rows by full UUID, select one
+   eligible representation without merging companion evidence, require one
+   addressable same-host `name [ref]` route, and require the selected Agent View
+   cwd to resolve inside the bound Git project, including an initialized linked
+   worktree sharing its Git common directory.
 4. Confirm the intended repository, worktree, common name, role, and product
    label. Stop for operator correlation when the roster or discovery differs.
 5. Use explicit operator-approved absolute executable paths for every live
@@ -619,8 +621,9 @@ CAM/1 defines no queue-reading or active-turn receive workaround. Implementation
 - In the required project journal, distinguish the stable session IDs,
   transient route, callback UUID, CAM nonce or message ID, Claude
   `SendMessage` ID, Codex queue item ID, application receipt, and completion.
-  Peer `idle` or `working` state is scheduling information, never delivery
-  proof.
+  Peer `idle`, `busy`, or other activity state is scheduling information, never
+  locality or delivery proof. An eligible local `busy` peer remains
+  addressable.
 - For several recipients, send one correlated request per recipient and aggregate their replies across turns. Do not assume two callbacks will arrive together.
 - Keep bridge processes scoped and short-lived: allowlist only the messaging tools, wait for protocol initialization, capture receipts, and close the temporary MCP server cleanly.
 - Avoid oversized conversational payloads. When all peers are authorized for the same filesystem scope, prefer an exact path plus content hash and a compact summary over copying a large artifact into the message. If a handoff must be chunked, label every part with one batch ID, part number/count, and content hash; do not assume the parts arrive in one turn.
@@ -647,14 +650,35 @@ ListAgents({})
 
 An operator can inspect the same capability with `/list-agents` or `/peers` in supported Claude Code versions.
 
-Agent View supplies the full `sessionId` and current product name. `ListAgents`
-supplies the live addressable name and short ref. The sender MUST select the
-exact full UUID, require that its current name maps to exactly one eligible
-same-host `ListAgents` row, require its cwd to resolve inside the bound project
-worktree, and send to the resulting fresh `name [ref]`. It
-MUST fail closed on duplicate names, missing rows, nonlocal rows, or conflicting
-metadata. A bare name is acceptable only when the live interface exposes no ref
-and the name uniquely identifies the selected full session UUID.
+Agent View JSON is a heterogeneous inventory. An interactive process row may
+carry `pid` and `status` while omitting `id` and `state`. A background lifecycle
+row may instead carry `id` and `state`; it can
+share a full `sessionId` with a process row without identifying a second stable
+session. The sender MUST group rows by canonical full UUID. When a selected UUID
+has process-backed evidence, the reference helper requires its sole eligible
+process-backed row and uses only that row's name, cwd, kind, start time, and
+status. If the product emits no `pid`/`status` representation for that UUID, one
+eligible legacy `id`/`state` row remains a compatibility fallback. An
+implementation MUST NOT merge, borrow, or synthesize fields across companion
+rows, and multiple process-backed candidates remain ambiguous.
+
+An Agent View `id` is optional. When present it MUST be a valid eight-hexadecimal
+identifier matching the full session UUID prefix; when absent it remains
+`null`. A process ID MAY be used transiently to distinguish a live
+representation and detect an incarnation change during the two fresh probes,
+but it MUST NOT be serialized, journaled, persisted, addressed, or treated as
+identity.
+
+`ListAgents` supplies the live `name [ref]` route. Locality MUST be evaluated
+separately from activity and addressability: an eligible same-host peer in
+`busy` state remains addressable, while cloud, Remote Control, other-machine,
+terminal, and unknown rows are not selectable. The sender MUST require that the
+selected Agent View name maps to exactly one addressable same-host row, require
+its cwd to resolve inside the bound project worktree, and send to that exact
+fresh route. It MUST fail closed on duplicate names, missing rows, multiple live
+representations, nonlocal rows, unavailable rows, or conflicting metadata. A
+bare name is acceptable only when the live interface exposes no ref and the name
+uniquely identifies the selected full session UUID.
 
 Through the locally verified MCP interface, the `ListAgents` payload is nested under `result.content[0].text`; that text contains a JSON object whose `listing` field is human-readable. Inspect the live result rather than assuming this nesting will never change.
 
@@ -718,11 +742,12 @@ Discover the live schemas instead of assuming them:
 {"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}
 ```
 
-Before starting MCP, run the same absolute executable with `agents --json` and
-select the exact operator-correlated full `sessionId`; require its cwd to
-resolve inside the bound Git project, including an initialized linked worktree
-sharing its Git common directory. Then list current addressable Claude agents
-through MCP:
+Before starting MCP, run the same absolute executable with `agents --json`,
+group its heterogeneous rows by full `sessionId`, and select the exact
+operator-correlated UUID under the rules in section 10. Use only the selected
+representation's evidence and require its cwd to resolve inside the bound Git
+project, including an initialized linked worktree sharing its Git common
+directory. Then list current addressable Claude agents through MCP:
 
 ```json
 {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"ListAgents","arguments":{}}}
@@ -1076,9 +1101,10 @@ The journal-backed participant roster MUST keep these fields distinct:
 - participant state such as active, stale, or retired; and
 - current route observation and its source, time, and correlation state. A
   Claude route observation SHOULD retain the normalized Agent View session
-  kind and start time plus the resolved Git worktree top level and common
-  directory used for the project check. It MUST NOT retain a peer UDS or other
-  raw runtime endpoint.
+  kind and start time, the optional validated Agent View ID or `null`, and the
+  resolved Git worktree top level and common directory used for the project
+  check. It MUST NOT retain a process ID, companion-row fields, a peer UDS, or
+  another raw runtime endpoint.
 
 Before an audited live send, the selected recipient and `claimed_sender` MUST
 each match exactly one active, bound roster participant by vendor, common name,
@@ -1087,10 +1113,12 @@ participant's supported transport and stable UUID. This reference-path check
 prevents a mutable display name or retyped callback from silently selecting a
 different participant; it does not authenticate either participant.
 
-The roster MUST NOT store or use a Claude runtime UDS as a route. A full
-session UUID is identity; a name, short ref, Agent View ID, cwd, process ID, and
-`name [ref]` are supporting or transient discovery data. Retired common names
-MUST NOT be silently reassigned to a different participant.
+The roster MUST NOT store or use a Claude runtime UDS as a route. A full session
+UUID is identity; a name, short ref, optional Agent View ID, cwd, process ID,
+and `name [ref]` are supporting or transient discovery data. A missing Agent
+View ID MUST NOT be synthesized from the UUID or copied from a companion row.
+Retired common names MUST NOT be silently reassigned to a different
+participant.
 
 Lifecycle state MUST also be derived from journaled exact root and reply bytes.
 `state-current.json` is a rebuildable atomic projection of participant and
@@ -1161,9 +1189,13 @@ Remote Control, cloud sessions, cross-host delivery, and locally observed Codex 
 - Ask the target or operator for the full session UUID from `/status`; do not
   substitute the human conversation title.
 - Run the operator-approved absolute Claude executable with `agents --json`
-  and require that exact full `sessionId`.
+  and require that exact full `sessionId`. Repeated rows for that UUID may be
+  companion lifecycle and process representations; require one eligible
+  selection and never combine their fields.
 - Run fresh MCP `ListAgents` and require that the selected Agent View name maps
-  to one eligible local `name [ref]`.
+  to one addressable local `name [ref]`. A local `busy` peer is addressable; a
+  local terminal or unknown state is unavailable, and remote or cloud peers are
+  nonlocal.
 - Confirm that the target is an eligible session and that inbound messaging is enabled under the receiver's policy.
 - Check documented provider, feature-flag, container, platform, and Remote Control constraints.
 - If a previously working session cannot be correlated, mark its route stale
@@ -1360,15 +1392,22 @@ prove any further handling.
 The commands and transport mappings in sections 9–12 were tested on 2026-08-21
 and retested through 2026-08-26 under one macOS operating-system account. The
 project journal, two-surface Claude routing, typed builders, and lifecycle
-projection were exercised in the offline reference suite on 2026-08-27 with:
+projection were exercised in the offline reference suite on 2026-08-27. On
+2026-08-30, read-only field evidence from Claude Code 2.1.251 was captured and
+its heterogeneous discovery shapes were added to synthetic compatibility
+tests. That later evidence did not include a 2.1.251 cross-session send or round
+trip. The combined snapshot includes:
 
 - `codex-cli 0.149.0` and `0.149.1`;
-- Claude Code versions through `2.1.246`;
+- Claude Code live-transport tests through `2.1.246`, plus 2.1.251 Agent View
+  and `ListAgents` field evidence and synthetic fixtures only;
 - MCP protocol versions selected by the installed client/server, including
   `2025-11-25` in the latest compatibility pass;
 - Codex to Claude Code and Claude Code to Codex round trips;
 - Codex to independent Codex queue delivery and application acknowledgment;
-- full-session Agent View to fresh `ListAgents` route correlation;
+- full-session Agent View to fresh `ListAgents` route correlation, including
+  grouped companion rows, optional Agent View IDs, and addressable `busy`
+  peers in the 2.1.251 fixture coverage;
 - exact-envelope UUID validation, false-rejection reconciliation, detection of
   correlated but schema-incomplete acknowledgments, and complete typed result
   construction;

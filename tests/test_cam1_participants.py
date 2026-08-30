@@ -209,6 +209,25 @@ class ParticipantRosterTests(unittest.TestCase):
         route = roster.require_correlated_route("reviewer")
         self.assertEqual(route.address, "example-review-session [abcdef]")
 
+    def test_interactive_route_does_not_invent_missing_agent_view_id(self) -> None:
+        roster = roster_with_reviewer()
+        bind_reviewer(roster)
+
+        observed = roster.observe_route(
+            "reviewer",
+            transport="claude_send_message",
+            address="example-review-session [abcdef]",
+            source="Agent View plus ListAgents",
+            observed_at=OBSERVED_AT,
+            agent_view_id=None,
+            list_agents_name="example-review-session",
+            list_agents_ref="abcdef",
+            product_state="busy",
+        )
+
+        self.assertIsNone(observed.route.agent_view_id)
+        self.assertIsNone(observed.as_dict()["route"]["agent_view_id"])
+
     def test_route_cannot_be_shared_by_two_participants(self) -> None:
         roster = roster_with_reviewer()
         roster.add(

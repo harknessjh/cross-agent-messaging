@@ -178,12 +178,87 @@ def _reject_nonfinite_constant(_value: str) -> None:
     )
 
 
-def _optional_bounded_text(
-    value: Any, *, label: str, maximum: int
-) -> str | None:
+def _optional_bounded_text(value: Any, *, label: str, maximum: int) -> str | None:
     if value is None:
         return None
     return _bounded_text(value, label=label, maximum=maximum)
+
+
+def _agent_view_id(row: dict[str, Any], session_id: str) -> str | None:
+    value = _optional_bounded_text(row.get("id"), label="id", maximum=8)
+    if value is None:
+        return None
+    value = value.lower()
+    if AGENT_VIEW_ID_PATTERN.fullmatch(value) is None:
+        raise RoutingError(
+            "claude.agents_format",
+            "id must be the eight-hexadecimal Agent View identifier",
+        )
+    if value != session_id.split("-", 1)[0]:
+        raise RoutingError(
+            "claude.agent_id_mismatch",
+            "Agent View id does not match the full sessionId prefix",
+        )
+    return value
+
+
+def _agent_view_activity(row: dict[str, Any]) -> tuple[str, int | None]:
+    background_state = _optional_bounded_text(
+        row.get("state"), label="state", maximum=64
+    )
+    process_status = _optional_bounded_text(
+        row.get("status"), label="status", maximum=64
+    )
+    has_process_id = "pid" in row
+    if has_process_id != ("status" in row):
+        raise RoutingError(
+            "claude.agents_format",
+            "pid and status must either both be present or both be absent",
+        )
+    process_id: int | None = None
+    if has_process_id:
+        process_id = row.get("pid")
+        if type(process_id) is not int or process_id <= 0 or process_id > 2**31 - 1:
+            raise RoutingError(
+                "claude.agents_format",
+                "pid must be a bounded positive integer",
+            )
+    activity = process_status if process_status is not None else background_state
+    if activity is None:
+        raise RoutingError(
+            "claude.agents_format",
+            "each Agent View row must contain state or a pid/status pair",
+        )
+    return activity, process_id
+
+
+def _agent_view_started_at(row: dict[str, Any]) -> int:
+    value = row.get("startedAt")
+    if type(value) is not int or value < 0 or value > 10**16:
+        raise RoutingError(
+            "claude.agents_format",
+            "startedAt must be a bounded non-negative integer",
+        )
+    return value
+
+
+def _parse_agent_view_row(row: Any) -> AgentViewSession:
+    if not isinstance(row, dict):
+        raise RoutingError(
+            "claude.agents_format", "claude agents rows must be JSON objects"
+        )
+    session_id = _canonical_session_id(row.get("sessionId"))
+    state, process_id = _agent_view_activity(row)
+    return AgentViewSession(
+        session_id=session_id,
+        agent_view_id=_agent_view_id(row, session_id),
+        product_name=_bounded_text(row.get("name"), label="name", maximum=256),
+        cwd=_bounded_text(row.get("cwd"), label="cwd", maximum=4_096),
+        kind=_bounded_text(row.get("kind"), label="kind", maximum=64),
+        state=state,
+        started_at_ms=_agent_view_started_at(row),
+        process_id=process_id,
+    )
 
 
 def parse_agent_view_sessions(raw: bytes) -> dict[str, tuple[AgentViewSession, ...]]:
@@ -212,79 +287,8 @@ def parse_agent_view_sessions(raw: bytes) -> dict[str, tuple[AgentViewSession, .
 
     grouped: dict[str, list[AgentViewSession]] = {}
     for row in value:
-        if not isinstance(row, dict):
-            raise RoutingError(
-                "claude.agents_format", "claude agents rows must be JSON objects"
-            )
-        session_id = _canonical_session_id(row.get("sessionId"))
-        agent_view_id = _optional_bounded_text(
-            row.get("id"), label="id", maximum=8
-        )
-        if agent_view_id is not None:
-            agent_view_id = agent_view_id.lower()
-            if AGENT_VIEW_ID_PATTERN.fullmatch(agent_view_id) is None:
-                raise RoutingError(
-                    "claude.agents_format",
-                    "id must be the eight-hexadecimal Agent View identifier",
-                )
-            if agent_view_id != session_id.split("-", 1)[0]:
-                raise RoutingError(
-                    "claude.agent_id_mismatch",
-                    "Agent View id does not match the full sessionId prefix",
-                )
-        product_name = _bounded_text(row.get("name"), label="name", maximum=256)
-        cwd = _bounded_text(row.get("cwd"), label="cwd", maximum=4_096)
-        kind = _bounded_text(row.get("kind"), label="kind", maximum=64)
-        background_state = _optional_bounded_text(
-            row.get("state"), label="state", maximum=64
-        )
-        process_status = _optional_bounded_text(
-            row.get("status"), label="status", maximum=64
-        )
-        has_process_id = "pid" in row
-        has_process_status = "status" in row
-        if has_process_id != has_process_status:
-            raise RoutingError(
-                "claude.agents_format",
-                "pid and status must either both be present or both be absent",
-            )
-        process_id: int | None = None
-        if has_process_id:
-            process_id = row.get("pid")
-            if type(process_id) is not int or process_id <= 0 or process_id > 2**31:
-                raise RoutingError(
-                    "claude.agents_format",
-                    "pid must be a bounded positive integer",
-                )
-        if process_status is None and background_state is None:
-            raise RoutingError(
-                "claude.agents_format",
-                "each Agent View row must contain state or a pid/status pair",
-            )
-        state = process_status if process_status is not None else background_state
-        assert state is not None
-        started_at_ms = row.get("startedAt")
-        if (
-            type(started_at_ms) is not int
-            or started_at_ms < 0
-            or started_at_ms > 10**16
-        ):
-            raise RoutingError(
-                "claude.agents_format",
-                "startedAt must be a bounded non-negative integer",
-            )
-        grouped.setdefault(session_id, []).append(
-            AgentViewSession(
-                session_id=session_id,
-                agent_view_id=agent_view_id,
-                product_name=product_name,
-                cwd=cwd,
-                kind=kind,
-                state=state,
-                started_at_ms=started_at_ms,
-                process_id=process_id,
-            )
-        )
+        session = _parse_agent_view_row(row)
+        grouped.setdefault(session.session_id, []).append(session)
     return {session_id: tuple(rows) for session_id, rows in grouped.items()}
 
 

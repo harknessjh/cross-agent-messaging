@@ -34,8 +34,9 @@ Use this checklist against the exact commit proposed for publication. A green so
   append-before-validation, hash-chain limits, correction rules, projections,
   retention, and human audit path.
 - Confirm the roster distinguishes project display name, participant common
-  name, product label, role, stable full session UUID, Agent View ID, and fresh
-  route. Confirm it never stores or uses a Claude UDS.
+  name, product label, role, stable full session UUID, optional Agent View ID,
+  and fresh route. Confirm a missing Agent View ID remains null and that the
+  roster never stores a Claude process ID or UDS.
 - Use synthetic identifiers, paths, receipts, messages, and timestamps in every public artifact.
 - Scan tracked content and Git history for credentials, personal paths, callback/session IDs, queue IDs, peer listings, email addresses, and transcripts.
 - Confirm that examples do not imply authentication, authorization, guaranteed
@@ -128,6 +129,16 @@ Use this checklist against the exact commit proposed for publication. A green so
   optional `--to` only guards that fresh route.
   Confirm live transport refuses stdin, FIFO inputs fail before waiting for a
   writer, and offline stdin validation remains available.
+- Exercise heterogeneous Agent View fixtures in which background `id`/`state`
+  and interactive `pid`/`status` rows share a full UUID. Verify sole eligible
+  process-row preference, the no-process legacy fallback, no companion-field
+  merging, optional-ID validation/null retention, and PID exclusion from all
+  serialized, journal, and projected state.
+- Exercise `ListAgents` locality independently from activity: local `idle` and
+  `busy` peers are addressable, local terminal or unknown peers are reported
+  unavailable, and cloud or Remote Control peers remain excluded. Do not
+  present Claude Code 2.1.251 field captures and synthetic fixture coverage as
+  a live 2.1.251 send or round trip.
 - Confirm that Claude acceptance requires `success:true` plus a canonical transport `msg_id`, Codex acceptance requires the exact documented stdout receipt for the requested thread, both send paths enforce the documented 65,536-byte live limit, and transport failures cannot contaminate the machine-readable JSON channel.
 - Validate every checked-in hello, request, acknowledgment, and result fixture;
   recompute every documented body digest; exercise each typed builder and every

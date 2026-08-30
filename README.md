@@ -49,10 +49,22 @@ Human-friendly names and transport addresses are not identity.
 - A Claude Code session uses the full session UUID shown by `/status` as its
   stable identity and return address.
 - Before every Claude send, the helper correlates that UUID through fresh
-  `claude agents --json` and MCP `ListAgents` output. The resulting
-  `name [ref]` is a transient route for that send only. The selected session's
-  Agent View cwd must resolve inside the bound Git project, including an
-  initialized linked worktree that shares its Git common directory.
+  `claude agents --json` and MCP `ListAgents` output. Agent View JSON is a
+  heterogeneous inventory: process-backed rows may carry `pid`/`status` while
+  omitting `id`/`state`, and a background companion row may share the same full
+  session UUID. The helper groups rows by that UUID, prefers its sole eligible
+  process-backed row when present, and never combines fields from companion
+  rows. A prior single eligible `id`/`state` row remains a compatibility
+  fallback when no process-backed representation is emitted.
+- An Agent View `id` is optional supporting evidence. CAM validates it against
+  the full UUID when present and reports `null` when absent; it never invents or
+  borrows one. A process ID is transient liveness evidence and is never exposed,
+  journaled, or used as identity.
+- The resulting `name [ref]` is a transient route for that send only. The
+  selected Agent View cwd must resolve inside the bound Git project, including
+  an initialized linked worktree that shares its Git common directory. MCP
+  locality and activity are evaluated separately: an eligible `busy` local peer
+  remains addressable, while cloud and Remote Control rows remain excluded.
 - A project roster records an operator-correlated common name, human-readable
   labels and role, full session ID, and current route evidence. Unix-domain
   socket paths are neither stored nor used.

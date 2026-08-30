@@ -192,8 +192,10 @@ these concepts separate:
   session name, which may change; and
 - **route observation**: a fresh, transient transport address and the evidence
   used to observe it. Claude observations include the Agent View session kind
-  and start time plus the resolved Git worktree/common-directory context; raw
-  peer sockets are excluded.
+  and start time, the optional validated Agent View ID (null when absent), and
+  the resolved Git worktree/common-directory context. They contain only the
+  selected representation's evidence: a process ID and companion-row fields
+  are never persisted. Raw peer sockets are also excluded.
 
 Never use a display name, session label, short reference, working directory,
 or Unix-domain socket as stable identity. Never store the Claude peer UDS in
@@ -203,15 +205,25 @@ For Claude Code, the operator supplies the full session UUID shown by the
 target session's `/status`. Before every send, the helper performs both forms
 of current discovery:
 
-1. `claude agents --json` locates that exact full `sessionId` and obtains its
-   current product name and eight-character Agent View ID.
-2. MCP `ListAgents` supplies the current addressable `name [ref]` route.
-3. The helper requires a unique name correlation between those fresh results
+1. `claude agents --json` groups representations by exact full `sessionId`.
+   The same UUID can have a background `id`/`state` row and an interactive
+   `pid`/`status` row. When a process-backed row exists, the helper requires
+   one eligible such row; only when none exists may one eligible legacy
+   `id`/`state` row be selected. It never merges companion fields.
+2. A selected Agent View `id` is validated against the UUID when present and
+   remains null when absent. A PID is transient selection and refresh evidence
+   and is never serialized or recorded.
+3. MCP `ListAgents` supplies the current addressable `name [ref]` route.
+   Locality is independent of activity: local `busy` peers remain addressable;
+   local terminal or unknown states are unavailable; cloud and Remote Control
+   rows remain excluded as nonlocal.
+4. The helper requires a unique name correlation between those fresh results
    and verifies that Agent View cwd resolves inside the bound Git project,
    including an initialized linked worktree sharing its Git common directory.
 
 The full session UUID remains the identity and the envelope callback address.
 The `name [ref]` value is only the route for that send. If discovery is missing,
+has multiple process-backed or eligible fallback representations, is
 ambiguous, nonlocal, stale, or inconsistent, stop and obtain operator
 correlation; do not guess or silently retarget.
 

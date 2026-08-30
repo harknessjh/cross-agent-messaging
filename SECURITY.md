@@ -43,11 +43,22 @@ audit record, not a delivery mechanism or authority source.
   `claude agents --json` and MCP `ListAgents` results, and require its cwd to
   resolve inside the bound Git project, including an initialized linked
   worktree that shares its Git common directory.
+- Treat Agent View as a heterogeneous inventory. Group rows by full UUID and,
+  when a process-backed `pid`/`status` row exists, require one eligible such
+  row; only use one eligible legacy `id`/`state` row when no process row is
+  emitted. Never combine fields from companion representations. Validate an
+  Agent View ID when present and retain null when absent. Use a PID only for
+  transient selection and refresh checks; never serialize or persist it.
 - Treat the resulting Claude `name [ref]` as transient routing metadata. Do not
   treat a mutable name, short ID, working directory, process ID, or UDS path as
   identity.
-- Fail closed on absent, ambiguous, duplicated, nonlocal, or inconsistent
-  discovery. Never guess or silently retarget.
+- Keep MCP locality separate from activity and addressability. An eligible
+  same-host `busy` peer remains addressable; local terminal or unknown states
+  are unavailable, and cloud or Remote Control rows remain nonlocal.
+- Fail closed on absent, ambiguous, nonlocal, or inconsistent discovery,
+  including multiple process-backed rows or multiple eligible fallback rows.
+  A companion background and process row sharing one UUID is not by itself
+  ambiguity. Never guess or silently retarget.
 - Treat paths reported by `doctor` as candidates. The operator must approve an
   absolute Claude or Codex executable path, and every live operation must use
   it explicitly. This avoids ordinary `PATH` substitution but cannot eliminate

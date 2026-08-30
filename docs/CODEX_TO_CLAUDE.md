@@ -89,6 +89,15 @@ helper correlates the UUID through fresh `claude agents --json` and MCP
 `ListAgents` results. The resulting `name [ref]` is a transient route, not
 identity. A human-readable session name alone is insufficient.
 
+Agent View JSON is heterogeneous. The same UUID can have a background
+`id`/`state` row and an interactive `pid`/`status` row. CAM groups these rows
+by the full UUID and, when a process-backed row exists, requires that row to be
+the sole eligible representation. If no process row is emitted, one eligible
+legacy `id`/`state` row remains compatible. Fields are never merged between
+representations. The Agent View ID is validated when present and stays null
+when absent; the PID is transient evidence and is never emitted, journaled, or
+stored in the participant roster.
+
 ## 3. Install and verify the reference tools
 
 From the trusted CAM/1 checkout:
@@ -359,7 +368,10 @@ A successful preflight returns `"status":"route_preflight"`,
 `"operator_correlation_required":true` when the route has not yet been
 confirmed. It obtains the full UUID from Agent View and the addressable
 `name [ref]` from MCP `ListAgents`, and requires the selected Claude cwd to be
-inside the bound project.
+inside the bound project. The identity reports normalized `state`, an
+`agent_view_id` that may be null, and `process_backed`; it never reports the
+PID. These shape details do not relax the full-UUID, fresh-name/ref, project,
+callback, or operator-correlation checks.
 
 The operator must compare the returned identity and route with the intended
 Claude session. Then record that exact route:
@@ -389,7 +401,12 @@ approved executable:
   claude-list
 ```
 
-Do not use its display name or short ref without the full-session preflight.
+The `agents` array contains addressable local peers, including a peer whose
+activity is `busy`. `excluded_local_unavailable` contains local terminal or
+unknown activity states, while `excluded_nonlocal_or_unknown` contains cloud,
+Remote Control, and other nonlocal rows. Locality and activity are separate:
+`busy` is addressable scheduling state, not proof of delivery or handling. Do
+not use any display name or short ref without the full-session preflight.
 
 ## 7. Prepare the Claude receiver
 
@@ -788,9 +805,15 @@ Operational recovery rules:
 - **A command reports `transaction.busy`:** allow the other bounded project
   mutation to finish, verify the journal, and retry the local command. Do not
   delete the lock file or assume that a send was unattempted; consult the
-  journaled intent and outcome first.
+  journaled intent and outcome first. This journal-lock condition is unrelated
+  to a Claude peer whose activity is `busy`; that peer remains addressable.
 - **Target is missing, ambiguous, outside the project, or has a new route:**
   rerun preflight and obtain explicit operator correlation.
+- **Agent View repeats the full UUID:** a background and one process-backed
+  representation can describe one session. CAM selects the process-backed row
+  without borrowing companion fields. More than one process-backed row, more
+  than one eligible fallback row, or inconsistent fresh evidence remains
+  ambiguous and fails closed.
 - **Transport receipt is absent:** delivery is unknown and the attempt is
   mechanically non-retriable unless the journal explicitly proves dispatch
   was not attempted. Do not otherwise resend; inspect the journal and follow
