@@ -1,17 +1,24 @@
 # Cross-Agent Messaging Protocol (CAM/1): Codex–Claude Code Same-Host Profile
 
+> **Audience:** protocol implementers and conformance reviewers. This is the
+> normative specification, not the onboarding guide. New users should begin
+> with [START HERE](START_HERE.md) and do not need to read this document
+> for their first round trip.
+
 - Protocol identifier: `CAM/1`
-- Document revision: `1.4`
+- Document revision: `1.6`
 - Status: Community interoperability draft; experimental
-- Reference snapshot: 2026-08-27
+- Reference snapshot: 2026-08-31
 
 > CAM/1 is an independent community interoperability profile. It is not an OpenAI, Anthropic, or Model Context Protocol standard, and publication does not imply endorsement by those projects. Product names are used only to identify the interfaces being described.
 
 `CAM` abbreviates Cross-Agent Messaging. The `/1` component identifies wire major version 1; an incompatible wire contract requires a different major identifier.
 
-Document revision 1.4 strengthens local project state, routing, lifecycle, and
-audit requirements without changing the on-wire protocol identifier. Envelopes
-continue to declare `"protocol":"CAM/1"`.
+Document revision 1.6 adds prompt-driven CAM-checkout selection and makes the
+session's current Git worktree the normal onboarding default. It retains the
+revision 1.5 journal-backed self-enrollment and one-card confirmation model.
+Neither change alters the wire identifier; envelopes continue to declare
+`"protocol":"CAM/1"`.
 
 ## 1. Purpose
 
@@ -47,8 +54,8 @@ Shell examples assume a POSIX environment such as macOS, Linux, or WSL. Other pl
 - Sections 13–18 define receiving, authorization, replay, the required project
   journal, and the same-host boundary.
 - Sections 19–21 provide troubleshooting, examples, compatibility evidence, and references.
-- [Implementation Notes](IMPLEMENTATION_NOTES.md) contains non-normative, version-pinned diagnostics.
-- [First contact](docs/FIRST_CONTACT.md) is the canonical tested onboarding
+- [Implementation Notes](docs/IMPLEMENTATION_NOTES.md) contains non-normative, version-pinned diagnostics.
+- [First contact](START_HERE.md) is the canonical tested onboarding
   path. The [detailed Codex-to-Claude procedure](docs/CODEX_TO_CLAUDE.md) and
   reference tools in [`tools/`](tools/) provide non-normative commands and
   troubleshooting.
@@ -67,9 +74,12 @@ Shell examples assume a POSIX environment such as macOS, Linux, or WSL. Other pl
 - **Route**: a currently addressable transport value. A Claude `name [ref]`
   route is transient, tool-derived metadata and is resolved again before every
   send. It is not a value the operator is normally able or required to inspect.
+- **Enrollment proposal**: a journaled, non-routable self-observation awaiting
+  direct operator confirmation in the proposing session.
 - **Project roster**: journal-backed operator correlation between a common
-  name, role, product metadata, stable session ID, and project binding, plus
-  separately journaled tool-derived route observations.
+  name, optional descriptive metadata, product metadata, stable session ID,
+  and project binding, plus separately journaled tool-derived route
+  observations.
 - **Project journal**: the required owner-only append-only record for one
   Git-bound CAM project; it is not a transport or authority source.
 - **Operator**: a human responsible for a session. Sender and recipient may have different operators.
@@ -82,7 +92,7 @@ correlate, and retry messages; receivers journal, validate, authorize,
 deduplicate, act, and return receipts; a bidirectional endpoint satisfies both
 roles. A transport-profile claim additionally satisfies section 8 and the
 selected profile in sections 9–12. Explicitly non-normative guidance and
-[Implementation Notes](IMPLEMENTATION_NOTES.md) are excluded from conformance.
+[Implementation Notes](docs/IMPLEMENTATION_NOTES.md) are excluded from conformance.
 
 ## 2. Core security invariant
 
@@ -119,7 +129,7 @@ Within one Codex subagent tree, use Codex's native collaboration tools. Within o
 | `experimental` | Exposed by a current implementation but explicitly unstable |
 | `internal` | Undocumented implementation detail; diagnostic use only |
 
-At the reference snapshot, public Codex product documentation described subagents and agent threads but not the independent-session `codex queue` CLI. Codex CLI 0.149.0 and 0.149.1 were tested with `codex agents` and `codex queue`. Claude Code's cross-session messaging and stdio MCP server were both documented and live-transport tested through Claude Code 2.1.246. Claude Code 2.1.251 Agent View and `ListAgents` field shapes were captured locally and added to synthetic compatibility tests; no 2.1.251 cross-session send or round trip is claimed.
+At the reference snapshot, public Codex product documentation described subagents and agent threads but not the independent-session `codex queue` CLI. Codex CLI 0.149.0 and 0.149.1 were tested with `codex agents` and `codex queue`. Claude Code's cross-session messaging and stdio MCP server were both documented and live-transport tested through Claude Code 2.1.246. Claude Code 2.1.251 Agent View and `ListAgents` field shapes were captured locally and added to synthetic compatibility tests. A later restored-interactive 2.1.251 session completed journaled traffic in both directions; no send or delivery while that session was backgrounded is claimed.
 
 Because command surfaces can change, every agent MUST run the capability checks in section 8 before relying on them.
 
@@ -133,7 +143,7 @@ Peer correlation and action authorization are independent. An implementation MUS
 |---|---|---|
 | `unknown` | The endpoint mapping has not been correlated by the relevant operator | Discovery, harmless receipt, optional challenge, and non-sensitive capability exchange only |
 | `pending_operator_confirmation` | A harmless, validated first-contact exchange is awaiting confirmation through a receiver-trusted operator channel | The same activity as `unknown`; no mapping or authority has been established |
-| `operator_correlated` | The relevant operator bound the project-local name and role to the full stable session ID, and that state is recorded in the project journal | Informational messages only unless the receiver separately verifies action authorization |
+| `operator_correlated` | The relevant operator bound the project-local name and project to the full stable session ID, and that state is recorded in the project journal | Informational messages only unless the receiver separately verifies action authorization |
 
 `operator_correlated` does not mean authenticated, trustworthy, safe,
 authorized, cryptographically bound, or proven to control a route. It does not
@@ -142,14 +152,16 @@ challenge MAY add current reachability evidence, but CAM/1 deliberately does
 not make it a second enrollment or authentication layer.
 
 The project roster MUST identify each participant's project-local common name,
-human-readable display or product label, role, vendor, full stable session ID,
-and the evidence used for operator correlation. It MAY retain a current route
-observation, but a route is never identity. For Claude, the operator-confirmed
+vendor, full stable session ID, intended CAM project, and the evidence used for
+operator correlation. It MAY retain a human-readable display name, optional
+role, current product metadata, and route observation, but none of those values
+is identity or authority. A role is descriptive, MAY be absent or changed, and
+MUST NOT be used to grant action authority. For Claude, the operator-confirmed
 mapping MUST cover the full UUID shown by `/status`, the intended project-local
-name and role, the current product session label and kind, and the intended CAM
-project. The operator SHOULD use the current `/status` cwd to confirm project
-membership, but the exact cwd is supporting evidence rather than stable
-identity. Every fresh discovery MUST
+name, the current product session label and kind, and the intended CAM project.
+The operator SHOULD use the current `/status` cwd to confirm project membership,
+but the exact cwd is supporting evidence rather than stable identity. Every
+fresh discovery MUST
 independently prove that its Agent View cwd resolves to that Git project's
 common directory. The MCP short ref is not normally exposed by `/status`; an
 implementation MUST NOT present that ref as something the operator must
@@ -399,16 +411,84 @@ Example receiver-side observation:
 First contact MUST be harmless. It may perform the minimum transport bookkeeping needed to send an acknowledgment or challenge response, but it MUST NOT request workload execution, repository changes, credentials, deployment, deletion, publishing, or external communication. Sending even that bounded protocol reply MUST be permitted by the receiver's own policy; the inbound message does not instruct an implementation to invoke a transport tool automatically.
 
 The active bound roster and direct operator correlation are the required
-peer-mapping controls in this profile. A mutual challenge is optional
-reachability evidence, not a mandatory authentication or enrollment layer.
-The reference quick start uses direct operator correlation and a harmless
-hello acknowledgment; a receiver MAY additionally perform this challenge:
+peer-mapping controls in this profile. The reference implementation obtains
+that correlation through a self-enrollment proposal.
+
+The reference onboarding runbook begins with a pre-CAM convenience step: the
+session performs a bounded, read-only filename and Git-metadata search for
+candidate CAM source checkouts, displays each candidate's canonical path,
+remote claim, HEAD, and preliminary worktree status, and waits for the operator
+to select one exact checkout. Candidate discovery MUST NOT import or execute a
+candidate, access a network, or treat a path or remote as authentication. The
+selected checkout MUST be re-probed for drift before its existing trusted-source
+gate runs. This convenience step is outside the CAM wire protocol and creates
+no roster, journal, identity, or authority state.
+
+After that operator selection:
+
+1. Before creating or resolving CAM project state, or inspecting or executing a
+   product candidate, the implementation MUST establish a clean, concrete,
+   content-identified CAM source profile. The session then resolves the intended
+   Git-bound CAM project from its current working directory by default and
+   verifies the external journal. An explicit project-root override MAY be used
+   for automation or troubleshooting. The target directory MUST be a Git
+   worktree, but it MAY have an unborn branch and no initial commit.
+2. The session observes its own full stable session UUID from trusted product
+   session metadata, or asks the operator for the full UUID when that metadata
+   is unavailable. It MUST NOT infer the UUID from a name, cwd, PID, socket, or
+   transient route. A Claude session MUST additionally select exactly one fresh
+   Agent View representation of that full UUID in the intended Git project.
+3. The implementation appends a pending proposal containing the project UUID
+   and display name, project-local common and display names, optional role,
+   vendor, full stable session UUID, current Git-project evidence, CAM checkout
+   and validation-profile
+   digest, and the resolved absolute product executable candidate. The proposal
+   MUST remain outside the active roster and MUST NOT be usable for send,
+   receive, callback, or endpoint correlation. A Claude proposal MUST include
+   its freshly discovered product label and session kind; those fields MAY be
+   absent for Codex when the product does not expose them.
+4. The implementation presents one concise identity card derived from the
+   exact proposal. The card MUST show the full stable UUID, project identity and
+   root, project-local name, product metadata, absolute executable path, and a
+   proposal-bound confirmation value. It MUST NOT ask the operator to recognize
+   or approve a PID, UDS path, or transient MCP short ref.
+5. The operator reviews the complete card and confirms that exact proposal
+   directly in the proposing session. A peer-relayed assertion is insufficient.
+   The proposal digest or a bounded derivative MAY correlate the response to
+   the displayed card, but it is not authentication, a signature, or action
+   authority.
+6. Before confirmation, the implementation MUST recheck the current stable
+   session, Git project, CAM validation profile, and executable path against the
+   proposal. Drift requires a fresh proposal. One atomic journal event then
+   marks the proposal confirmed and creates its participant and session binding.
+   For Codex, that same event MAY establish the UUID-backed local queue route.
+   Claude routing remains unavailable until fresh Agent View and `ListAgents`
+   correlation.
+7. Repeating the identical proposal or confirmation MUST be idempotent. A
+   changed pending proposal MUST supersede the prior proposal without rewriting
+   it. A superseded proposal MUST NOT be confirmable. Pending proposals MUST NOT
+   reserve common names. Roster uniqueness MUST be checked atomically during
+   confirmation; a name conflict MUST append no confirmation and MUST require a
+   fresh, separately displayed and confirmed proposal.
+
+Enrollment writes only Git administrative state below the Git common directory
+and the external CAM journal/projection. It MUST NOT create tracked or untracked
+application-worktree files, and appending an enrollment event is not a Git
+commit. The approved executable path remains subject to fresh existence,
+capability, and live-source checks whenever it is used. Project-aware live
+operations MUST compare the resolved CLI executable with the recorded approved
+path and fail before product I/O when the path is absent or different. A legacy
+null path is preserved for audit but is not live-ready until a directly
+confirmed metadata event records an absolute executable.
+
+A mutual challenge is optional reachability evidence, not a second enrollment
+or authentication layer. The reference quick start uses the confirmed roster
+and a harmless hello acknowledgment; a receiver MAY additionally perform this
+challenge:
 
 1. Both endpoints resolve the same Git-bound project, verify its journal, and
-   record their stable full session IDs and operator-confirmed common names and
-   roles in the project roster. For Claude, the operator also binds that stable
-   mapping to the intended CAM project, using `/status` cwd as supporting
-   project-membership evidence.
+   resolve their confirmed stable session IDs and project-local common names in
+   the project roster.
 2. The sender's operator confirms which stable target session is intended. For
    Claude, the sender resolves that session through fresh Agent View and
    `ListAgents` results. A unique route is selected and journaled by the tool;
@@ -418,7 +498,7 @@ hello acknowledgment; a receiver MAY additionally perform this challenge:
    envelope. If A is not already correlated, B enters
    `pending_operator_confirmation`, returns `ack: needs_human_confirmation`
    with `nonce: null`, and asks its own operator through a trusted channel to
-   confirm A's stable session ID, callback, role, and project context.
+   confirm A's stable session ID, callback, common name, and project context.
 5. After that confirmation, B returns `nonce_a` in a correlated `verify`. That completes only A-to-B's challenge leg.
 6. B sends a separate `challenge` carrying a fresh `nonce_b` through A's callback. B MUST NOT reuse its `verify` as this reverse challenge.
 7. A journals and validates the exact reverse challenge. If B is not already correlated, A obtains the same operator confirmation for B's exact mapping before returning `nonce_b` in a correlated `verify` through B's callback.
@@ -449,10 +529,11 @@ Before sending, the agent MUST:
    worktree sharing its Git common directory. When those facts uniquely match
    the active operator-bound identity, automatically use and journal the fresh
    route; do not require approval of its short ref.
-4. Confirm the intended repository, worktree, common name, role, product label,
-   and binding generation. Stop for operator help on ambiguity, UUID or project
-   mismatch, a binding-generation change, or conflicting evidence. A transient
-   ref change with otherwise unique, consistent evidence is not such a change.
+4. Confirm the intended repository, worktree, common name, product metadata,
+   and binding generation. An optional role is descriptive only. Stop for
+   operator help on ambiguity, UUID or project mismatch, a binding-generation
+   change, or conflicting evidence. A transient ref change with otherwise
+   unique, consistent evidence is not such a change.
 5. Use explicit operator-approved absolute executable paths for every live
    transport operation and check the required capabilities instead of assuming
    a version or trusting a current `PATH` lookup as authority.
@@ -639,12 +720,13 @@ Queue absence is inconclusive. In the pinned Codex 0.149.0 source, an item can d
 
 ### Unsupported internal diagnostics
 
-CAM/1 defines no queue-reading or active-turn receive workaround. Implementations MUST use documented or schema-described interfaces and MUST NOT inspect or mutate product-internal queue storage as part of the protocol. Dated product behavior relevant to the supported later-turn callback path is isolated in [Implementation Notes](IMPLEMENTATION_NOTES.md) and is not required for CAM/1 conformance.
+CAM/1 defines no queue-reading or active-turn receive workaround. Implementations MUST use documented or schema-described interfaces and MUST NOT inspect or mutate product-internal queue storage as part of the protocol. Dated product behavior relevant to the supported later-turn callback path is isolated in [Implementation Notes](docs/IMPLEMENTATION_NOTES.md) and is not required for CAM/1 conformance.
 
 ### Profile guidance (non-normative)
 
-- Maintain the required project roster with the common name, role, stable full
-  session UUID, human-readable product label, and current correlation state.
+- Maintain the required project roster with the common name, stable full
+  session UUID, human-readable product label, optional descriptive role, and
+  current correlation state.
   Route observations and working directories are supporting evidence, not
   identity or authority.
 - Make every request self-contained. State the task, exact repository or artifact, ref or hash, constraints, expected evidence, reply route, and stop conditions; the peer does not inherit the sender's conversation.
@@ -717,7 +799,7 @@ uniquely identifies the selected full session UUID.
 The MCP short ref is not normally available in the target session's `/status`
 or other operator-visible identity display. A sender MUST NOT ask the operator
 to identify, recognize, or approve that ref. When the already operator-bound
-full UUID, intended project-local name and role, and intended CAM project
+full UUID, intended project-local name, and intended CAM project
 correlate uniquely through both discovery surfaces, the sender MAY select the
 route automatically and MUST journal the exact observed `name [ref]`, discovery
 source, and observation time. It MUST fail closed and request operator help on
@@ -1149,11 +1231,24 @@ execution.
 
 ### Participant and lifecycle projections
 
+Before active roster creation, a self-enrollment proposal MUST be represented
+as its own journal-backed state. It MUST include a generated proposal UUID and
+participant UUID, the exact proposed mapping and execution context described in
+section 7, a canonical proposal digest, creation time, status, and any proposal
+it supersedes. Pending and superseded proposals are audit history, not
+participants or endpoints. Confirmation MUST name the exact proposal and digest
+and record the direct operator-confirmation reference. Participant creation and
+session binding MUST be one atomic state transition so a partial confirmation
+cannot leave an unintended unbound roster entry.
+
 The journal-backed participant roster MUST keep these fields distinct:
 
 - a stable project-local common name;
-- a human-readable display or product label and stated role;
+- a human-readable display name and optional stated role, both descriptive and
+  mutable without changing identity or authority;
 - vendor;
+- the operator-reviewed absolute product executable path and its metadata
+  revision;
 - full stable session UUID and operator-correlation evidence;
 - participant state such as active, stale, or retired; and
 - current route observation and its source, time, and correlation state. A
@@ -1184,10 +1279,11 @@ Retired common names MUST NOT be silently reassigned to a different
 participant.
 
 Lifecycle state MUST also be derived from journaled exact root and reply bytes.
-`state-current.json` is a rebuildable atomic projection of participant and
-lifecycle state. An implementation MAY replace it atomically after a
-successful journal append, but a missing, stale, or malformed projection MUST
-be rebuilt from the verified journal and MUST NOT alter journal history.
+`state-current.json` is a rebuildable atomic projection of enrollment,
+participant, and lifecycle state. An implementation MAY replace it atomically
+after a successful journal append, but a missing, stale, or malformed
+projection MUST be rebuilt from the verified journal and MUST NOT alter journal
+history.
 
 ### Audit and retention boundary
 
@@ -1242,7 +1338,7 @@ Remote Control, cloud sessions, cross-host delivery, and locally observed Codex 
 - Do not use native subagent waits, `codex agents`, Claude peer status, idle notifications, or transcript searches as queue readers.
 - Check whether the target session is loaded, running, interrupted, or incompatible. An unloaded session may need an ordinary resume; an interrupted session may need an ordinary completed turn before its queue drains.
 - If a resume attempt reports an active writer, do not force another writer. Allow the existing owner to finish.
-- Use only a documented or schema-described inbox interface when one is available. [Implementation Notes](IMPLEMENTATION_NOTES.md) records version-pinned experimental observations for maintainers; they are not part of CAM/1 conformance.
+- Use only a documented or schema-described inbox interface when one is available. [Implementation Notes](docs/IMPLEMENTATION_NOTES.md) records version-pinned experimental observations for maintainers; they are not part of CAM/1 conformance.
 - Do not inspect or mutate product-internal storage as a normal receive path. Internal item presence or absence does not prove handling or completion.
 - Follow section 16 exactly: never retry an observed-pending item, do not treat queue absence as retry permission, and preserve the required IDs for any valid pre-expiry retransmission.
 - Ask the operator to inspect the target session when acknowledgment remains absent.
@@ -1288,7 +1384,7 @@ Remote Control, cloud sessions, cross-host delivery, and locally observed Codex 
 
 - Resolve the absolute `claude` executable path.
 - Keep stdout exclusively for newline-delimited JSON-RPC and treat stderr as logs.
-- Prefer direct child-process stdio. If an orchestration tool closes non-TTY stdin, change clients or consult the non-normative fallback in [Implementation Notes](IMPLEMENTATION_NOTES.md).
+- Prefer direct child-process stdio. If an orchestration tool closes non-TTY stdin, change clients or consult the non-normative fallback in [Implementation Notes](docs/IMPLEMENTATION_NOTES.md).
 - Wait for the initialization response.
 - Validate the negotiated MCP version.
 - Call `tools/list` and inspect the live schemas.
@@ -1326,7 +1422,11 @@ Remote Control, cloud sessions, cross-host delivery, and locally observed Codex 
   before installing an atomic recovered chain. It refuses every other damage
   class.
 
-## 20. Minimal first-contact example
+## 20. Minimal wire-envelope example
+
+This section illustrates envelope structure and correlation. It is not the
+supported operator onboarding flow; use [START HERE](START_HERE.md) for
+that workflow.
 
 The values below are synthetic. The example nonce is deterministic and MUST NOT be reused; production nonces require a cryptographically secure random source.
 
@@ -1461,12 +1561,15 @@ project journal, two-surface Claude routing, typed builders, and lifecycle
 projection were exercised in the offline reference suite on 2026-08-27. On
 2026-08-30, read-only field evidence from Claude Code 2.1.251 was captured and
 its heterogeneous discovery shapes were added to synthetic compatibility
-tests. That later evidence did not include a 2.1.251 cross-session send or round
-trip. The combined snapshot includes:
+tests. On 2026-08-31, a restored-interactive 2.1.251 session completed
+journaled traffic in both directions after an operator repaired its changed
+UUID, kind, label, and route. No send was attempted while the session was
+backgrounded. The combined snapshot includes:
 
 - `codex-cli 0.149.0` and `0.149.1`;
 - Claude Code live-transport tests through `2.1.246`, plus 2.1.251 Agent View
-  and `ListAgents` field evidence and synthetic fixtures only;
+  and `ListAgents` field evidence, synthetic fixtures, and one
+  restored-interactive exchange;
 - MCP protocol versions selected by the installed client/server, including
   `2025-11-25` in the latest compatibility pass;
 - Codex to Claude Code and Claude Code to Codex round trips;
@@ -1474,6 +1577,8 @@ trip. The combined snapshot includes:
 - full-session Agent View to fresh `ListAgents` route correlation, including
   grouped companion rows, optional Agent View IDs, and addressable `busy`
   peers in the 2.1.251 fixture coverage;
+- one 2.1.251 background-session lifecycle observation; background-target
+  `SendMessage` delivery remains untested and is not a compatibility claim;
 - exact-envelope UUID validation, false-rejection reconciliation, detection of
   correlated but schema-incomplete acknowledgments, and complete typed result
   construction;
@@ -1499,4 +1604,4 @@ At the reference snapshot, Claude Code's official documentation stated that cros
 
 The Codex `agents` and CLI `queue` sections in this protocol are based on locally verified installed behavior and the exact open-source commit identified above. Reconfirm them with current `--help` output after upgrades because the public Codex product pages cited above do not currently specify that independent-session CLI queue interface.
 
-See [Implementation Notes](IMPLEMENTATION_NOTES.md) for the bounded observations behind those statements. The JSON wire contract is defined by [cam-1.schema.json](cam-1.schema.json).
+See [Implementation Notes](docs/IMPLEMENTATION_NOTES.md) for the bounded observations behind those statements. The JSON wire contract is defined by [cam-1.schema.json](cam-1.schema.json).

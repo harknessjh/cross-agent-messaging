@@ -1,5 +1,9 @@
 # Public release checklist
 
+> **Audience:** CAM/1 maintainers preparing a release. This checklist is not
+> part of user onboarding; new users should begin with
+> [START HERE](../START_HERE.md).
+
 Use this checklist against the exact commit proposed for publication. A green source review does not prove that a remote was created correctly or that a published release contains the reviewed files.
 
 ## Owner decisions
@@ -19,9 +23,14 @@ Use this checklist against the exact commit proposed for publication. A green so
   never delivery or authority.
 - Ensure the supported path requires one host and the same operating-system account and rejects Remote Control, cloud, cross-account, raw-socket, and externally exposed local-interface adaptations.
 - Keep one canonical Codex sender prompt and one canonical Claude receiver
-  prompt in [the first-contact runbook](FIRST_CONTACT.md); other documents
+  prompt in [the first-contact runbook](../START_HERE.md); other documents
   should link to them rather than copy variants. Confirm that a new clone can
   follow them without undocumented project state or routing knowledge.
+- Confirm START HERE requires no manual `CAM_CHECKOUT` or `PROJECT_ROOT`
+  substitution. Each prompt must use the session cwd as the project and perform
+  a bounded, non-executing CAM-checkout candidate search, display path/remote/
+  HEAD/status, stop for exact human selection, re-probe, and only then invoke
+  the selected checkout's trusted-source validation.
 - Confirm that each prompt authorizes only its explicit harmless local send or
   callback and owner-private working files outside tracked worktrees, without
   broadly authorizing side effects.
@@ -34,15 +43,22 @@ Use this checklist against the exact commit proposed for publication. A green so
   append-before-validation, hash-chain limits, correction rules, projections,
   retention, and human audit path.
 - Confirm the roster distinguishes project display name, participant common
-  name, product label, role, stable full session UUID, optional Agent View ID,
-  and fresh route. Confirm a missing Agent View ID remains null and that the
-  roster never stores a Claude process ID or UDS.
-- Confirm the operator approves the stable Claude UUID, current session name
-  and kind, and intended CAM project—not the transient MCP `name [ref]`, which
-  is normally absent from `/status`. Keep the exact discovered ref in the
+  name, product label, optional descriptive role, stable full session UUID,
+  operator-reviewed executable, optional Agent View ID, and fresh route.
+  Confirm role is mutable and non-authoritative, a missing Agent View ID remains
+  null, and the roster never stores a Claude process ID or UDS.
+- Confirm each session's normal first-contact path prepares one non-routable
+  self-enrollment proposal and shows one concise card. The operator approves
+  the stable UUID, project, project-local name, product metadata, and absolute
+  executable directly in that session—not the transient MCP `name [ref]`,
+  which is normally absent from `/status`. Keep the exact discovered ref in the
   journal as tool-derived audit evidence without presenting it as a human
-  authentication factor.
+  authentication factor. State explicitly that the card's digest-derived code
+  is correlation, not authentication or work authority.
 - Use synthetic identifiers, paths, receipts, messages, and timestamps in every public artifact.
+- Describe field incidents through sanitized shapes and timelines. Do not
+  publish private journal artifacts, real session UUIDs, transient refs, local
+  paths, or message bodies as fixtures or documentation evidence.
 - Scan tracked content and Git history for credentials, personal paths, callback/session IDs, queue IDs, peer listings, email addresses, and transcripts.
 - Confirm that examples do not imply authentication, authorization, guaranteed
   delivery, remote support, journal-backed delivery, tamper-proof history, or
@@ -51,7 +67,8 @@ Use this checklist against the exact commit proposed for publication. A green so
   held roots expire unconfirmed, while a request recorded as received,
   accepted, or started before expiry may later advance legally. Receipt alone
   never authorizes execution.
-- Render the Markdown and validate every local and external link.
+- Render the Markdown, run the automated local-file and anchor-link test, and
+  validate external links.
 
 ## Technical validation
 
@@ -85,7 +102,10 @@ Use this checklist against the exact commit proposed for publication. A green so
   report candidate paths but does not approve them.
 - Confirm that project initialization writes only to private Git administrative
   state and the external journal root, linked worktrees share the project UUID,
-  and no journal is tracked by Git.
+  and no journal is tracked by Git. Confirm enrollment works after `git init`
+  without an initial commit and leaves both the application filesystem snapshot
+  and `git status --porcelain=v2 --untracked-files=all` unchanged outside
+  private Git administrative state. A CAM journal append is not a Git commit.
 - Confirm that each journal mutation transaction verifies the full chain on
   first read, revalidates the locked file identity before every later
   operation, advances only from exact appended bytes, serializes complete
@@ -119,7 +139,14 @@ Use this checklist against the exact commit proposed for publication. A green so
   authorization/action fields rather than using lifecycle `accepted`
   terminology.
 - Confirm that atomic `state-current.json` rebuilds exclusively from the
-  journal and cannot authorize a message or repair history.
+  journal, includes enrollment, participant, and lifecycle projections, and
+  cannot authorize a message or repair history.
+- Exercise enrollment proposal replay, exact-digest confirmation, current
+  session/project/profile recheck, supersession, duplicate prepare/confirm
+  idempotency, common-name and session collisions, and atomic participant plus
+  binding creation. Prove that pending or superseded proposals cannot be used
+  as endpoints. Prove that metadata updates preserve identity, binding, and
+  route while advancing their own revision.
 - Confirm that both transport send commands require `--against` for reply envelopes and never report transport acceptance as receiver handling.
 - Confirm a project-aware Claude-originated root can be queued to Codex and a
   correlated Codex reply can return through `claude-send --against` after fresh
@@ -145,9 +172,16 @@ Use this checklist against the exact commit proposed for publication. A green so
   serialized, journal, and projected state.
 - Exercise `ListAgents` locality independently from activity: local `idle` and
   `busy` peers are addressable, local terminal or unknown peers are reported
-  unavailable, and cloud or Remote Control peers remain excluded. Do not
-  present Claude Code 2.1.251 field captures and synthetic fixture coverage as
-  a live 2.1.251 send or round trip.
+  unavailable, and cloud or Remote Control peers remain excluded. Before
+  claiming background-session support, exercise the observed Agent View
+  `background` versus `ListAgents` `bg` spelling, retain both raw values for
+  audit, reject unknown abbreviations, and prove that cloud and Remote Control
+  markers still remain nonlocal.
+- Exercise a sanitized background/resume/rename sequence that changes the UUID,
+  kind, label, and ref while preserving correct route invalidation and explicit
+  rebinding. Present the observed restored-interactive 2.1.251 exchange as live
+  evidence, but do not claim delivery while backgrounded until separately
+  tested.
 - Confirm that Claude acceptance requires `success:true` plus a canonical transport `msg_id`, Codex acceptance requires the exact documented stdout receipt for the requested thread, both send paths enforce the documented 65,536-byte live limit, and transport failures cannot contaminate the machine-readable JSON channel.
 - Validate every checked-in hello, request, acknowledgment, and result fixture;
   recompute every documented body digest; exercise each typed builder and every

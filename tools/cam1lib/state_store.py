@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from copy import deepcopy
 from typing import Any, cast
 
+from . import enrollment
 from .compatibility import (
     COMPATIBILITY_GATE_ACTIVATED_EVENT,
     CompatibilityGate,
@@ -22,7 +23,7 @@ from .journal import (
     decode_exact_message,
 )
 from .lifecycle import ROOT_TYPES, LifecycleEntry, LifecycleState
-from .participants import Participant
+from .participants import Participant, ParticipantStatus
 from .project import (
     ProjectBinding,
     ProjectError,
@@ -37,7 +38,10 @@ from .state_projection import (
     LIFECYCLE_ROOT_REGISTERED,
     PARTICIPANT_ADDED,
     PARTICIPANT_BOUND,
+    PARTICIPANT_ENROLLMENT_CONFIRMED,
+    PARTICIPANT_ENROLLMENT_PROPOSED,
     PARTICIPANT_INVALIDATED,
+    PARTICIPANT_METADATA_UPDATED,
     PARTICIPANT_RETIRED,
     PARTICIPANT_ROUTE_CONFIRMED,
     PARTICIPANT_ROUTE_OBSERVED,
@@ -72,6 +76,17 @@ def _transaction(
         return
     with project_transaction(project) as acquired:
         yield acquired
+
+
+class ParticipantAlreadyEnrolled(CamUsageError):
+    """Carry the participant selected under the proposal transaction lock."""
+
+    def __init__(self, participant: Participant):
+        self.participant = participant
+        super().__init__(
+            "onboarding.already_enrolled",
+            "this product session is already enrolled in the project",
+        )
 
 
 class StateStore:
@@ -161,7 +176,7 @@ class StateStore:
         exact_message: bytes | None = None,
         now: dt.datetime | None = None,
         transaction: ProjectTransaction | None = None,
-    ) -> Participant | LifecycleEntry:
+    ) -> Participant | enrollment.EnrollmentProposal | LifecycleEntry:
         with _transaction(self.project, transaction) as active:
             snapshot = _replay_locked(self.project, active)
             return self._commit_locked(
@@ -182,7 +197,7 @@ class StateStore:
         attributes: Mapping[str, Any],
         exact_message: bytes | None,
         now: dt.datetime | None,
-    ) -> Participant | LifecycleEntry:
+    ) -> Participant | enrollment.EnrollmentProposal | LifecycleEntry:
         result = _apply_event(
             snapshot,
             event_type=event_type,
@@ -215,8 +230,9 @@ class StateStore:
         *,
         common_name: str,
         display_name: str,
-        role: str,
+        role: str | None,
         vendor: str,
+        approved_product_executable: str | None = None,
         participant_id: str | None = None,
         now: dt.datetime | None = None,
         transaction: ProjectTransaction | None = None,
@@ -230,6 +246,7 @@ class StateStore:
                 "display_name": display_name,
                 "role": role,
                 "vendor": vendor,
+                "approved_product_executable": approved_product_executable,
             },
             now=now,
             transaction=transaction,
@@ -241,7 +258,7 @@ class StateStore:
         selector: str,
         *,
         session_id: str,
-        session_label: str,
+        session_label: str | None,
         session_kind: str | None,
         operator_reference: str,
         bound_at: str,
@@ -251,6 +268,11 @@ class StateStore:
         with _transaction(self.project, transaction) as active:
             snapshot = _replay_locked(self.project, active)
             current = _select_participant(snapshot.roster, selector)
+            if current.vendor == "claude-code" and session_kind is None:
+                raise CamUsageError(
+                    "roster.session_kind_required",
+                    "new Claude bindings require the operator-visible session kind",
+                )
             return cast(
                 Participant,
                 self._commit_locked(
@@ -269,6 +291,194 @@ class StateStore:
                     now=now,
                 ),
             )
+
+    def participant_update_metadata(
+        self,
+        selector: str,
+        *,
+        display_name: str,
+        role: str | None,
+        approved_product_executable: str | None,
+        expected_revision: int,
+        operator_reference: str,
+        updated_at: str,
+        now: dt.datetime | None = None,
+        transaction: ProjectTransaction | None = None,
+    ) -> Participant:
+        with _transaction(self.project, transaction) as active:
+            snapshot = _replay_locked(self.project, active)
+            current = _select_participant(snapshot.roster, selector)
+            desired = (display_name, role, approved_product_executable)
+            existing = (
+                current.display_name,
+                current.role,
+                current.approved_product_executable,
+            )
+            if desired == existing:
+                return current
+            return cast(
+                Participant,
+                self._commit_locked(
+                    snapshot,
+                    active,
+                    event_type=PARTICIPANT_METADATA_UPDATED,
+                    attributes={
+                        "participant_id": current.participant_id,
+                        "display_name": display_name,
+                        "role": role,
+                        "approved_product_executable": approved_product_executable,
+                        "expected_metadata_revision": expected_revision,
+                        "operator_reference": operator_reference,
+                        "updated_at": updated_at,
+                    },
+                    exact_message=None,
+                    now=now,
+                ),
+            )
+
+    def participant_enrollment_propose(
+        self,
+        *,
+        common_name: str,
+        display_name: str,
+        role: str | None,
+        vendor: str,
+        session_id: str,
+        session_label: str | None,
+        session_kind: str | None,
+        session_git_top_level: str,
+        session_git_common_dir: str,
+        discovery_source: str,
+        execution_context: Mapping[str, Any],
+        proposal_id: str | None = None,
+        participant_id: str | None = None,
+        now: dt.datetime | None = None,
+        transaction: ProjectTransaction | None = None,
+    ) -> tuple[enrollment.EnrollmentProposal, bool]:
+        """Append or reuse one non-routable enrollment proposal."""
+
+        with _transaction(self.project, transaction) as active:
+            snapshot = _replay_locked(self.project, active)
+            for participant in snapshot.roster.participants.values():
+                if (
+                    participant.status != ParticipantStatus.RETIRED
+                    and participant.vendor == vendor
+                    and participant.binding is not None
+                    and _uuid_values_equal(participant.binding.session_id, session_id)
+                ):
+                    raise ParticipantAlreadyEnrolled(participant)
+            normalized_session_id = _canonical_uuid(session_id, field_name="session_id")
+            semantic_fields = (
+                common_name,
+                self.project.display_name,
+                display_name,
+                role,
+                vendor,
+                normalized_session_id,
+                session_label,
+                session_kind,
+                session_git_top_level,
+                session_git_common_dir,
+                discovery_source,
+                dict(execution_context),
+            )
+            pending_for_session = [
+                candidate
+                for candidate in snapshot.enrollment.proposals.values()
+                if candidate.status == enrollment.EnrollmentStatus.PENDING
+                and candidate.vendor == vendor
+                and _uuid_values_equal(candidate.session_id, session_id)
+            ]
+            for candidate in pending_for_session:
+                existing_fields = (
+                    candidate.common_name,
+                    candidate.project_display_name,
+                    candidate.display_name,
+                    candidate.role,
+                    candidate.vendor,
+                    candidate.session_id,
+                    candidate.session_label,
+                    candidate.session_kind,
+                    candidate.session_git_top_level,
+                    candidate.session_git_common_dir,
+                    candidate.discovery_source,
+                    candidate.execution_context.as_dict(),
+                )
+                if existing_fields == semantic_fields:
+                    return candidate, True
+            event_now, proposed_at = _event_time(now)
+            proposal = enrollment.build_proposal(
+                project_id=self.project.project_id,
+                project_display_name=self.project.display_name,
+                proposal_id=proposal_id or str(uuid.uuid4()),
+                participant_id=participant_id or str(uuid.uuid4()),
+                common_name=common_name,
+                display_name=display_name,
+                role=role,
+                vendor=vendor,
+                session_id=session_id,
+                session_label=session_label,
+                session_kind=session_kind,
+                session_git_top_level=session_git_top_level,
+                session_git_common_dir=session_git_common_dir,
+                discovery_source=discovery_source,
+                proposed_at=proposed_at,
+                execution_context=execution_context,
+                supersedes=tuple(
+                    candidate.proposal_id for candidate in pending_for_session
+                ),
+            )
+            result = self._commit_locked(
+                snapshot,
+                active,
+                event_type=PARTICIPANT_ENROLLMENT_PROPOSED,
+                attributes={
+                    **proposal.payload(),
+                    "proposal_sha256": proposal.proposal_sha256,
+                },
+                exact_message=None,
+                now=event_now,
+            )
+            return cast(enrollment.EnrollmentProposal, result), False
+
+    def participant_enrollment_confirm(
+        self,
+        proposal_id: str,
+        *,
+        expected_proposal_sha256: str,
+        operator_reference: str,
+        confirmed_at: str,
+        now: dt.datetime | None = None,
+        transaction: ProjectTransaction | None = None,
+    ) -> tuple[Participant, bool]:
+        """Atomically confirm an exact proposal and create its roster binding."""
+
+        with _transaction(self.project, transaction) as active:
+            snapshot = _replay_locked(self.project, active)
+            proposal = snapshot.enrollment.select(proposal_id)
+            if proposal.proposal_sha256 != expected_proposal_sha256:
+                raise CamUsageError(
+                    "onboarding.digest_mismatch",
+                    "confirmation digest does not match the displayed proposal",
+                )
+            if proposal.status == enrollment.EnrollmentStatus.CONFIRMED:
+                return _select_participant(
+                    snapshot.roster, proposal.participant_id
+                ), True
+            result = self._commit_locked(
+                snapshot,
+                active,
+                event_type=PARTICIPANT_ENROLLMENT_CONFIRMED,
+                attributes={
+                    "proposal_id": proposal.proposal_id,
+                    "expected_proposal_sha256": expected_proposal_sha256,
+                    "operator_reference": operator_reference,
+                    "confirmed_at": confirmed_at,
+                },
+                exact_message=None,
+                now=now,
+            )
+            return cast(Participant, result), False
 
     def participant_observe_route(
         self,

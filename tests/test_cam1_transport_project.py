@@ -35,6 +35,266 @@ else:
 
 
 class ProjectTransportGuardTests(ProjectBoundTransportTestCase):
+    def test_stale_claude_binding_fails_before_product_io(self) -> None:
+        self.add_claude_participant()
+        store = state.StateStore(self.binding)
+        store.participant_invalidate("local-worker", reason="identity is questionable")
+        marker = self.base / "stale-participant-product.called"
+        self.approved_claude_bin.write_text(
+            f"#!{sys.executable}\n"
+            "from pathlib import Path\n"
+            f"Path({str(marker)!r}).write_text('called', encoding='utf-8')\n",
+            encoding="utf-8",
+        )
+        self.approved_claude_bin.chmod(0o700)
+        records_before = self.binding.journal_path.read_bytes()
+
+        rejected = self.run_transport(
+            "claude-preflight",
+            "--participant",
+            "local-worker",
+            claude_bin=self.approved_claude_bin,
+        )
+
+        self.assertEqual(rejected.returncode, 2, rejected.stderr)
+        self.assertEqual(
+            json.loads(rejected.stderr)["error"]["code"],
+            "roster.participant_stale",
+        )
+        self.assertFalse(marker.exists())
+        self.assertEqual(self.binding.journal_path.read_bytes(), records_before)
+
+    def test_binding_metadata_requirements_are_vendor_specific(self) -> None:
+        store = state.StateStore(self.binding)
+        event_now = dt.datetime.now(dt.UTC)
+        bound_at = event_now.isoformat(timespec="microseconds").replace("+00:00", "Z")
+        store.participant_add(
+            common_name="local-worker",
+            display_name="Local Claude worker",
+            role="reviewer",
+            vendor="claude-code",
+            approved_product_executable=str(self.approved_claude_bin),
+            now=event_now,
+        )
+
+        with self.assertRaises(cam1.CamUsageError) as missing_label:
+            store.participant_bind(
+                "local-worker",
+                session_id=CLAUDE_SESSION,
+                session_label=None,
+                session_kind="interactive",
+                operator_reference="synthetic incomplete binding",
+                bound_at=bound_at,
+                now=event_now,
+            )
+
+        self.assertEqual(missing_label.exception.code, "roster.session_label_required")
+
+        with self.assertRaises(cam1.CamUsageError) as missing_kind:
+            store.participant_bind(
+                "local-worker",
+                session_id=CLAUDE_SESSION,
+                session_label="local-worker",
+                session_kind=None,
+                operator_reference="synthetic incomplete binding",
+                bound_at=bound_at,
+                now=event_now,
+            )
+        self.assertEqual(missing_kind.exception.code, "roster.session_kind_required")
+
+        store.participant_add(
+            common_name="example-coordinator",
+            display_name="Codex coordinator",
+            role=None,
+            vendor="codex",
+            approved_product_executable=str(self.approved_codex_bin),
+            now=event_now,
+        )
+        codex = store.participant_bind(
+            "example-coordinator",
+            session_id=CODEX_THREAD,
+            session_label=None,
+            session_kind=None,
+            operator_reference="Codex UUID confirmed",
+            bound_at=bound_at,
+            now=event_now,
+        )
+        self.assertIsNone(codex.binding.session_label)
+        self.assertIsNone(codex.binding.session_kind)
+        self.assertEqual(
+            [record["event_type"] for record in journal.replay_records(self.binding)],
+            [
+                state.PARTICIPANT_ADDED,
+                state.PARTICIPANT_ADDED,
+                state.PARTICIPANT_BOUND,
+            ],
+        )
+
+    def test_missing_approved_executables_fail_before_product_io(self) -> None:
+        store = state.StateStore(self.binding)
+        event_now = dt.datetime.now(dt.UTC)
+        bound_at = event_now.isoformat(timespec="microseconds").replace("+00:00", "Z")
+        store.participant_add(
+            common_name="local-worker",
+            display_name="Legacy Claude worker",
+            role=None,
+            vendor="claude-code",
+            now=event_now,
+        )
+        store.participant_bind(
+            "local-worker",
+            session_id=CLAUDE_SESSION,
+            session_label="local-worker",
+            session_kind="interactive",
+            operator_reference="historical binding",
+            bound_at=bound_at,
+            now=event_now,
+        )
+        store.participant_add(
+            common_name="example-coordinator",
+            display_name="Legacy Codex coordinator",
+            role=None,
+            vendor="codex",
+            now=event_now,
+        )
+        store.participant_bind(
+            "example-coordinator",
+            session_id=CODEX_THREAD,
+            session_label=None,
+            session_kind=None,
+            operator_reference="historical binding",
+            bound_at=bound_at,
+            now=event_now,
+        )
+        marker = self.base / "missing-approved-product.called"
+        claude_bin = self.fake_claude(returned={"success": True}, marker=marker)
+        self.approved_codex_bin.write_text(
+            f"#!{sys.executable}\n"
+            "from pathlib import Path\n"
+            f"Path({str(marker)!r}).write_text('called', encoding='utf-8')\n",
+            encoding="utf-8",
+        )
+        self.approved_codex_bin.chmod(0o700)
+        to_claude = self.private_envelope(
+            "missing-approved-to-claude.json", build_first_contact()
+        )
+        to_codex = self.private_envelope(
+            "missing-approved-to-codex.json",
+            cam1.build_hello(
+                sender_vendor="claude-code",
+                sender_name="local-worker",
+                sender_session=CLAUDE_SESSION,
+                recipient_vendor="codex",
+                recipient_name="example-coordinator",
+                recipient_session=CODEX_THREAD,
+                reply_transport="claude_send_message",
+                reply_address=CLAUDE_SESSION,
+            ),
+        )
+        records_before = self.binding.journal_path.read_bytes()
+
+        rejected = (
+            self.run_transport(
+                "claude-preflight",
+                "--participant",
+                "local-worker",
+                claude_bin=claude_bin,
+            ),
+            self.run_transport(
+                "claude-send",
+                "--participant",
+                "local-worker",
+                "--envelope",
+                str(to_claude),
+                claude_bin=claude_bin,
+            ),
+            self.run_transport(
+                "codex-send",
+                "--participant",
+                "example-coordinator",
+                "--thread",
+                CODEX_THREAD,
+                "--envelope",
+                str(to_codex),
+                codex_bin=self.approved_codex_bin,
+            ),
+        )
+
+        for result in rejected:
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertEqual(
+                json.loads(result.stderr)["error"]["code"],
+                "roster.product_executable_missing",
+            )
+        self.assertFalse(marker.exists())
+        self.assertEqual(self.binding.journal_path.read_bytes(), records_before)
+
+    def test_mismatched_approved_executables_fail_before_product_io(self) -> None:
+        self.add_claude_participant()
+        self.add_codex_participant()
+        marker = self.base / "mismatched-product.called"
+        other_claude = self.base / "other-claude"
+        other_codex = self.base / "other-codex"
+        for executable in (other_claude, other_codex):
+            executable.write_text(
+                f"#!{sys.executable}\n"
+                "from pathlib import Path\n"
+                f"Path({str(marker)!r}).write_text('called', encoding='utf-8')\n",
+                encoding="utf-8",
+            )
+            executable.chmod(0o700)
+        to_claude = self.private_envelope(
+            "mismatched-to-claude.json", build_first_contact()
+        )
+        to_codex = self.private_envelope(
+            "mismatched-to-codex.json",
+            cam1.build_hello(
+                sender_vendor="claude-code",
+                sender_name="local-worker",
+                sender_session=CLAUDE_SESSION,
+                recipient_vendor="codex",
+                recipient_name="example-coordinator",
+                recipient_session=CODEX_THREAD,
+                reply_transport="claude_send_message",
+                reply_address=CLAUDE_SESSION,
+            ),
+        )
+        records_before = self.binding.journal_path.read_bytes()
+
+        rejected_claude = self.run_transport(
+            "claude-preflight",
+            "--participant",
+            "local-worker",
+            claude_bin=other_claude,
+        )
+        rejected_claude_send = self.run_transport(
+            "claude-send",
+            "--participant",
+            "local-worker",
+            "--envelope",
+            str(to_claude),
+            claude_bin=other_claude,
+        )
+        rejected_codex = self.run_transport(
+            "codex-send",
+            "--participant",
+            "example-coordinator",
+            "--thread",
+            CODEX_THREAD,
+            "--envelope",
+            str(to_codex),
+            codex_bin=other_codex,
+        )
+
+        for rejected in (rejected_claude, rejected_claude_send, rejected_codex):
+            self.assertEqual(rejected.returncode, 2, rejected.stderr)
+            self.assertEqual(
+                json.loads(rejected.stderr)["error"]["code"],
+                "roster.product_executable_mismatch",
+            )
+        self.assertFalse(marker.exists())
+        self.assertEqual(self.binding.journal_path.read_bytes(), records_before)
+
     def test_kindless_legacy_claude_binding_fails_before_discovery(self) -> None:
         store = state.StateStore(self.binding)
         event_now = dt.datetime.now(dt.UTC)
@@ -44,15 +304,21 @@ class ProjectTransportGuardTests(ProjectBoundTransportTestCase):
             display_name="Local Claude worker",
             role="reviewer",
             vendor="claude-code",
+            approved_product_executable=str(self.approved_claude_bin),
             now=event_now,
         )
-        store.participant_bind(
-            "local-worker",
-            session_id=CLAUDE_SESSION,
-            session_label="local-worker",
-            session_kind=None,
-            operator_reference="historical binding without session kind",
-            bound_at=bound_at,
+        participant = store.snapshot().roster.select("local-worker")
+        journal.append_record(
+            self.binding,
+            event_type=state.PARTICIPANT_BOUND,
+            attributes={
+                "participant_id": participant.participant_id,
+                "session_id": CLAUDE_SESSION,
+                "session_label": "local-worker",
+                "session_kind": None,
+                "operator_reference": "historical binding without session kind",
+                "bound_at": bound_at,
+            },
             now=event_now,
         )
         marker = self.base / "kindless-binding.called"
@@ -105,7 +371,7 @@ class ProjectTransportGuardTests(ProjectBoundTransportTestCase):
         )
         envelope = self.private_envelope("codex-hello.cam1.json", raw)
         marker = self.base / "codex-queue.called"
-        fake_codex = self.base / "fake-codex"
+        fake_codex = self.approved_codex_bin
         fake_codex.write_text(
             textwrap.dedent(
                 f"""\
@@ -182,7 +448,7 @@ class ProjectTransportGuardTests(ProjectBoundTransportTestCase):
         )
         envelope = self.private_envelope("codex-state-blocked.cam1.json", raw)
         marker = self.base / "codex-state-preflight-product.called"
-        fake_product = self.base / "queue-helper-must-not-run"
+        fake_product = self.approved_codex_bin
         fake_product.write_text(
             f"#!{sys.executable}\n"
             "from pathlib import Path\n"
@@ -220,14 +486,14 @@ class ProjectTransportGuardTests(ProjectBoundTransportTestCase):
         self.add_claude_participant()
         self.add_codex_participant()
         marker = self.base / "invalid-envelope-product.called"
-        product = self.base / "invalid-envelope-product"
-        product.write_text(
-            f"#!{sys.executable}\n"
-            "from pathlib import Path\n"
-            f"Path({str(marker)!r}).write_text('called', encoding='utf-8')\n",
-            encoding="utf-8",
-        )
-        product.chmod(0o700)
+        for product in (self.approved_claude_bin, self.approved_codex_bin):
+            product.write_text(
+                f"#!{sys.executable}\n"
+                "from pathlib import Path\n"
+                f"Path({str(marker)!r}).write_text('called', encoding='utf-8')\n",
+                encoding="utf-8",
+            )
+            product.chmod(0o700)
 
         to_claude = json.loads(build_first_contact())
         to_codex = json.loads(
@@ -279,7 +545,7 @@ class ProjectTransportGuardTests(ProjectBoundTransportTestCase):
                         "local-worker",
                         "--envelope",
                         str(envelope),
-                        claude_bin=product,
+                        claude_bin=self.approved_claude_bin,
                     )
                 else:
                     completed = self.run_transport(
@@ -290,7 +556,7 @@ class ProjectTransportGuardTests(ProjectBoundTransportTestCase):
                         CODEX_THREAD,
                         "--envelope",
                         str(envelope),
-                        codex_bin=product,
+                        codex_bin=self.approved_codex_bin,
                     )
 
                 self.assertEqual(completed.returncode, 2, completed.stderr)
@@ -426,7 +692,7 @@ class ProjectTransportGuardTests(ProjectBoundTransportTestCase):
         )
         root_path = self.private_envelope("claude-root.cam1.json", root)
         codex_marker = self.base / "round-trip-codex.called"
-        fake_codex = self.base / "round-trip-codex"
+        fake_codex = self.approved_codex_bin
         fake_codex.write_text(
             textwrap.dedent(
                 f"""\
@@ -562,7 +828,7 @@ class ProjectTransportGuardTests(ProjectBoundTransportTestCase):
         entered = self.base / "reserved-entered"
         release = self.base / "reserved-release"
         marker = self.base / "reserved-calls"
-        fake_codex = self.base / "blocking-codex"
+        fake_codex = self.approved_codex_bin
         fake_codex.write_text(
             textwrap.dedent(
                 f"""\
@@ -966,7 +1232,7 @@ class ProjectTransportGuardTests(ProjectBoundTransportTestCase):
             asyncio.run(
                 cam1_transport.preflight_project_claude(
                     self.binding,
-                    claude_bin="/not/executed/claude",
+                    claude_bin=str(self.approved_claude_bin),
                     participant_selector="local-worker",
                     session_id_guard=CLAUDE_SESSION,
                     target_guard=None,
@@ -985,12 +1251,14 @@ class ProjectTransportGuardTests(ProjectBoundTransportTestCase):
         self.add_claude_participant()
         self.add_codex_participant()
         marker = self.base / "guarded-product.called"
-        executable = self.base / "guarded-product"
-        executable.write_text(
-            f"#!{sys.executable}\nfrom pathlib import Path\nPath({str(marker)!r}).write_text('called')\n",
-            encoding="utf-8",
-        )
-        executable.chmod(0o700)
+        for executable in (self.approved_claude_bin, self.approved_codex_bin):
+            executable.write_text(
+                f"#!{sys.executable}\n"
+                "from pathlib import Path\n"
+                f"Path({str(marker)!r}).write_text('called')\n",
+                encoding="utf-8",
+            )
+            executable.chmod(0o700)
         claude_envelope = self.private_envelope(
             "guard-claude.json", build_first_contact()
         )
@@ -1015,7 +1283,7 @@ class ProjectTransportGuardTests(ProjectBoundTransportTestCase):
             wrong,
             "--envelope",
             str(claude_envelope),
-            claude_bin=executable,
+            claude_bin=self.approved_claude_bin,
         )
         codex_result = self.run_transport(
             "codex-send",
@@ -1025,7 +1293,7 @@ class ProjectTransportGuardTests(ProjectBoundTransportTestCase):
             wrong,
             "--envelope",
             str(codex_envelope),
-            codex_bin=executable,
+            codex_bin=self.approved_codex_bin,
         )
 
         self.assertEqual(claude_result.returncode, 2)

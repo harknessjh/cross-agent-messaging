@@ -384,12 +384,37 @@ class ParticipantRosterTests(unittest.TestCase):
             "roster.route_not_candidate",
         )
 
+        with self.assertRaises(CamUsageError) as stale_observation:
+            roster.observe_route(
+                "reviewer",
+                transport="claude_send_message",
+                address="worker-renamed [fedcba]",
+                source="Agent View plus ListAgents",
+                observed_at="2026-08-27T17:01:00Z",
+                agent_view_id="00000000",
+                list_agents_name="worker-renamed",
+                list_agents_ref="fedcba",
+                product_state="idle",
+            )
+        self.assertEqual(
+            stale_observation.exception.code,
+            "roster.participant_stale",
+        )
+
+        roster.bind(
+            "reviewer",
+            session_id=REVIEWER_SESSION,
+            session_label="replacement session",
+            session_kind="interactive",
+            operator_reference="operator reconfirmed the session",
+            bound_at="2026-08-27T17:01:00Z",
+        )
         observed = roster.observe_route(
             "reviewer",
             transport="claude_send_message",
             address="worker-renamed [fedcba]",
             source="Agent View plus ListAgents",
-            observed_at="2026-08-27T17:01:00Z",
+            observed_at="2026-08-27T17:01:01Z",
             agent_view_id="00000000",
             list_agents_name="worker-renamed",
             list_agents_ref="fedcba",
@@ -400,7 +425,7 @@ class ParticipantRosterTests(unittest.TestCase):
             "reviewer",
             expected_address="worker-renamed [fedcba]",
             operator_reference="operator reconfirmed the restarted route",
-            confirmed_at="2026-08-27T17:01:01Z",
+            confirmed_at="2026-08-27T17:01:02Z",
         )
         self.assertEqual(
             reconfirmed.route.status,

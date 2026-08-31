@@ -35,6 +35,8 @@ from tools.cam1lib import (
     compatibility_cli,
     journal,
     lifecycle,
+    onboarding,
+    onboarding_cli,
     participants,
     profile,
     project,
@@ -62,9 +64,14 @@ def _emit(payload: dict[str, Any], *, stream: Any = sys.stdout) -> None:
 
 def _parser() -> argparse.ArgumentParser:
     parser = JsonArgumentParser(
-        description="Manage one Git-bound CAM project and its required local journal."
+        description="Manage one Git-bound CAM project and its required local journal.",
+        allow_abbrev=False,
     )
-    parser.add_argument("--project-root", default=".")
+    parser.add_argument(
+        "--project-root",
+        default=".",
+        help="target Git worktree; defaults to the current working directory",
+    )
     parser.add_argument(
         "--state-root",
         help="absolute journal root override; defaults to the account home at ~/CAM/Journals",
@@ -129,18 +136,19 @@ def _parser() -> argparse.ArgumentParser:
     )
     participant_add.add_argument("--common-name", required=True)
     participant_add.add_argument("--display-name", required=True)
-    participant_add.add_argument("--role", required=True)
+    participant_add.add_argument("--role")
     participant_add.add_argument(
         "--vendor", choices=("codex", "claude-code"), required=True
     )
     participant_add.add_argument("--participant-id")
+    participant_add.add_argument("--product-bin")
 
     participant_bind = participant_commands.add_parser(
         "bind", help="bind a participant to an operator-confirmed product session"
     )
     participant_bind.add_argument("--participant", required=True)
     participant_bind.add_argument("--session-id", required=True)
-    participant_bind.add_argument("--session-label", required=True)
+    participant_bind.add_argument("--session-label")
     participant_bind.add_argument(
         "--session-kind",
         help="required for Claude Code bindings; optional for Codex",
@@ -167,6 +175,21 @@ def _parser() -> argparse.ArgumentParser:
         help="explicitly reveal session and route identifiers",
     )
 
+    participant_update = participant_commands.add_parser(
+        "update-metadata",
+        help="update descriptive metadata without changing participant identity",
+    )
+    participant_update.add_argument("--participant", required=True)
+    participant_update.add_argument("--expected-revision", type=int, required=True)
+    participant_update.add_argument("--display-name")
+    role_update = participant_update.add_mutually_exclusive_group()
+    role_update.add_argument("--role")
+    role_update.add_argument("--clear-role", action="store_true")
+    executable_update = participant_update.add_mutually_exclusive_group()
+    executable_update.add_argument("--product-bin")
+    executable_update.add_argument("--clear-product-bin", action="store_true")
+    participant_update.add_argument("--operator-reference", required=True)
+
     for command, help_text in (
         ("invalidate", "mark a participant binding and route stale"),
         ("retire", "retire a participant without deleting its history"),
@@ -185,6 +208,7 @@ def _parser() -> argparse.ArgumentParser:
     )
 
     compatibility_cli.register_parser(domains)
+    onboarding_cli.add_parser(domains)
 
     message_parser = domains.add_parser("message")
     message_commands = message_parser.add_subparsers(
@@ -223,6 +247,16 @@ def _parser() -> argparse.ArgumentParser:
 def _validate_arguments(
     parser: argparse.ArgumentParser, args: argparse.Namespace
 ) -> None:
+    if (
+        args.domain == "participant"
+        and args.participant_command == "update-metadata"
+        and args.display_name is None
+        and args.role is None
+        and not args.clear_role
+        and args.product_bin is None
+        and not args.clear_product_bin
+    ):
+        parser.error("update-metadata requires at least one metadata change")
     if args.domain != "message" or args.message_command != "ingest":
         return
     if args.stdin:
@@ -319,6 +353,11 @@ def _state_summary(snapshot: state.StateSnapshot) -> dict[str, Any]:
         "journal_sequence": snapshot.journal_sequence,
         "journal_record_sha256": snapshot.journal_record_sha256,
         "participant_count": len(snapshot.roster.participants),
+        "enrollment_proposal_count": len(snapshot.enrollment.proposals),
+        "pending_enrollment_count": sum(
+            proposal.status.value == "pending"
+            for proposal in snapshot.enrollment.proposals.values()
+        ),
         "lifecycle_count": len(snapshot.lifecycle.entries),
         "lifecycle_states": dict(sorted(lifecycle_states.items())),
     }
@@ -1020,11 +1059,17 @@ def _handle_participant(
 ) -> int:
     if args.participant_command == "add":
         event_now, _ = _utc_now()
+        product_executable = (
+            onboarding.resolve_product_executable(args.product_bin, vendor=args.vendor)
+            if args.product_bin is not None
+            else None
+        )
         participant = store.participant_add(
             common_name=args.common_name,
             display_name=args.display_name,
             role=args.role,
             vendor=args.vendor,
+            approved_product_executable=product_executable,
             participant_id=args.participant_id,
             now=event_now,
         )
@@ -1052,6 +1097,39 @@ def _handle_participant(
             }
         )
         return 0
+    elif args.participant_command == "update-metadata":
+        event_now, updated_at = _utc_now()
+        existing = store.snapshot().roster.select(args.participant)
+        display_name = args.display_name or existing.display_name
+        role = (
+            None
+            if args.clear_role
+            else args.role
+            if args.role is not None
+            else existing.role
+        )
+        product_executable = (
+            None
+            if args.clear_product_bin
+            else (
+                onboarding.resolve_product_executable(
+                    args.product_bin, vendor=existing.vendor
+                )
+                if args.product_bin is not None
+                else existing.approved_product_executable
+            )
+        )
+        participant = store.participant_update_metadata(
+            args.participant,
+            display_name=display_name,
+            role=role,
+            approved_product_executable=product_executable,
+            expected_revision=args.expected_revision,
+            operator_reference=args.operator_reference,
+            updated_at=updated_at,
+            now=event_now,
+        )
+        status = "metadata_updated"
     else:
         event_now, _ = _utc_now()
         operation = (
@@ -1117,7 +1195,17 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.domain == "project":
             return _handle_project(args)
-        binding = _resolve(args)
+        if args.domain == "onboarding" and args.onboarding_command != "status":
+            onboarding.require_trusted_source()
+        binding = (
+            project.initialize_project(
+                args.project_root,
+                state_root=args.state_root,
+                git_bin=args.git_bin,
+            )
+            if args.domain == "onboarding" and args.onboarding_command == "prepare"
+            else _resolve(args)
+        )
         if args.domain == "journal":
             return _handle_journal(args, binding)
         store = StateStore(binding)
@@ -1129,6 +1217,9 @@ def main(argv: list[str] | None = None) -> int:
             return_code, payload = compatibility_cli.handle(args, binding, store)
             _emit(payload, stream=sys.stderr if return_code else sys.stdout)
             return return_code
+        if args.domain == "onboarding":
+            _emit(onboarding_cli.handle(args, binding, store))
+            return 0
         if args.domain == "message":
             return _handle_message(args, binding)
     except state.CompatibilityUpgradeRequired as error:

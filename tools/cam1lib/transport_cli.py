@@ -57,6 +57,7 @@ def build_parser(api: TransportCliApi) -> argparse.ArgumentParser:
     parser = JsonArgumentParser(
         api,
         description="Use Claude Code's local messaging transport for CAM/1 envelopes.",
+        allow_abbrev=False,
     )
     parser.add_argument("--claude-bin", default="claude")
     parser.add_argument("--codex-bin", default="codex")

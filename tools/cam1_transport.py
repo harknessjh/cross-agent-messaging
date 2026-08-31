@@ -110,6 +110,11 @@ def _require_bound_participant(
             "roster.participant_retired",
             "retired participant cannot be used for live transport",
         )
+    if participant.status != participants.ParticipantStatus.BOUND:
+        raise TransportError(
+            "roster.participant_stale",
+            "stale participant must be explicitly rebound before live transport",
+        )
     return participant
 
 
@@ -120,13 +125,34 @@ def _require_complete_claude_binding(
 
     binding = participant.binding
     assert binding is not None
-    if binding.session_kind is None:
+    if binding.session_label is None or binding.session_kind is None:
         raise TransportError(
             "claude.binding_incomplete",
-            "Claude binding has no operator-confirmed session kind; rebind the "
-            "participant before discovery or sending",
+            "Claude binding lacks an operator-confirmed session label or kind; "
+            "rebind the participant before discovery or sending",
         )
     return binding
+
+
+def _require_approved_product_executable(
+    participant: participants.Participant,
+    supplied_path: str,
+) -> None:
+    """Fail before product I/O unless the exact rostered executable is used."""
+
+    approved = participant.approved_product_executable
+    if approved is None:
+        raise TransportError(
+            "roster.product_executable_missing",
+            "participant has no operator-approved product executable; update its "
+            "metadata before live transport",
+        )
+    if supplied_path != approved:
+        raise TransportError(
+            "roster.product_executable_mismatch",
+            "live transport executable does not match the operator-approved roster "
+            "path",
+        )
 
 
 def _require_bound_claude_metadata(
@@ -136,7 +162,10 @@ def _require_bound_claude_metadata(
     """Keep mutable product metadata inside the operator-confirmed binding."""
 
     binding = _require_complete_claude_binding(participant)
-    if session.product_name != binding.session_label:
+    if (
+        binding.session_label is not None
+        and session.product_name != binding.session_label
+    ):
         raise TransportError(
             "claude.session_label_mismatch",
             "fresh Claude product name does not match the operator-confirmed "
@@ -764,6 +793,7 @@ async def preflight_project_claude(
         bound_session_id = participant.binding.session_id
         bound_generation = participant.binding.generation
         _require_complete_claude_binding(participant)
+        _require_approved_product_executable(participant, claude_bin)
 
     result = await _preflight_claude_session(
         claude_bin=claude_bin,
@@ -810,6 +840,7 @@ async def preflight_project_claude(
                 "claude.binding_changed",
                 "participant binding changed during Claude route discovery",
             )
+        _require_approved_product_executable(participant, claude_bin)
         _require_bound_claude_metadata(participant, route.session)
         event_now, observed_at = _utc_now()
         try:
@@ -887,6 +918,7 @@ async def send_project_claude(
         bound_session_id = participant.binding.session_id
         bound_generation = participant.binding.generation
         _require_complete_claude_binding(participant)
+        _require_approved_product_executable(participant, claude_bin)
 
     attempt = _SendAttempt(
         participant_id=participant_id,
@@ -916,6 +948,7 @@ async def send_project_claude(
                     "claude.binding_changed",
                     "fresh Claude discovery no longer matches the participant binding",
                 )
+            _require_approved_product_executable(current, claude_bin)
             _require_bound_claude_metadata(current, route.session)
             event_now, observed_at = _utc_now()
             try:
@@ -1046,6 +1079,7 @@ def send_project_codex(
             participant.binding.session_id,
             label="thread",
         )
+        _require_approved_product_executable(participant, codex_bin)
         try:
             route = store.snapshot(
                 transaction=transaction
@@ -1076,6 +1110,7 @@ def send_project_codex(
                     "codex.session_changed",
                     "participant binding changed before Codex queue dispatch",
                 )
+            _require_approved_product_executable(current, codex_bin)
             try:
                 current_route = store.snapshot(
                     transaction=transaction

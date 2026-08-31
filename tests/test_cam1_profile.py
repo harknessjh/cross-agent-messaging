@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import py_compile
+import shlex
 import shutil
 import subprocess
 import sys
@@ -612,6 +613,73 @@ class ValidationProfileTests(unittest.TestCase):
                     json.loads(completed.stderr)["error"]["code"], expected_code
                 )
                 self.assertFalse(marker.exists())
+
+    def test_dirty_onboarding_source_cannot_execute_or_touch_project(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            copied, git_bin = self.initialized_git_profile_root(base / "cam")
+            import_marker = base / "onboarding-imported"
+            product_marker = base / "claude-executed"
+            onboarding_source = copied / "tools" / "cam1lib" / "onboarding.py"
+            onboarding_source.write_bytes(
+                onboarding_source.read_bytes()
+                + (
+                    "\nfrom pathlib import Path as _MarkerPath\n"
+                    f"_MarkerPath({str(import_marker)!r}).write_text("
+                    "'executed', encoding='utf-8')\n"
+                ).encode()
+            )
+            claude_bin = base / "claude"
+            claude_bin.write_text(
+                "#!/bin/sh\n"
+                f"/usr/bin/touch {shlex.quote(str(product_marker))}\n"
+                "printf '[]\\n'\n",
+                encoding="utf-8",
+            )
+            claude_bin.chmod(0o700)
+
+            for index, project_option in enumerate(("--project-root", "--project-r")):
+                with self.subTest(project_option=project_option):
+                    target = base / f"target-{index}"
+                    target.mkdir()
+                    subprocess.run(
+                        [git_bin, "-C", str(target), "init", "--quiet"],
+                        check=True,
+                        capture_output=True,
+                    )
+                    state_root = base / f"state-{index}"
+                    completed = subprocess.run(
+                        [
+                            sys.executable,
+                            "tools/cam1_project.py",
+                            f"{project_option}={target}",
+                            "--state-root",
+                            str(state_root),
+                            "onboarding",
+                            "prepare",
+                            "--vendor",
+                            "claude-code",
+                            "--session-id",
+                            "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+                            "--product-bin",
+                            str(claude_bin),
+                        ],
+                        cwd=copied,
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        timeout=20,
+                    )
+
+                    self.assertEqual(completed.returncode, 2, completed.stderr)
+                    self.assertEqual(
+                        json.loads(completed.stderr)["error"]["code"],
+                        "profile.executable_source_dirty",
+                    )
+                    self.assertFalse(import_marker.exists())
+                    self.assertFalse(product_marker.exists())
+                    self.assertFalse((target / ".git" / "cam1").exists())
+                    self.assertFalse(state_root.exists())
 
     def test_offline_non_git_facades_remain_available(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

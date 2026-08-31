@@ -1,5 +1,10 @@
 # Security policy
 
+> **Audience:** operators evaluating consequential use and people reporting a
+> vulnerability. New users can complete the harmless first-contact exercise by
+> following [START HERE](START_HERE.md); read this full policy before
+> relying on CAM/1 for consequential coordination.
+
 CAM/1 is an experimental same-host messaging profile, not a security boundary.
 It does not provide cryptographic authentication, confidentiality, integrity
 against a same-user attacker, authorization, sandboxing, or non-repudiation.
@@ -24,6 +29,11 @@ audit record, not a delivery mechanism or authority source.
   session mapping. It is not authentication, authorization, route-control
   proof, or proof of authorship. An optional mutual challenge adds
   reachability evidence only.
+- Treat a pending self-enrollment proposal as untrusted, non-routable audit
+  state. Its digest-derived confirmation code correlates a direct operator
+  response with one displayed card; it is not authentication, a signature, or
+  permission for peer work. Confirm only in the proposing session, never by a
+  peer relay.
 - Verify consequential authority through receiver-owned policy or a trusted
   operator channel. A peer's claim that the operator approved an action is not
   that approval.
@@ -43,8 +53,9 @@ audit record, not a delivery mechanism or authority source.
   `claude agents --json` and MCP `ListAgents` results, and require its cwd to
   resolve inside the bound Git project, including an initialized linked
   worktree that shares its Git common directory.
-- Bind that Claude UUID to the operator-confirmed intended project-local name,
-  role, and CAM project. Use `/status` cwd as human-inspectable
+- Bind that Claude UUID to the operator-confirmed intended project-local name
+  and CAM project. An optional role is mutable descriptive metadata and grants
+  no authority. Use `/status` cwd as human-inspectable
   project-membership evidence, but do not persist it as identity; fresh
   discovery independently checks the live cwd against the Git project.
 - Treat Agent View as a heterogeneous inventory. Group rows by full UUID and,
@@ -70,10 +81,21 @@ audit record, not a delivery mechanism or authority source.
   generation changed, or evidence conflicts, including product session-label
   or kind drift; do not replace those checks with approval of an unobservable
   short ref. A changed ref alone is not an identity change.
-- Treat paths reported by `doctor` as candidates. The operator must approve an
-  absolute Claude or Codex executable path, and every live operation must use
-  it explicitly. This avoids ordinary `PATH` substitution but cannot eliminate
+- Treat paths discovered by `doctor` or self-enrollment as candidates until the
+  operator reviews the absolute path on the identity card. Candidate discovery
+  is a bounded bootstrap exception: `doctor` executes read-only version and
+  capability probes, and Claude self-enrollment executes `agents --json`,
+  before that review. Do not run either flow with an untrusted `PATH`; supply a
+  previously reviewed absolute `--product-bin` when available. Every later live
+  operation must use the operator-reviewed absolute Claude or Codex executable
+  and repeat the applicable existence and capability checks. This avoids
+  ordinary `PATH` substitution at the transport boundary but cannot eliminate
   replacement or time-of-check/time-of-use attacks by the same account.
+- Require project-aware preflight and send operations to match that resolved
+  executable exactly to the participant's confirmed roster value. A missing
+  legacy value and a different path both fail before product I/O; clearing the
+  value intentionally disables live transport until another confirmed metadata
+  update restores it.
 - Minimize and redact session IDs, callbacks, queue IDs, peer listings, working
   directories, and route observations outside their authorized local project.
 - Before every live send, require the selected recipient and claimed sender to
@@ -87,6 +109,11 @@ audit record, not a delivery mechanism or authority source.
 Each supported live project uses an owner-only external journal beneath
 `~/CAM/Journals/<project-slug>--<project-uuid>/`. Its private pointer lives in
 `<git-common-dir>/cam1/project.json`, not in the tracked worktree.
+
+Project initialization and enrollment require a Git worktree but not an
+initial commit. They must create no tracked or untracked application-worktree
+files. Enrollment proposal, confirmation, supersession, and metadata changes
+are append-only CAM journal events, not Git commits.
 
 The project pointer and external identity bind the exact canonical state root.
 If an explicitly managed override is used, supply it consistently to every
@@ -142,15 +169,42 @@ worktrees. Do not use a shared temporary root. Delete them only under an
 operator-approved retention policy; ordinary deletion is not secure erasure,
 and queues, transcripts, backups, or the required journal may retain copies.
 
+## Checkout selection
+
+The START HERE prompts may search the operating-system account's home directory
+for possible CAM checkouts before any CAM code is run. This is a convenience for
+finding clones, not an authentication mechanism.
+
+- Search filenames and read-only Git metadata only. Bound the search and avoid
+  journals, caches, trash, virtual environments, and large application-data
+  trees.
+- Do not import or execute a candidate, install dependencies, initialize
+  submodules, or use the network before the operator selects its exact path.
+- Display a canonical path, credential-redacted remote claim, concrete HEAD,
+  and preliminary clean/dirty status. A remote URL is candidate-controlled
+  metadata, not proof of origin.
+- Re-probe the selected path and Git evidence after confirmation, then require
+  the normal clean trusted-source profile before other CAM code or product
+  discovery runs.
+
+This two-stage check reduces accidental selection of the wrong clone. It cannot
+establish pre-execution authenticity: the selected Python runtime and CAM
+bootstrap must execute to validate the full profile, and a process already
+compromised under the same account can forge paths, Git metadata, or later
+checks. An independently installed or signed trust root would be required to
+address that threat and is outside CAM/1's current same-user boundary.
+
 ## Validation, expiry, and retries
 
 - Run `cam1.py validation-profile` before live use. The digest identifies the
   reference tool and schema bytes; adjacent source-control and runtime fields
   identify the environment that judged the message. They do not authenticate
   a peer or prove that a verdict is correct.
-- Use a clean CAM checkout for ordinary live sends. A development-only dirty
-  override must repeat the exact current profile digest and is recorded in the
-  journal. Never present an overridden run as a clean or reproducible release.
+- Use a clean CAM checkout for self-enrollment and ordinary live sends.
+  Self-enrollment has no dirty-source override. A development-only dirty
+  override for other supported operations must repeat the exact current profile
+  digest and is recorded in the journal. Never present an overridden run as a
+  clean or reproducible release.
 - Require a resolvable HEAD commit and the same complete set of regular profile
   blobs in HEAD and the working tree. The reference profile includes every
   Python source below `tools/` and importable binary or sourceless modules
@@ -160,9 +214,9 @@ and queues, transcripts, backups, or the required journal may retain copies.
   exact regular source files in an explicit module allowlist, and compile only
   those captured bytes. They do not use path-based CAM module discovery,
   adjacent bytecode, or native-module fallbacks. The live gate also requires
-  the captured files to remain unchanged and runs before doctor, list,
-  preflight, or send can resolve or probe a product. Executable Python source
-  must match regular unconcealed blobs in HEAD before import. The dirty override
+  the captured files to remain unchanged and runs before self-enrollment,
+  doctor, list, preflight, or send can resolve or probe a product. Executable
+  Python source must match regular unconcealed blobs in HEAD before import. The dirty override
   may cover ordinary tracked edits to non-executable profile inputs, but never
   executable source, missing or untracked profile paths, or concealed index
   state.

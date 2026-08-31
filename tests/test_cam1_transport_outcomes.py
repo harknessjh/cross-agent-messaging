@@ -129,7 +129,7 @@ class ProjectTransportOutcomeTests(ProjectBoundTransportTestCase):
         ):
             cam1_transport.send_project_codex(
                 self.binding,
-                codex_bin="/not/executed/codex",
+                codex_bin=str(self.approved_codex_bin),
                 participant_selector="example-coordinator",
                 thread_guard=CODEX_THREAD,
                 envelope_path=str(envelope),
@@ -186,7 +186,7 @@ class ProjectTransportOutcomeTests(ProjectBoundTransportTestCase):
         ):
             cam1_transport.send_project_codex(
                 self.binding,
-                codex_bin="/not/executed/codex",
+                codex_bin=str(self.approved_codex_bin),
                 participant_selector="example-coordinator",
                 thread_guard=CODEX_THREAD,
                 envelope_path=str(envelope),

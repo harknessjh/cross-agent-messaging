@@ -364,7 +364,29 @@ def _current_agent_view_rows(
 def select_agent_view_session(
     sessions: dict[str, tuple[AgentViewSession, ...]], session_id: str
 ) -> AgentViewSession:
-    """Select one exact full session UUID without accepting a short ID or name."""
+    """Select one routable UUID and require its mutable name to be unique."""
+
+    selected = select_agent_view_identity_session(sessions, session_id)
+    same_name_session_ids = {
+        row.session_id
+        for rows in sessions.values()
+        for row in _current_agent_view_rows(rows)
+        if row.product_name == selected.product_name
+        and row.kind.lower() in LOCAL_SESSION_KINDS
+        and row.state.lower() in ADDRESSABLE_SESSION_STATES
+    }
+    if same_name_session_ids != {selected.session_id}:
+        raise RoutingError(
+            "claude.agent_name_ambiguous",
+            "multiple active Claude sessions share the selected mutable product name",
+        )
+    return selected
+
+
+def select_agent_view_identity_session(
+    sessions: dict[str, tuple[AgentViewSession, ...]], session_id: str
+) -> AgentViewSession:
+    """Select one live local identity by full UUID, independent of route name."""
 
     canonical = _canonical_session_id(session_id)
     representations = sessions.get(canonical)
@@ -392,19 +414,6 @@ def select_agent_view_session(
             "selected sessionId does not have one eligible live local representation",
         )
     selected = eligible[0]
-    same_name_session_ids = {
-        row.session_id
-        for rows in sessions.values()
-        for row in _current_agent_view_rows(rows)
-        if row.product_name == selected.product_name
-        and row.kind.lower() in LOCAL_SESSION_KINDS
-        and row.state.lower() in ADDRESSABLE_SESSION_STATES
-    }
-    if same_name_session_ids != {selected.session_id}:
-        raise RoutingError(
-            "claude.agent_name_ambiguous",
-            "multiple active Claude sessions share the selected mutable product name",
-        )
     return selected
 
 

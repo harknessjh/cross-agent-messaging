@@ -681,6 +681,11 @@ class ProjectBoundTransportTestCase(unittest.TestCase):
             git_bin=project.DEFAULT_GIT_BIN,
         )
         self.fake_index = 0
+        self.approved_claude_bin = self.base / "approved-claude"
+        self.approved_codex_bin = self.base / "approved-codex"
+        for executable in (self.approved_claude_bin, self.approved_codex_bin):
+            executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            executable.chmod(0o700)
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -781,6 +786,8 @@ class ProjectBoundTransportTestCase(unittest.TestCase):
             "reviewer",
             "--vendor",
             "claude-code",
+            "--product-bin",
+            str(self.approved_claude_bin),
             "--participant-id",
             CLAUDE_PARTICIPANT,
         )
@@ -813,6 +820,8 @@ class ProjectBoundTransportTestCase(unittest.TestCase):
             "coordinator",
             "--vendor",
             "codex",
+            "--product-bin",
+            str(self.approved_codex_bin),
             "--participant-id",
             CODEX_PARTICIPANT,
         )
@@ -852,7 +861,7 @@ class ProjectBoundTransportTestCase(unittest.TestCase):
         during_send_command: list[str] | None = None,
     ) -> Path:
         self.fake_index += 1
-        executable = self.base / f"fake-claude-{self.fake_index}"
+        executable = self.approved_claude_bin
         expected_digest = (
             hashlib.sha256(expected_message).hexdigest()
             if expected_message is not None

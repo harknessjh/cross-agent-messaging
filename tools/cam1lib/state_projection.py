@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
+from . import enrollment
 from .compatibility import (
     COMPATIBILITY_EVENT_TYPES,
     COMPATIBILITY_GATE_ACTIVATED_EVENT,
@@ -32,7 +33,7 @@ from .compatibility import (
 )
 from .journal import _verified_records_for_transaction, decode_exact_message
 from .lifecycle import LifecycleEntry, LifecycleProjection
-from .participants import Participant, ParticipantRoster
+from .participants import Participant, ParticipantRoster, ParticipantStatus
 from .project import (
     ProjectBinding,
     ProjectError,
@@ -54,6 +55,9 @@ STATE_PROJECTION_NAME = "state-current.json"
 
 PARTICIPANT_ADDED = "state.participant.added"
 PARTICIPANT_BOUND = "state.participant.bound"
+PARTICIPANT_METADATA_UPDATED = "state.participant.metadata_updated"
+PARTICIPANT_ENROLLMENT_PROPOSED = "state.participant.enrollment_proposed"
+PARTICIPANT_ENROLLMENT_CONFIRMED = "state.participant.enrollment_confirmed"
 PARTICIPANT_ROUTE_OBSERVED = "state.participant.route_observed"
 PARTICIPANT_ROUTE_CONFIRMED = "state.participant.route_confirmed"
 PARTICIPANT_INVALIDATED = "state.participant.invalidated"
@@ -66,6 +70,9 @@ STATE_EVENT_TYPES = frozenset(
     {
         PARTICIPANT_ADDED,
         PARTICIPANT_BOUND,
+        PARTICIPANT_METADATA_UPDATED,
+        PARTICIPANT_ENROLLMENT_PROPOSED,
+        PARTICIPANT_ENROLLMENT_CONFIRMED,
         PARTICIPANT_ROUTE_OBSERVED,
         PARTICIPANT_ROUTE_CONFIRMED,
         PARTICIPANT_INVALIDATED,
@@ -80,6 +87,9 @@ PARTICIPANT_STATE_EVENT_TYPES = frozenset(
     {
         PARTICIPANT_ADDED,
         PARTICIPANT_BOUND,
+        PARTICIPANT_METADATA_UPDATED,
+        PARTICIPANT_ENROLLMENT_PROPOSED,
+        PARTICIPANT_ENROLLMENT_CONFIRMED,
         PARTICIPANT_ROUTE_OBSERVED,
         PARTICIPANT_ROUTE_CONFIRMED,
         PARTICIPANT_INVALIDATED,
@@ -117,6 +127,9 @@ class StateSnapshot:
     compatibility: CompatibilityProjection = field(
         default_factory=CompatibilityProjection
     )
+    enrollment: enrollment.EnrollmentProjection = field(
+        default_factory=enrollment.EnrollmentProjection
+    )
     journal_sequence: int = 0
     journal_record_sha256: str | None = None
     _message_bytes: dict[str, bytes] = field(default_factory=dict, repr=False)
@@ -129,6 +142,7 @@ class StateSnapshot:
             "project_id": self.roster.project_id,
             "journal_position": self._journal_position(),
             "participants": self.roster.as_dict()["participants"],
+            "enrollment": self.enrollment.as_dict()["proposals"],
             "lifecycle": self.lifecycle.as_dict()["entries"],
             "compatibility": self.compatibility.as_dict(),
         }
@@ -252,17 +266,17 @@ def _require_message(exact_message: bytes | None) -> bytes:
     return exact_message
 
 
-def _validation_time(value: str) -> dt.datetime:
+def _validation_time(value: str, *, field_name: str = "observed_at") -> dt.datetime:
     if not isinstance(value, str) or not value.endswith("Z"):
-        raise CamUsageError("state.timestamp", "observed_at must be a UTC timestamp")
+        raise CamUsageError("state.timestamp", f"{field_name} must be a UTC timestamp")
     try:
         parsed = dt.datetime.fromisoformat(value[:-1] + "+00:00")
     except ValueError:
         raise CamUsageError(
-            "state.timestamp", "observed_at must be a valid UTC timestamp"
+            "state.timestamp", f"{field_name} must be a valid UTC timestamp"
         ) from None
     if parsed.tzinfo is None or parsed.utcoffset() is None:
-        raise CamUsageError("state.timestamp", "observed_at must be timezone-aware")
+        raise CamUsageError("state.timestamp", f"{field_name} must be timezone-aware")
     return parsed.astimezone(dt.UTC)
 
 
@@ -453,19 +467,202 @@ def _participant_add(
     snapshot: StateSnapshot, attributes: Mapping[str, Any], exact_message: bytes | None
 ) -> Participant:
     _require_no_message(exact_message)
-    values = _attributes(
-        attributes,
-        required=frozenset(
-            {"participant_id", "common_name", "display_name", "role", "vendor"}
-        ),
+    legacy_fields = frozenset(
+        {"participant_id", "common_name", "display_name", "role", "vendor"}
     )
+    extended_fields = legacy_fields | frozenset({"approved_product_executable"})
+    if set(attributes) == legacy_fields:
+        values = dict(attributes)
+        values["approved_product_executable"] = None
+    else:
+        values = _attributes(attributes, required=extended_fields)
     return snapshot.roster.add(
         participant_id=_required_text(values, "participant_id"),
         common_name=_required_text(values, "common_name"),
         display_name=_required_text(values, "display_name"),
-        role=_required_text(values, "role"),
+        role=_optional_text(values, "role"),
         vendor=_required_text(values, "vendor"),
+        approved_product_executable=_optional_text(
+            values, "approved_product_executable"
+        ),
     )
+
+
+def _participant_metadata_updated(
+    snapshot: StateSnapshot, attributes: Mapping[str, Any], exact_message: bytes | None
+) -> Participant:
+    _require_no_message(exact_message)
+    values = _attributes(
+        attributes,
+        required=frozenset(
+            {
+                "participant_id",
+                "display_name",
+                "role",
+                "approved_product_executable",
+                "expected_metadata_revision",
+                "operator_reference",
+                "updated_at",
+            }
+        ),
+    )
+    _required_text(values, "operator_reference")
+    _validation_time(_required_text(values, "updated_at"), field_name="updated_at")
+    return snapshot.roster.update_metadata(
+        _required_text(values, "participant_id"),
+        display_name=_required_text(values, "display_name"),
+        role=_optional_text(values, "role"),
+        approved_product_executable=_optional_text(
+            values, "approved_product_executable"
+        ),
+        expected_revision=values.get("expected_metadata_revision"),
+    )
+
+
+def _participant_enrollment_proposed(
+    snapshot: StateSnapshot, attributes: Mapping[str, Any], exact_message: bytes | None
+) -> enrollment.EnrollmentProposal:
+    _require_no_message(exact_message)
+    required = frozenset(
+        {
+            "format",
+            "project_id",
+            "project_display_name",
+            "proposal_id",
+            "participant_id",
+            "common_name",
+            "display_name",
+            "role",
+            "vendor",
+            "session_id",
+            "session_label",
+            "session_kind",
+            "session_git_top_level",
+            "session_git_common_dir",
+            "discovery_source",
+            "proposed_at",
+            "execution_context",
+            "supersedes",
+            "proposal_sha256",
+        }
+    )
+    values = _attributes(attributes, required=required)
+    if values["format"] != enrollment.PROPOSAL_FORMAT:
+        raise StateError(
+            "state.event_attributes", "enrollment proposal format is unsupported"
+        )
+    raw_supersedes = values.get("supersedes")
+    if not isinstance(raw_supersedes, list) or not all(
+        isinstance(item, str) for item in raw_supersedes
+    ):
+        raise StateError(
+            "state.event_attributes", "proposal supersedes must be a string list"
+        )
+    proposal = enrollment.build_proposal(
+        project_id=values.get("project_id"),
+        project_display_name=values.get("project_display_name"),
+        proposal_id=values.get("proposal_id"),
+        participant_id=values.get("participant_id"),
+        common_name=values.get("common_name"),
+        display_name=values.get("display_name"),
+        role=values.get("role"),
+        vendor=values.get("vendor"),
+        session_id=values.get("session_id"),
+        session_label=values.get("session_label"),
+        session_kind=values.get("session_kind"),
+        session_git_top_level=values.get("session_git_top_level"),
+        session_git_common_dir=values.get("session_git_common_dir"),
+        discovery_source=values.get("discovery_source"),
+        proposed_at=values.get("proposed_at"),
+        execution_context=values.get("execution_context"),
+        supersedes=tuple(raw_supersedes),
+        expected_sha256=values.get("proposal_sha256"),
+    )
+    if proposal.project_id != snapshot.roster.project_id:
+        raise StateError(
+            "state.event_correlation", "proposal belongs to a different CAM project"
+        )
+    if proposal.participant_id in snapshot.roster.participants or any(
+        candidate.participant_id == proposal.participant_id
+        for candidate in snapshot.enrollment.proposals.values()
+    ):
+        raise CamUsageError(
+            "onboarding.participant_id_conflict",
+            "proposal participant identifier is already assigned",
+        )
+    if any(
+        candidate.common_name.casefold() == proposal.common_name.casefold()
+        or (
+            candidate.status != ParticipantStatus.RETIRED
+            and candidate.vendor == proposal.vendor
+            and candidate.binding is not None
+            and candidate.binding.session_id == proposal.session_id
+        )
+        for candidate in snapshot.roster.participants.values()
+    ):
+        raise CamUsageError(
+            "onboarding.participant_conflict",
+            "proposal conflicts with an active roster participant",
+        )
+    return snapshot.enrollment.add(proposal)
+
+
+def _participant_enrollment_confirmed(
+    snapshot: StateSnapshot, attributes: Mapping[str, Any], exact_message: bytes | None
+) -> Participant:
+    _require_no_message(exact_message)
+    values = _attributes(
+        attributes,
+        required=frozenset(
+            {
+                "proposal_id",
+                "expected_proposal_sha256",
+                "operator_reference",
+                "confirmed_at",
+            }
+        ),
+    )
+    working_enrollment = deepcopy(snapshot.enrollment)
+    confirmed = working_enrollment.confirm(
+        _required_text(values, "proposal_id"),
+        expected_sha256=_required_text(values, "expected_proposal_sha256"),
+        operator_reference=_required_text(values, "operator_reference"),
+        confirmed_at=_required_text(values, "confirmed_at"),
+    )
+    working_roster = deepcopy(snapshot.roster)
+    participant = working_roster.add(
+        participant_id=confirmed.participant_id,
+        common_name=confirmed.common_name,
+        display_name=confirmed.display_name,
+        role=confirmed.role,
+        vendor=confirmed.vendor,
+        approved_product_executable=(confirmed.execution_context.product_executable),
+    )
+    participant = working_roster.bind(
+        participant.participant_id,
+        session_id=confirmed.session_id,
+        session_label=confirmed.session_label,
+        session_kind=confirmed.session_kind,
+        operator_reference=_required_text(values, "operator_reference"),
+        bound_at=_required_text(values, "confirmed_at"),
+    )
+    if confirmed.vendor == "codex":
+        participant = working_roster.observe_route(
+            participant.participant_id,
+            transport="codex_queue",
+            address=confirmed.session_id,
+            source="operator_confirmed_enrollment",
+            observed_at=_required_text(values, "confirmed_at"),
+        )
+        participant = working_roster.confirm_route(
+            participant.participant_id,
+            expected_address=confirmed.session_id,
+            operator_reference=_required_text(values, "operator_reference"),
+            confirmed_at=_required_text(values, "confirmed_at"),
+        )
+    snapshot.roster = working_roster
+    snapshot.enrollment = working_enrollment
+    return participant
 
 
 def _participant_bind(
@@ -488,7 +685,7 @@ def _participant_bind(
     return snapshot.roster.bind(
         _required_text(values, "participant_id"),
         session_id=_required_text(values, "session_id"),
-        session_label=_required_text(values, "session_label"),
+        session_label=_optional_text(values, "session_label"),
         session_kind=_optional_text(values, "session_kind"),
         operator_reference=_required_text(values, "operator_reference"),
         bound_at=_required_text(values, "bound_at"),
@@ -729,6 +926,9 @@ def _lifecycle_expired_unconfirmed(
 _EVENT_APPLIERS = {
     PARTICIPANT_ADDED: _participant_add,
     PARTICIPANT_BOUND: _participant_bind,
+    PARTICIPANT_METADATA_UPDATED: _participant_metadata_updated,
+    PARTICIPANT_ENROLLMENT_PROPOSED: _participant_enrollment_proposed,
+    PARTICIPANT_ENROLLMENT_CONFIRMED: _participant_enrollment_confirmed,
     PARTICIPANT_ROUTE_OBSERVED: _participant_route_observed,
     PARTICIPANT_ROUTE_CONFIRMED: _participant_route_confirmed,
     PARTICIPANT_INVALIDATED: _participant_invalidated,
@@ -745,7 +945,7 @@ def _apply_event(
     event_type: str,
     attributes: Mapping[str, Any],
     exact_message: bytes | None,
-) -> Participant | LifecycleEntry:
+) -> Participant | enrollment.EnrollmentProposal | LifecycleEntry:
     applier = _EVENT_APPLIERS.get(event_type)
     if applier is None:
         raise _state_error("state.event_type", "state event type is unsupported")
@@ -798,6 +998,7 @@ def _empty_snapshot(project: ProjectBinding) -> StateSnapshot:
     return StateSnapshot(
         roster=ParticipantRoster(project.project_id),
         lifecycle=LifecycleProjection(project.project_id),
+        enrollment=enrollment.EnrollmentProjection(),
     )
 
 

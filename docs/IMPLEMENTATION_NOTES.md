@@ -1,26 +1,34 @@
 # CAM/1 implementation notes
 
+> **Audience:** maintainers and transport troubleshooters. These dated notes
+> are not required reading for first contact. New users should begin with
+> [START HERE](../START_HERE.md).
+
 - Status: non-normative compatibility notes
-- Reference snapshot: 2026-08-30
+- Reference snapshot: 2026-08-31
 
 These notes describe one tested same-host interoperability environment. They
 are not CAM/1 requirements or vendor commitments, and product behavior may
 change. Use current vendor documentation and fresh capability discovery before
 relying on a transport.
 
-The normative documents are [PROTOCOL.md](PROTOCOL.md) and
-[cam-1.schema.json](cam-1.schema.json). The supported operator path is the
-[first-contact runbook](docs/FIRST_CONTACT.md). Exact commands and
-troubleshooting are in the optional
-[detailed Codex-to-Claude procedure](docs/CODEX_TO_CLAUDE.md), and project-state
-details are in [the journal guide](docs/PROJECT_JOURNAL.md).
+The normative documents are [PROTOCOL.md](../PROTOCOL.md) and
+[cam-1.schema.json](../cam-1.schema.json). The supported operator path is the
+[START HERE runbook](../START_HERE.md). Its pasted prompts direct agents to
+the required sections of the [detailed Codex-to-Claude command
+reference](CODEX_TO_CLAUDE.md); that reference is optional reading for the
+human operator. Project-state details are in [the journal
+guide](PROJECT_JOURNAL.md).
 
 ## 1. Scope of the reference implementation
 
 The public tools are intentionally narrow:
 
+- The START HERE checkout search is a non-executing, prompt-driven bootstrap;
+  it is not a command imported from an untrusted candidate checkout.
 - `tools/cam1.py` builds and validates exact CAM/1 envelope bytes offline.
-- `tools/cam1_project.py` creates and verifies one Git-bound project journal.
+- `tools/cam1_project.py` creates and verifies one Git-bound project journal,
+  self-enrolls participants, and projects roster and lifecycle state.
 - `tools/cam1_transport.py` performs one local discovery or send operation and
   exits.
 - Claude Code owns Agent View, `ListAgents`, `SendMessage`, local message
@@ -38,13 +46,16 @@ does not deliver, wake, or instruct a session. The reference implementation
 stores it outside repositories and worktrees beneath `~/CAM/Journals`, with a
 private pointer in the Git common directory.
 
-The reference participant state records operator-bound stable sessions and
-separately journaled, tool-derived route observations. A uniquely correlated
-fresh Claude route does not require a human to approve its MCP short ref, which
-is not normally visible in `/status`. This does not add a cryptographic or
-mandatory challenge-based enrollment layer. The optional CAM challenge
-builders can record reachability evidence, but that evidence neither
-authenticates a peer nor authorizes work.
+The reference participant state records pending self-enrollment proposals,
+operator-bound stable sessions, and separately journaled tool-derived route
+observations. Each session proposes its own observable identity and displays
+one card; direct confirmation in that session atomically creates the roster
+participant and binding. A uniquely correlated fresh Claude route does not
+require a human to approve its MCP short ref, which is not normally visible in
+`/status`. Enrollment correlates project identity; it is not cryptographic
+authentication or work authorization. The optional CAM challenge builders can
+record reachability evidence, but that evidence likewise authenticates no peer
+and authorizes no work.
 
 ## 2. Reference environment
 
@@ -56,15 +67,17 @@ shapes:
 |---|---|---|
 | Codex CLI | `0.149.1` | local version and `codex queue --help` checks |
 | Claude Code live transport | `2.1.246` | local version, Agent View, MCP capability checks, and prior round trips |
-| Claude Code discovery fields | `2.1.251` | read-only Agent View JSON and MCP `ListAgents` capture plus synthetic fixtures; no live send |
+| Claude Code discovery and lifecycle | `2.1.251` | read-only Agent View and MCP `ListAgents` captures, synthetic fixtures, and one restored-interactive exchange; no background-session send |
 | MCP Python SDK | `2.1.1` | installed distribution and fake-server round trip |
 | MCP protocol selected with Claude | `2025-11-25` | local read-only MCP connection |
 | Python | `3.11` | local test run |
 
 The automated transport suite uses fake local Claude and Codex executables. Its
-2.1.251 compatibility cases reproduce captured field shapes but do not send a
-live cross-session message. CI covers Python 3.11 through 3.14 without requiring
-either vendor product.
+2.1.251 compatibility cases reproduce captured field shapes without invoking a
+vendor product. Separately, the project journal records a live exchange in both
+directions after one 2.1.251 session was restored to interactive mode. No send
+was attempted while that session was backgrounded. CI covers Python 3.11
+through 3.14 without requiring either vendor product.
 
 This snapshot does not establish behavior on native Windows, across accounts,
 in containers, through Remote Control, in cloud sessions, or between machines.
@@ -81,11 +94,15 @@ Two Claude Code discovery surfaces provide different evidence:
   route and peer activity, but not the full session UUID.
 
 The full session UUID shown by the target session's `/status` and Agent View is
-the stable identity used in the project roster and `reply_to.address`. A product
-name is mutable and may be shared. The MCP short ref is transient. A UDS peer
-address is product-internal correlation metadata and is never used by CAM/1.
-The operator confirms the full UUID and intended project-local name and role in
-the intended CAM project, using `/status` cwd as project-membership evidence.
+the stable binding key for one observed product-session incarnation and is used
+in the project roster and `reply_to.address`. It is not guaranteed to survive a
+product lifecycle conversion. A product name is mutable and may be shared. The
+MCP short ref is transient. A UDS peer address is product-internal correlation
+metadata and is never used by CAM/1.
+The operator confirms one card containing the full UUID, intended project-local
+name, intended CAM project, and absolute executable path. Role is optional,
+mutable descriptive metadata. Claude Agent View cwd supplies
+project-membership evidence.
 The exact cwd is not persisted as stable identity; every fresh discovery checks
 the live cwd independently. The helper, not the operator, resolves the short
 ref. When that stable binding maps uniquely through both discovery surfaces,
@@ -175,8 +192,8 @@ The external project directory contains:
 - `identity.json`, the project identity;
 - `journal.jsonl`, the append-only canonical history;
 - `transaction.lock`, the project mutation lock; and
-- `state-current.json`, the disposable atomic participant and lifecycle
-  projection once the journal contains state events.
+- `state-current.json`, the disposable atomic enrollment, participant, and
+  lifecycle projection once the journal contains state events.
 
 Each journal record stores exact optional message bytes as base64, links to the
 prior record digest, and is automatically stamped with worktree ID plus Git
@@ -275,8 +292,8 @@ The following events remain distinct:
 
 - journal append proves that local bytes and attributes were recorded;
 - fresh discovery proves that a current transport address was listed;
-- operator correlation maps that address to an intended human role and stable
-  session UUID;
+- operator correlation maps that address to an intended project-local identity
+  and stable session UUID; an optional role remains descriptive;
 - a send result proves only that a product transport accepted a call;
 - product delivery proves that content surfaced to a session;
 - a complete reply validated against the exact root proves application
@@ -309,9 +326,10 @@ conforming. Each lifecycle reply correlates to one root request.
 ### Discovery is not identity
 
 `ListAgents` alone supplied a name and short ref, not the operator-provided
-session UUID or human role. Conversely, the UUID shown by `/status` was not the
-literal MCP route. Fresh two-surface discovery plus an operator-bound stable
-identity keeps identity, human role, and route distinct.
+session UUID or project-local identity. Conversely, the UUID shown by `/status`
+was not the literal MCP route. Fresh two-surface discovery plus an
+operator-bound stable identity keeps identity, descriptive role, and route
+distinct.
 
 The live onboarding trial also showed that requiring the operator to approve
 the `ListAgents` ref creates an impossible check: Claude `/status` exposed the
@@ -322,6 +340,37 @@ in the journal so the actual send target is auditable. Ref churn alone does not
 trigger another prompt; ambiguity, UUID/project mismatch, a binding-generation
 change, or conflicting evidence does.
 
+The streamlined reference onboarding path journals a non-routable proposal
+before confirmation. It derives the session UUID from `CODEX_THREAD_ID` or
+`CLAUDE_CODE_SESSION_ID` when available; Claude also selects the exact UUID in
+fresh Agent View output. It presents a compact card containing stable identity,
+project identity, the proposed names and optional role, absolute product
+executable, CAM checkout, and validation-profile digest. The operator confirms
+the exact card directly in that session. The displayed 12-hex confirmation code
+is a digest-derived correlation aid, not authentication. Confirmation rechecks
+the current session, project, executable path, and validation profile, then
+appends one atomic enrollment event. Repeated identical proposals and
+confirmations are idempotent; changed pending proposals are retained as
+superseded history.
+
+Pending proposals do not reserve common names. The journal may therefore hold
+multiple unconfirmed cards proposing the same name; confirmation performs the
+roster check under the project transaction, and a conflict appends nothing.
+The session must prepare and directly confirm a fresh card rather than having
+the implementation mutate a card after human review.
+
+The confirmed roster stores the exact resolved product executable.
+Project-aware Claude preflight/send and Codex send reject a null or different
+roster path before product I/O and recheck it at the pre-dispatch transaction
+boundary. Legacy null paths remain replayable but require a directly confirmed
+metadata update before live use.
+
+The target may be an unborn `git init` repository; no initial application
+commit is needed. Project pointers remain below the Git common directory and
+the canonical journal remains below `~/CAM/Journals`, so onboarding creates no
+tracked or untracked application-worktree files. A CAM journal append is not a
+Git commit.
+
 Claude Code 2.1.251 field captures also showed that Agent View is not one row
 per logical session: a background lifecycle row with `id`/`state` and an
 interactive process row with `pid`/`status` can share a full `sessionId`. CAM
@@ -331,7 +380,39 @@ legacy `id`/`state` row be used. CAM never fills a selected row from companion
 evidence. An Agent View ID is validated when present and stays null when
 absent, while the PID is transient selection/refresh evidence and is never
 serialized or persisted. This behavior is covered by captured field evidence
-and synthetic fixtures; no live 2.1.251 send or round trip has been claimed.
+and synthetic fixtures.
+
+### Background-session lifecycle changed UUID, kind, label, and route
+
+One Claude Code 2.1.251 episode produced this journaled sequence. These are the
+actual roster generations; an initial field report omitted the pre-incident
+rename and therefore numbered the last three generations one too low.
+
+1. Generation 1 bound the original UUID and original product label.
+2. Generation 2 retained that UUID after an operator rename.
+3. Generation 3 followed accidental backgrounding, which exposed a new UUID,
+   Agent View kind `background`, and a new MCP ref.
+4. Generation 4 followed resume, retained the new UUID, returned to
+   `interactive`, and exposed an automatically reset product label and another
+   ref.
+5. Generation 5 followed an operator rename back to the intended label. Fresh
+   two-surface discovery produced a tool-correlated route, after which traffic
+   was accepted and ingested in both directions.
+
+The background capture contained `id`, `pid`, `state`, and `status` together,
+which is another valid heterogeneous Agent View shape. For the same session,
+MCP `ListAgents` abbreviated the kind as `bg`. The current reference parser
+does not recognize that abbreviation and therefore fails closed with no route;
+it must not be described as background-session support. A future compatibility
+change may normalize the narrowly observed `bg` spelling to `background` while
+retaining the raw value and all UUID, project, uniqueness, activity, and
+nonlocal-marker checks.
+
+This is one operator-observed lifecycle on one product version, not a vendor
+contract. It does not establish that backgrounding always replaces a UUID,
+that resume always preserves one, or that `SendMessage` delivers to a
+background session. The successful live exchange occurred only after the
+session returned to interactive mode.
 
 ### A successful send does not keep correspondence alive
 

@@ -1,6 +1,11 @@
 # Detailed Codex-to-Claude Code procedure
 
-Start with the short [first-contact runbook](FIRST_CONTACT.md), which contains
+> **Audience:** agents following the sections named by START HERE, plus human
+> operators who need advanced commands, reverse-direction messaging, or
+> troubleshooting. It is optional reading for the human first-contact flow;
+> human operators should begin with [START HERE](../START_HERE.md).
+
+Start with the short [first-contact runbook](../START_HERE.md), which contains
 the only canonical copyable prompts for a harmless Codex-to-Claude hello and
 ACK. This longer guide supplies exact commands, reverse-direction examples,
 and troubleshooting. It is non-normative; [PROTOCOL.md](../PROTOCOL.md) and
@@ -51,21 +56,29 @@ separately authorized work and a completion result
 A transport receipt proves only that the product accepted a send. It does not
 prove delivery, handling, authorization, or completion.
 
-## 2. Gather operator-confirmed values
+## 2. Resolve checkout, project, and roster values
 
-Replace every uppercase placeholder in this guide with a literal value before
-running a command or pasting a prompt. Do not expect variables from one
-session to expand in another session.
+The canonical [START HERE prompts](../START_HERE.md) discover the checkout and
+project instead of asking the human to edit placeholders. They call the
+human-selected source checkout `CLONED_CAM_REPO_LOCATION` and use the session's
+current Git worktree as the default project root.
+
+The uppercase tokens in the advanced command examples below are
+agent-resolved metavariables. Obtain their literal values from the confirmed
+checkout card, current project status, roster, and enrollment identity cards
+before execution. Never run a placeholder literally, and do not expect a
+variable from one session to expand in another session.
 
 Obtain:
 
-- `CAM_CHECKOUT`: the absolute path to this trusted CAM/1 clone;
-- `PROJECT_ROOT`: the absolute path to the Git project whose sessions will
-  communicate;
+- `CAM_CHECKOUT`: the absolute path confirmed as
+  `CLONED_CAM_REPO_LOCATION` during START HERE checkout discovery;
+- `PROJECT_ROOT`: the canonical Git top-level resolved from the session's
+  current working directory, or an explicit advanced override;
 - `CODEX_SESSION_UUID`: the full current Codex thread UUID;
 - `CLAUDE_SESSION_UUID`: the full UUID shown by `/status` in the target Claude
   Code session;
-- stable project-local common names, such as `coordinator` and `reviewer`;
+- the confirmed project-local common names from onboarding status;
 - the current human-readable session labels and project roles;
 - operator confirmation that binds the Claude UUID and intended project-local
   name and role to this CAM project after checking that `/status` cwd belongs
@@ -86,9 +99,12 @@ The operator must confirm the resulting literal full UUID. If it is empty or
 ambiguous, use operator-trusted current session metadata; never guess or ask a
 different session to expand `$CODEX_THREAD_ID`.
 
-The Claude full session UUID is stable for the life of that session, but it is
-not the address accepted by `SendMessage`. Before every Claude send, the CAM
-helper correlates the UUID through fresh `claude agents --json` and MCP
+The Claude full session UUID is the stable binding key for one product-session
+incarnation, but it is not the address accepted by `SendMessage`. One Claude
+Code 2.1.251 episode replaced that UUID when an interactive session became a
+background job; do not assume a conversation keeps one UUID through every
+product lifecycle transition. Before every Claude send, the CAM helper
+correlates the bound UUID through fresh `claude agents --json` and MCP
 `ListAgents` results. The resulting `name [ref]` is a transient route, not
 identity. A human-readable session name alone is insufficient. The MCP short
 ref is normally not shown by `/status` or another operator-visible identity
@@ -118,18 +134,34 @@ python3 -m venv .venv
 .venv/bin/python tools/cam1.py validation-profile
 .venv/bin/python tools/cam1_project.py --help
 .venv/bin/python tools/cam1_transport.py --help
-.venv/bin/python tools/cam1_transport.py doctor
 ```
 
 If `python3` is outside the supported range, use an installed compatible
 interpreter such as `python3.12`. The tests must finish with `OK`.
 
-`doctor` may resolve the current `PATH` for diagnosis. That discovery run
+Run candidate discovery separately:
+
+```bash
+.venv/bin/python tools/cam1_transport.py doctor
+```
+
+This first invocation is expected to exit nonzero. It may resolve the current
+`PATH` for diagnosis and executes bounded read-only version and capability
+probes against the resulting candidates. It
 reports `"prerequisites_ok":true`, exact candidates under `checks`, and
 copy/paste-safe `live_path_configuration.copy_paste_flags`, but remains
 `"ok":false` until both paths are supplied explicitly. The operator must
 inspect and approve those absolute paths, then rerun `doctor` with the reported
-global flags; only that run may report `"ok":true`. Pass the approved Claude
+global flags, for example:
+
+```bash
+.venv/bin/python tools/cam1_transport.py \
+  --codex-bin "/REVIEWED/ABSOLUTE/PATH/TO/CODEX" \
+  --claude-bin "/REVIEWED/ABSOLUTE/PATH/TO/CLAUDE" \
+  doctor
+```
+
+Only that run may report `"ok":true`. Pass the approved Claude
 path explicitly to every live
 `claude-list`, `claude-preflight`, and `claude-send` call, and the approved
 Codex path explicitly to every live `codex-send` call. A `PATH` lookup is not
@@ -144,8 +176,9 @@ comparisons, index flag state, plus Python and validation-library versions as
 separate fields. Public facades ignore adjacent cached bytecode while loading
 audited modules. Live use requires a concrete HEAD and rejects profile paths
 missing from either HEAD or the working tree, non-regular blobs, and
-assume-unchanged, skip-worktree, or sparse index state. Ordinary `doctor` and
-live sends require a clean CAM checkout. Do not tell another participant to
+assume-unchanged, skip-worktree, or sparse index state. Self-enrollment,
+ordinary `doctor`, and live sends require a clean CAM checkout; self-enrollment
+has no dirty-source override. Do not tell another participant to
 validate "at" a commit when the reported checkout is dirty: the commit does
 not identify the uncommitted rules that actually ran. Both successful and
 rejected offline validations report the profile that produced their verdict.
@@ -282,80 +315,184 @@ boundary. Never retype fields, reconstruct UUIDs, or pass the envelope through
 shell interpolation. In either form, a nonzero result means stop without
 repairing the peer envelope.
 
-## 5. Create the participant roster
+## 5. Self-enroll the participant roster
 
-The roster is the project's address book. A common name is the stable local
-name humans and agents use. A display name is a human-readable label; it is not
-the project name, session identity, or live route.
+The roster is the project's address book. A common name is its stable
+project-local address. A display name and optional role are human-readable,
+mutable descriptions; neither is the project name, session identity, live
+route, or authority.
 
-Add and bind the Codex participant:
+Run enrollment from each actual participating session, with that session's cwd
+inside the target Git project. Claude prepares first in the canonical quick
+start:
 
 ```bash
 "/ABSOLUTE/PATH/TO/CAM_CHECKOUT/.venv/bin/python" \
   "/ABSOLUTE/PATH/TO/CAM_CHECKOUT/tools/cam1_project.py" \
   --project-root "/ABSOLUTE/PATH/TO/PROJECT_ROOT" \
-  participant add \
-  --common-name coordinator \
-  --display-name "Project coordinator" \
-  --role "coordination" \
-  --vendor codex
+  onboarding prepare --vendor claude-code
+```
 
+Codex prepares from its own session:
+
+```bash
+"/ABSOLUTE/PATH/TO/CAM_CHECKOUT/.venv/bin/python" \
+  "/ABSOLUTE/PATH/TO/CAM_CHECKOUT/tools/cam1_project.py" \
+  --project-root "/ABSOLUTE/PATH/TO/PROJECT_ROOT" \
+  onboarding prepare --vendor codex
+```
+
+Each command discovers its own full UUID from product session metadata when
+available, verifies Git-project membership, resolves an absolute product
+executable candidate, journals a new pending proposal or reuses the identical
+pending proposal, and prints one identity card. For Claude it also selects that
+exact full UUID in fresh Agent View output. Supply `--session-id FULL_UUID`
+only when the current product does not
+expose its UUID to the running agent. Optional `--common-name`,
+`--display-name`, `--role`, and absolute `--product-bin` arguments replace
+proposed values; do not invent missing metadata.
+
+The pending proposal is not a participant and cannot be addressed. The agent
+shows the complete `human_card` once and stops. The operator checks the stable
+full UUID, project UUID/root, project-local name, product metadata, CAM
+checkout/profile, and executable path, then returns the card's exact response
+directly in that same session. The card never asks the operator to recognize a
+PID, UDS, or transient MCP short ref.
+
+After receiving the exact response, that same agent confirms the displayed
+proposal without retyping its fields:
+
+```bash
+"/ABSOLUTE/PATH/TO/CAM_CHECKOUT/.venv/bin/python" \
+  "/ABSOLUTE/PATH/TO/CAM_CHECKOUT/tools/cam1_project.py" \
+  --project-root "/ABSOLUTE/PATH/TO/PROJECT_ROOT" \
+  onboarding confirm \
+  --proposal-id "PROPOSAL_UUID_FROM_CARD" \
+  --confirmation-code "CONFIRMATION_CODE_FROM_CARD" \
+  --operator-reference "Direct confirmation of the displayed card in this session"
+```
+
+The confirmation code correlates the human response to the exact proposal; it
+is not authentication, a signature, or permission for peer work. Confirmation
+rechecks the current session, project, executable, and CAM profile, then
+atomically creates the participant and binding. Codex also receives its stable
+UUID-backed `codex_queue` route. Claude has no send route until fresh
+preflight. Identical prepare and confirm calls are idempotent; a changed
+proposal supersedes the old pending card without deleting it.
+
+A pending card does not reserve its common name. If another participant takes
+the name before confirmation, confirmation appends nothing and the session
+must prepare, display, and receive direct confirmation for a fresh card. Never
+silently rename a card after the operator reviewed it.
+
+Inspect the shared roster after both sessions report `enrolled` or
+`already_confirmed`:
+
+```bash
+"/ABSOLUTE/PATH/TO/CAM_CHECKOUT/.venv/bin/python" \
+  "/ABSOLUTE/PATH/TO/CAM_CHECKOUT/tools/cam1_project.py" \
+  --project-root "/ABSOLUTE/PATH/TO/PROJECT_ROOT" \
+  onboarding status --show-identifiers
+```
+
+The status includes the operator-reviewed absolute executable for each
+participant. Use those literal paths in the transport commands below. Routine
+views should omit `--show-identifiers` to redact routing capabilities.
+
+Normal first contact uses self-enrollment. Low-level `participant add` and
+`participant bind` remain administrative primitives for migration and repair;
+they MUST NOT be used to bypass the one-card direct-confirmation flow. Use
+`participant invalidate` if a binding becomes questionable and `participant
+retire` when a session leaves; both preserve history. Use `participant
+update-metadata` with the current metadata revision and direct operator
+reference to change a display name, optional role, or executable path without
+changing identity. A stale participant cannot be revived by fresh route
+discovery; it requires direct operator review and an explicit rebind first.
+
+### Replacing an enrolled session
+
+A replacement session is not ordinary first-time enrollment. Ordinary
+onboarding never rebinds an existing participant: an explicitly occupied
+common name is rejected, while an omitted name may produce a suffixed new
+participant. Retiring the old participant permanently prevents that common
+name from being reused. First decide which of these two cases applies:
+
+- If the new session uses the same product vendor and continues the same
+  project-local identity and role, rebind that participant as described below.
+  This is the usual restart or replacement case.
+- If it is a genuinely different participant, use the normal enrollment flow
+  with a new common name. Retire the old participant only if it has actually
+  left the project; a retired identity cannot be rebound or reused.
+
+For a same-participant replacement, start the new session inside the existing
+Git project. Have it inspect itself without changing CAM state:
+
+```bash
+"/ABSOLUTE/PATH/TO/CAM_CHECKOUT/.venv/bin/python" \
+  "/ABSOLUTE/PATH/TO/CAM_CHECKOUT/tools/cam1_project.py" \
+  --project-root "/ABSOLUTE/PATH/TO/PROJECT_ROOT" \
+  onboarding inspect-self \
+  --vendor codex \
+  --common-name EXISTING_COMMON_NAME
+```
+
+Use `--vendor claude-code` for Claude. The operator reviews the reported
+project, existing common name, full new session UUID, product label and kind,
+product executable, CAM checkout, and validation profile directly in that new
+session. `inspect-self` is read-only: it neither reserves the name nor changes
+the roster.
+
+After that exact inspection is directly confirmed, rebind the existing
+participant. For Codex:
+
+```bash
 "/ABSOLUTE/PATH/TO/CAM_CHECKOUT/.venv/bin/python" \
   "/ABSOLUTE/PATH/TO/CAM_CHECKOUT/tools/cam1_project.py" \
   --project-root "/ABSOLUTE/PATH/TO/PROJECT_ROOT" \
   participant bind \
-  --participant coordinator \
-  --session-id "FULL_CODEX_SESSION_UUID" \
-  --session-label "CURRENT_CODEX_SESSION_LABEL" \
-  --session-kind interactive \
-  --operator-reference "HOW_THE_OPERATOR_CONFIRMED_THIS_SESSION"
+  --participant EXISTING_COMMON_NAME \
+  --session-id FULL_NEW_CODEX_THREAD_UUID \
+  --operator-reference "Direct confirmation of the replacement inspection in this session"
 ```
 
-Add and bind the Claude Code participant:
+For Claude, also pass the exact product-visible label and kind from the
+inspection:
 
 ```bash
-"/ABSOLUTE/PATH/TO/CAM_CHECKOUT/.venv/bin/python" \
-  "/ABSOLUTE/PATH/TO/CAM_CHECKOUT/tools/cam1_project.py" \
-  --project-root "/ABSOLUTE/PATH/TO/PROJECT_ROOT" \
-  participant add \
-  --common-name reviewer \
-  --display-name "Example reviewer" \
-  --role "code review" \
-  --vendor claude-code
-
 "/ABSOLUTE/PATH/TO/CAM_CHECKOUT/.venv/bin/python" \
   "/ABSOLUTE/PATH/TO/CAM_CHECKOUT/tools/cam1_project.py" \
   --project-root "/ABSOLUTE/PATH/TO/PROJECT_ROOT" \
   participant bind \
-  --participant reviewer \
-  --session-id "FULL_CLAUDE_SESSION_UUID" \
-  --session-label "CURRENT_CLAUDE_SESSION_NAME_FROM_STATUS" \
-  --session-kind interactive \
-  --operator-reference "HOW_THE_OPERATOR_CONFIRMED_CLAUDE_STATUS"
+  --participant EXISTING_COMMON_NAME \
+  --session-id FULL_NEW_CLAUDE_SESSION_UUID \
+  --session-label "EXACT_CURRENT_SESSION_LABEL" \
+  --session-kind "EXACT_CURRENT_SESSION_KIND" \
+  --operator-reference "Direct confirmation of the replacement inspection in this session"
 ```
 
-Expected statuses are `"added"` and `"bound"`. Binding Codex also records and
-operator-correlates its full UUID as its `codex_queue` route. Binding Claude
-does not guess a `SendMessage` route.
+Use the unchanged values from that exact inspection promptly. The low-level
+bind command does not repeat the inspection or cryptographically bind the
+operator's response to it; if the session, project, label, kind, executable, or
+CAM profile changes, inspect again and obtain a new direct confirmation. The
+bind appends a new binding generation and discards the prior live route; it
+does not rewrite the old binding. Codex receives its UUID-backed queue route as
+part of the bind. Claude must complete a fresh project-aware preflight before
+another send. If the inspected product executable differs from the
+participant's approved executable, stop and use the separately confirmed
+`participant update-metadata` procedure before live transport.
 
-Routine roster output redacts routing capabilities. Use the identifying view
-only for an explicit local operator check:
+If the former binding is questionable and the replacement will not be rebound
+immediately, first run `participant invalidate --participant
+EXISTING_COMMON_NAME --reason "..."`. Invalidation fails closed while retaining
+history; the later directly confirmed bind restores the participant with a new
+generation. Never reuse a previous Claude short ref or route after a rebind.
 
-```bash
-"/ABSOLUTE/PATH/TO/CAM_CHECKOUT/.venv/bin/python" \
-  "/ABSOLUTE/PATH/TO/CAM_CHECKOUT/tools/cam1_project.py" \
-  --project-root "/ABSOLUTE/PATH/TO/PROJECT_ROOT" \
-  participant list
-
-"/ABSOLUTE/PATH/TO/CAM_CHECKOUT/.venv/bin/python" \
-  "/ABSOLUTE/PATH/TO/CAM_CHECKOUT/tools/cam1_project.py" \
-  --project-root "/ABSOLUTE/PATH/TO/PROJECT_ROOT" \
-  participant list --show-identifiers
-```
-
-Do not rerun `participant add` for an existing name. Use
-`participant invalidate` if a binding becomes questionable and
-`participant retire` when a role ends; both preserve history.
+Legacy participants may replay with `approved_product_executable: null`. They
+remain unavailable for live preflight or send until a directly confirmed
+`participant update-metadata --product-bin` event records the reviewed absolute
+path. Do not re-add or rebind the participant. Project-aware transport compares
+its resolved CLI executable with that roster value and fails before product I/O
+when it is absent or different.
 
 The audited live sender checks both ends of every envelope. Its
 `claimed_sender` and selected `recipient` must each match an active bound
@@ -376,7 +513,7 @@ executable. The optional full-session guard catches a mistyped roster target:
   --project-root "/ABSOLUTE/PATH/TO/PROJECT_ROOT" \
   --claude-bin "/OPERATOR/APPROVED/ABSOLUTE/PATH/TO/CLAUDE" \
   claude-preflight \
-  --participant reviewer \
+  --participant COMMON_CLAUDE_NAME \
   --session-id "FULL_CLAUDE_SESSION_UUID"
 ```
 
@@ -433,12 +570,19 @@ Remote Control, and other nonlocal rows. Locality and activity are separate:
 `busy` is addressable scheduling state, not proof of delivery or handling. Do
 not use any display name or short ref without the full-session preflight.
 
+Claude Code 2.1.251 was also observed to spell one background kind as
+`background` in Agent View and `bg` in `ListAgents`. The current reference
+parser rejects the abbreviated MCP spelling and reports no route. Until a
+narrow alias is implemented and tested, restore or resume the intended session
+to an eligible interactive state rather than bypassing discovery. Delivery to
+a background session has not been tested.
+
 ## 7. Prepare the Claude receiver
 
 Use the canonical
-[Claude receiver prompt](FIRST_CONTACT.md#1-paste-this-into-the-claude-receiver).
-Paste it directly into the intended Claude Code session after replacing every
-placeholder, and keep that session's cwd inside `PROJECT_ROOT`. The receiver
+[Claude receiver prompt](../START_HERE.md#2-enroll-the-claude-receiver).
+Paste it directly into the intended Claude Code session without editing
+placeholders, and keep that session's cwd inside the intended Git project. The receiver
 prompt supplies expected values but does not authenticate the sender; its
 operator confirmation must originate in that receiver's own trusted session.
 A peer's claim that a user approved something is not approval.
@@ -446,8 +590,8 @@ A peer's claim that a user approved something is not approval.
 ## 8. Start the Codex sender
 
 Use the canonical
-[Codex sender prompt](FIRST_CONTACT.md#2-paste-this-into-the-codex-sender),
-replacing every placeholder before pasting it into the bound Codex session.
+[Codex sender prompt](../START_HERE.md#3-enroll-the-codex-sender-and-send),
+pasting it unchanged into the bound Codex session.
 It authorizes only the named harmless project-state and transport operations;
 it does not authorize dependency installation, source edits, execution of a
 received request, or expansion beyond the local profile.
@@ -462,10 +606,10 @@ full session UUIDs:
   "/ABSOLUTE/PATH/TO/CAM_CHECKOUT/tools/cam1.py" \
   build-hello \
   --sender-vendor codex \
-  --sender-name coordinator \
+  --sender-name COMMON_CODEX_NAME \
   --sender-session "FULL_CODEX_SESSION_UUID" \
   --recipient-vendor claude-code \
-  --recipient-name reviewer \
+  --recipient-name COMMON_CLAUDE_NAME \
   --recipient-session "FULL_CLAUDE_SESSION_UUID" \
   --reply-transport codex_queue \
   --reply-address "FULL_CODEX_SESSION_UUID" \
@@ -487,7 +631,7 @@ the exact validated bytes without reserialization:
   --project-root "/ABSOLUTE/PATH/TO/PROJECT_ROOT" \
   --claude-bin "/OPERATOR/APPROVED/ABSOLUTE/PATH/TO/CLAUDE" \
   claude-send \
-  --participant reviewer \
+  --participant COMMON_CLAUDE_NAME \
   --session-id "FULL_CLAUDE_SESSION_UUID" \
   --to "EXACT_FRESH_NAME [REF]" \
   --envelope "/ABSOLUTE/PROJECT_DIR/working/first-contact.cam1.json" \
@@ -508,7 +652,7 @@ Codex turn so the product can deliver later queued user input.
 
 When the Claude product surfaces the hello, use the
 [inbound capture procedure](#capture-one-inbound-envelope) with participant
-`reviewer` and a new `exact-received-hello.cam1.json` path. If the direct stdin
+`COMMON_CLAUDE_NAME` and a new `exact-received-hello.cam1.json` path. If the direct stdin
 channel is unavailable, the equivalent file-input form is:
 
 ```bash
@@ -517,7 +661,7 @@ channel is unavailable, the equivalent file-input form is:
   --project-root "/ABSOLUTE/PATH/TO/PROJECT_ROOT" \
   message ingest \
   --message "/ABSOLUTE/PROJECT_DIR/working/exact-received-hello.cam1.json" \
-  --as-participant reviewer
+  --as-participant COMMON_CLAUDE_NAME
 ```
 
 The command first appends `message.inbound.observed` with the exact bytes. On
@@ -540,7 +684,7 @@ complete received ACK:
   build-ack \
   --request "/ABSOLUTE/PROJECT_DIR/working/exact-received-hello.cam1.json" \
   --sender-vendor claude-code \
-  --sender-name reviewer \
+  --sender-name COMMON_CLAUDE_NAME \
   --sender-session "FULL_CLAUDE_SESSION_UUID" \
   --reply-transport claude_send_message \
   --reply-address "FULL_CLAUDE_SESSION_UUID" \
@@ -567,7 +711,7 @@ Return the ACK through the root's stable callback:
   --project-root "/ABSOLUTE/PATH/TO/PROJECT_ROOT" \
   --codex-bin "/OPERATOR/APPROVED/ABSOLUTE/PATH/TO/CODEX" \
   codex-send \
-  --participant coordinator \
+  --participant COMMON_CODEX_NAME \
   --thread "FULL_CODEX_SESSION_UUID" \
   --envelope "/ABSOLUTE/PROJECT_DIR/working/hello-ack.cam1.json" \
   --against "/ABSOLUTE/PROJECT_DIR/working/exact-received-hello.cam1.json"
@@ -585,7 +729,7 @@ rather than hold a long tool-running turn or poll internal product storage.
 
 When Codex surfaces the callback, use the
 [inbound capture procedure](#capture-one-inbound-envelope) with participant
-`coordinator` and a new `exact-delivered-ack.cam1.json` path. If the direct
+`COMMON_CODEX_NAME` and a new `exact-delivered-ack.cam1.json` path. If the direct
 stdin channel is unavailable, the equivalent file-input form is:
 
 ```bash
@@ -594,7 +738,7 @@ stdin channel is unavailable, the equivalent file-input form is:
   --project-root "/ABSOLUTE/PATH/TO/PROJECT_ROOT" \
   message ingest \
   --message "/ABSOLUTE/PROJECT_DIR/working/exact-delivered-ack.cam1.json" \
-  --as-participant coordinator
+  --as-participant COMMON_CODEX_NAME
 ```
 
 Successful ingestion establishes that the exact callback is valid and legal
@@ -666,10 +810,10 @@ The Claude originator can build and send its root with:
   "/ABSOLUTE/PATH/TO/CAM_CHECKOUT/tools/cam1.py" \
   build-request \
   --sender-vendor claude-code \
-  --sender-name reviewer \
+  --sender-name COMMON_CLAUDE_NAME \
   --sender-session "FULL_CLAUDE_SESSION_UUID" \
   --recipient-vendor codex \
-  --recipient-name coordinator \
+  --recipient-name COMMON_CODEX_NAME \
   --recipient-session "FULL_CODEX_SESSION_UUID" \
   --reply-transport claude_send_message \
   --reply-address "FULL_CLAUDE_SESSION_UUID" \
@@ -690,7 +834,7 @@ The Claude originator can build and send its root with:
   --project-root "/ABSOLUTE/PATH/TO/PROJECT_ROOT" \
   --codex-bin "/OPERATOR/APPROVED/ABSOLUTE/PATH/TO/CODEX" \
   codex-send \
-  --participant coordinator \
+  --participant COMMON_CODEX_NAME \
   --thread "FULL_CODEX_SESSION_UUID" \
   --envelope "/ABSOLUTE/PROJECT_DIR/working/claude-originated-request.cam1.json"
 ```
@@ -703,14 +847,14 @@ When Codex surfaces the exact request, it ingests and builds the reply:
   --project-root "/ABSOLUTE/PATH/TO/PROJECT_ROOT" \
   message ingest \
   --message "/ABSOLUTE/PROJECT_DIR/working/exact-received-claude-request.cam1.json" \
-  --as-participant coordinator
+  --as-participant COMMON_CODEX_NAME
 
 "/ABSOLUTE/PATH/TO/CAM_CHECKOUT/.venv/bin/python" \
   "/ABSOLUTE/PATH/TO/CAM_CHECKOUT/tools/cam1_transport.py" \
   --project-root "/ABSOLUTE/PATH/TO/PROJECT_ROOT" \
   --claude-bin "/OPERATOR/APPROVED/ABSOLUTE/PATH/TO/CLAUDE" \
   claude-preflight \
-  --participant reviewer \
+  --participant COMMON_CLAUDE_NAME \
   --session-id "FULL_CLAUDE_SESSION_UUID"
 ```
 
@@ -727,7 +871,7 @@ guessed name. Once the unique route is recorded, continue:
   build-ack \
   --request "/ABSOLUTE/PROJECT_DIR/working/exact-received-claude-request.cam1.json" \
   --sender-vendor codex \
-  --sender-name coordinator \
+  --sender-name COMMON_CODEX_NAME \
   --sender-session "FULL_CODEX_SESSION_UUID" \
   --reply-transport codex_queue \
   --reply-address "FULL_CODEX_SESSION_UUID" \
@@ -744,7 +888,7 @@ guessed name. Once the unique route is recorded, continue:
   --project-root "/ABSOLUTE/PATH/TO/PROJECT_ROOT" \
   --claude-bin "/OPERATOR/APPROVED/ABSOLUTE/PATH/TO/CLAUDE" \
   claude-send \
-  --participant reviewer \
+  --participant COMMON_CLAUDE_NAME \
   --session-id "FULL_CLAUDE_SESSION_UUID" \
   --to "EXACT_FRESH_NAME [REF]" \
   --envelope "/ABSOLUTE/PROJECT_DIR/working/claude-request-ack.cam1.json" \
@@ -845,6 +989,13 @@ Operational recovery rules:
   changed:** stop and resolve the stable binding or project mismatch with the
   operator. Ref-only churn is normal and is handled by fresh tool correlation;
   never ask the operator to approve an unobservable short ref.
+- **A session was backgrounded, resumed, or renamed:** run fresh preflight. If
+  the full UUID changed, directly enroll or rebind that new incarnation. If the
+  UUID is unchanged but the product kind or label changed, directly confirm a
+  metadata rebind. Never reuse an earlier ref. In one 2.1.251 observation,
+  backgrounding replaced the UUID, resume preserved the replacement UUID but
+  reset the kind and label, and rename restored the label; this is recovery
+  guidance from one case, not a product guarantee.
 - **Agent View repeats the full UUID:** a background and one process-backed
   representation can describe one session. CAM selects the process-backed row
   without borrowing companion fields. More than one process-backed row, more

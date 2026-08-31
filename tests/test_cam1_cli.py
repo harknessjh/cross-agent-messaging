@@ -31,7 +31,7 @@ CLI_SUBPROCESS_TIMEOUT_SECONDS = 10
 class CamPublicSurfaceTests(unittest.TestCase):
     def test_protocol_examples_equal_checked_fixtures(self) -> None:
         protocol = (ROOT / "PROTOCOL.md").read_text(encoding="utf-8")
-        section = protocol.split("## 20. Minimal first-contact example", 1)[1]
+        section = protocol.split("## 20. Minimal wire-envelope example", 1)[1]
         fence = chr(96) * 3
         pattern = re.escape(fence + "json\n") + r"(\{.*?\})\n" + re.escape(fence)
         blocks = re.findall(pattern, section, flags=re.DOTALL)
