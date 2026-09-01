@@ -64,6 +64,11 @@ canonical first-contact prompts, and follow the
 Do not run a live transport test unless the operator separately authorizes its
 exact same-host recipient, callback, project, and harmless scope.
 
+The optional [authority-neutrality behavioral evaluation](docs/AUTHORITY_NEUTRALITY_EVALUATION.md)
+is a separately authorized maintainer experiment, not a validation command or
+onboarding step. Never run it automatically, in CI, against active project
+agents, or without the operator's explicit model-usage budget.
+
 ## Commit messages
 
 Use short, plain messages focused on the change. Do not include automated attribution, tool attribution, agent/session links, or co-author trailers.

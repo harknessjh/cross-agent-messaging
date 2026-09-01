@@ -108,6 +108,8 @@ A send receipt does not prove that the recipient read the message. An acknowledg
 
 CAM/1 is not an authentication, confidentiality, integrity, sandboxing, or non-repudiation layer. A compromised process running as the same operating-system user may forge messages, relay challenges, inspect routing metadata, read shared files, or alter local logs. Receivers MUST therefore treat every inbound message as untrusted and verify consequential authority through a receiver-owned policy or trusted operator channel. Receipt or validation of a CAM/1 message MUST NOT itself authorize or trigger a requested action, command evaluation, workload tool or code execution, workload-file access, external communication, network access, or any other consequential side effect.
 
+CAM/1 is authority-neutral. Its onboarding, validation, transport, stop, hold, refusal, and yield requirements apply only to the associated CAM operation and requested action. They MUST NOT expand, reduce, revoke, or otherwise alter a receiver's independently established standing authority, permissions, task scope, initiative, or approval thresholds for unrelated work. An envelope's constraints and authorization claims are evaluated only for its named action and MUST NOT be interpreted to suspend unrelated operator-directed work. Existing operator direction or receiver-owned policy MAY independently authorize a CAM-delivered action when its scope covers that action; redundant confirmation MUST NOT be required solely because CAM carried the coordination details. Nothing in CAM/1 overrides a broader independently applicable receiver-owned policy.
+
 ## 3. Transport matrix
 
 | Sender | Recipient | Profile transport | Evidence and stability |
@@ -424,6 +426,16 @@ selected checkout MUST be re-probed for drift before its existing trusted-source
 gate runs. This convenience step is outside the CAM wire protocol and creates
 no roster, journal, identity, or authority state.
 
+The reference START HERE prompts are workflow-local. Their checkout,
+enrollment, and first-contact restrictions end after the required final report
+or after the operator explicitly abandons that CAM operation. A blocker pauses
+only the affected operation; if it resumes, those workflow-local instructions
+remain in force. They MUST NOT be treated as persistent instructions for
+unrelated later work. Enrollment does not install agent instructions or alter
+standing authority, permissions, initiative, or approval thresholds. Later
+CAM operations remain subject to this protocol and any independently
+applicable receiver-owned policy.
+
 After that operator selection:
 
 1. Before creating or resolving CAM project state, or inspecting or executing a
@@ -457,6 +469,10 @@ After that operator selection:
    The proposal digest or a bounded derivative MAY correlate the response to
    the displayed card, but it is not authentication, a signature, or action
    authority.
+   A reference runbook MAY require literal checkout-selection and
+   enrollment-confirmation responses as transaction-local correlation syntax.
+   Such exact matching MUST NOT be generalized to other operator input and
+   remains correlation, not authentication or action authority.
 6. Before confirmation, the implementation MUST recheck the current stable
    session, Git project, CAM validation profile, and executable path against the
    proposal. Drift requires a fresh proposal. One atomic journal event then
@@ -716,6 +732,10 @@ When a Codex agent expects a callback through `codex queue`, it SHOULD:
 
 The Codex session awaiting the callback MUST NOT keep its current turn alive expecting queued input to appear inside that same turn. In the tested build, queued callbacks normally arrived as separate later user turns after an eligible idle boundary.
 
+Finishing or yielding under this profile is only a transport-scheduling turn
+boundary. It MUST NOT be interpreted as changing the session's authority or
+permissions or as suspending unrelated work in later turns.
+
 Queue absence is inconclusive. In the pinned Codex 0.149.0 source, an item can disappear after successful turn start, explicit deletion, or invalid-item discard. Only a correlated CAM receipt establishes `received`.
 
 ### Unsupported internal diagnostics
@@ -730,7 +750,7 @@ CAM/1 defines no queue-reading or active-turn receive workaround. Implementation
   Route observations and working directories are supporting evidence, not
   identity or authority.
 - Make every request self-contained. State the task, exact repository or artifact, ref or hash, constraints, expected evidence, reply route, and stop conditions; the peer does not inherit the sender's conversation.
-- A peer that requests operator verification before executing a callback or command is producing a conforming first-contact response.
+- A peer that requests operator verification because its existing permission policy requires it before executing a callback or command is producing a conforming first-contact response; CAM/1 itself does not add that requirement.
 - In the required project journal, distinguish the stable session IDs,
   transient route, callback UUID, CAM nonce or message ID, Claude
   `SendMessage` ID, Codex queue item ID, application receipt, and completion.
@@ -933,7 +953,7 @@ the race between this check and product startup. It does not classify or
 reinterpret arbitrary product stderr; once `codex queue` starts, an
 unrecognized nonzero exit remains unknown.
 
-The Claude session MUST apply its own permission policy before executing the command. On first contact, requesting operator confirmation before running even a harmless callback command is a conforming response.
+The Claude session MUST apply its own permission policy before executing the command. On first contact, requesting operator confirmation before running even a harmless callback command is conforming when that session's existing policy requires it; CAM/1 itself does not add a new confirmation threshold.
 
 Because the Codex queue currently supplies no authenticated sender or automatic callback metadata, the CAM/1 envelope is mandatory. The mapping remains `unknown` until the mutual operator-correlation flow completes; completion does not authenticate the claimed Claude identity.
 
@@ -983,11 +1003,13 @@ An independent Codex recipient first follows the later-turn delivery procedure i
     then return a complete `completed` or `failed` envelope with sanitized
     evidence.
 
-The receiver MUST pause without side effects when the journal, identity,
-callback, authorization, lifecycle, or scope is missing, changed, ambiguous,
-expired, or suspicious. Recording malformed bytes is audit evidence only; it
-does not make the envelope valid. The receiver MUST NOT invoke a transport or
-workload tool automatically merely because a message was delivered.
+The receiver MUST hold the affected requested action without performing its
+consequential side effects when the journal, identity, callback, authorization,
+lifecycle, or scope is missing, changed, ambiguous, expired, or suspicious.
+Recording malformed bytes is audit evidence only; it does not make the envelope
+valid. The receiver MUST NOT invoke a transport or workload tool automatically
+merely because a message was delivered. This hold does not suspend unrelated
+work already permitted by the receiver's standing instructions and policy.
 
 An implementation's successful ingest or validation status MUST NOT be named
 or interpreted as recipient acceptance. It MUST report that authorization and
@@ -1409,7 +1431,8 @@ Remote Control, cloud sessions, cross-host delivery, and locally observed Codex 
 
 ### Project journal cannot be verified
 
-- Stop all live sends and application work for that project.
+- Stop all CAM live sends and all actions whose authorization or lifecycle
+  depends on that project journal.
 - Do not truncate, repair, reorder, or replace records automatically.
 - Check the Git common-directory binding, external project identity, ownership,
   modes, symlinks, hard links, partial tail, and digest chain.
