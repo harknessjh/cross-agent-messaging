@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import ast
 import datetime as dt
 import hashlib
@@ -17,6 +18,7 @@ import unittest
 from pathlib import Path
 
 from tools import cam1
+from tools.cam1lib import cli as cam1_cli
 
 if __package__:
     from .test_cam1 import FIXTURES, ROOT, changed, fixture
@@ -442,6 +444,79 @@ class CamPublicSurfaceTests(unittest.TestCase):
         self.assertIn(b"--output", completed.stderr)
         self.assertIn(b"--stdout", completed.stderr)
         self.assertIn(b"one of the arguments", completed.stderr)
+
+    def test_refused_builder_does_not_create_or_replace_output(self) -> None:
+        tool = str(ROOT / "tools" / "cam1.py")
+        common = [
+            sys.executable,
+            tool,
+            "build-request",
+            "--sender-vendor",
+            "codex",
+            "--sender-name",
+            "cli coordinator",
+            "--sender-session",
+            "00000000-0000-4000-8000-000000000201",
+            "--recipient-vendor",
+            "claude-code",
+            "--recipient-name",
+            "cli worker",
+            "--recipient-session",
+            "00000000-0000-4000-8000-000000000202",
+            "--reply-transport",
+            "codex_queue",
+            "--reply-address",
+            "00000000-0000-4000-8000-000000000201",
+            "--risk-class",
+            "informational",
+            "--operation",
+            "review",
+            "--authorization-basis",
+            "none",
+            "--authority",
+            "not allowed with authorization basis none",
+            "--intent",
+            "Exercise a builder refusal",
+            "--body",
+            "No action requested.",
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "refused.cam1.json"
+            refused = subprocess.run(
+                [*common, "--output", str(output)],
+                cwd=ROOT,
+                check=False,
+                capture_output=True,
+            )
+
+            self.assertEqual(refused.returncode, 2)
+            self.assertEqual(refused.stdout, b"")
+            self.assertFalse(output.exists())
+            self.assertFalse(json.loads(refused.stderr)["valid"])
+
+            sentinel = b"pre-existing operator file\n"
+            output.write_bytes(sentinel)
+            output.chmod(0o600)
+            repeated = subprocess.run(
+                [*common, "--output", str(output)],
+                cwd=ROOT,
+                check=False,
+                capture_output=True,
+            )
+
+            self.assertEqual(repeated.returncode, 2)
+            self.assertEqual(repeated.stdout, b"")
+            self.assertEqual(output.read_bytes(), sentinel)
+
+    def test_output_gate_rejects_diagnostic_json_before_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "diagnostic.cam1.json"
+            args = argparse.Namespace(stdout=False, output=str(output))
+
+            with self.assertRaises(cam1.CamValidationError):
+                cam1_cli._write_built_envelope(args, b'{"valid":false}')
+
+            self.assertFalse(output.exists())
 
     def test_builder_cli_stdout_is_explicit_and_exact(self) -> None:
         completed = subprocess.run(

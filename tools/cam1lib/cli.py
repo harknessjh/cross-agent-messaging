@@ -248,6 +248,11 @@ def _add_correlated_reply_arguments(
 
 
 def _write_built_envelope(args: argparse.Namespace, raw: bytes) -> None:
+    # Builders validate their own serialization, but keep publication behind a
+    # final shared gate as well.  This prevents a future builder regression (or
+    # an accidentally returned diagnostic object) from turning ``--output``
+    # into an error-report destination.
+    validate_exact_bytes(raw)
     if args.stdout:
         _write_stdout(raw)
     else:
