@@ -413,16 +413,20 @@ class CompatibilityKernelTests(unittest.TestCase):
         with self.assertRaises(compatibility.CompatibilityEventError) as context:
             compatibility.validate_plan(invalid_plan)
         self.assertEqual(context.exception.code, "compatibility.event_schema")
+        invalid_plan["operator_reference"] = "operator approved\n"
+        with self.assertRaises(compatibility.CompatibilityEventError) as context:
+            compatibility.validate_plan(invalid_plan)
+        self.assertEqual(context.exception.code, "compatibility.event_schema")
 
         plan_record = self.append_plan(plan)
         readiness = self.readiness_attributes(plan, plan_record)
-        readiness["operator_reference"] = "operator\nconfirmation"
+        readiness["operator_reference"] = "operator confirmation\r"
         with self.assertRaises(compatibility.CompatibilityEventError) as context:
             compatibility.validate_readiness(readiness)
         self.assertEqual(context.exception.code, "compatibility.event_schema")
 
         activation = self.activation_attributes(plan, plan_record, [])
-        activation["operator_reference"] = "\t"
+        activation["operator_reference"] = "operator confirmation\n"
         with self.assertRaises(compatibility.CompatibilityEventError) as context:
             compatibility.validate_activation(activation)
         self.assertEqual(context.exception.code, "compatibility.event_schema")

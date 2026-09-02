@@ -54,7 +54,8 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 512,
-      "pattern": "^\\S(?:[^\\r\\n]*\\S)?$"
+      "pattern": "^\\S(?:[^\\r\\n]*\\S)?$",
+      "not": { "pattern": "[\\r\\n]" }
     },
     "featureId": {
       "type": "string",
