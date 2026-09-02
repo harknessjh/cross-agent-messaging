@@ -153,9 +153,11 @@ hooks and filesystem monitors disabled, and submodules ignored for status.
 This keeps project discovery and provenance read-only without treating the Git
 repository or same-user executable path as a security boundary.
 
-`state-current.json` is a disposable atomic projection of the participant
-roster and lifecycle state. It can be rebuilt from `journal.jsonl`; it must
-never override or repair journal history.
+`state-current.json` is a disposable atomic projection of participant,
+lifecycle, and active compatibility-gate state. It can be rebuilt from
+`journal.jsonl`; it must never override or repair journal history. See
+[Compatibility upgrades](COMPATIBILITY.md) for the staged plan, readiness, and
+activation workflow.
 
 `state status` is a non-mutating replay view. It does not append the aging
 events that a later state mutation records, so a pending or held item whose

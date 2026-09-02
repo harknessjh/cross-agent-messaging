@@ -118,6 +118,17 @@ class ValidationProfileTests(unittest.TestCase):
         self.assertTrue(expected)
         self.assertLessEqual(expected, profiled)
 
+    def test_profile_includes_compatibility_kernel_inputs(self) -> None:
+        profiled = {
+            path.relative_to(ROOT).as_posix() for path in profile._profile_paths(ROOT)
+        }
+        self.assertIn("tools/cam1lib/compatibility.py", profiled)
+        self.assertIn("schemas/cam-compatibility-event-1.schema.json", profiled)
+        self.assertEqual(
+            profile._cam1_bootstrap._SOURCE_PATHS["tools.cam1lib.compatibility"],
+            "cam1lib/compatibility.py",
+        )
+
     def test_profile_reports_runtime_outside_the_source_digest(self) -> None:
         report = profile.validation_profile_report()
         self.assertTrue(report["available"])

@@ -161,6 +161,8 @@ class JournalBackedStateTests(unittest.TestCase):
         self.assertEqual(projection["format"], "CAM-STATE/1")
         self.assertEqual(projection["journal_position"]["sequence"], 4)
         self.assertEqual(projection["participants"][0]["common_name"], "reviewer")
+        self.assertEqual(projection["compatibility"]["reader"]["epoch"], 1)
+        self.assertEqual(projection["compatibility"]["active_gates"], [])
 
     def test_invalidate_and_retire_are_journaled_domain_events(self) -> None:
         self.add_reviewer()

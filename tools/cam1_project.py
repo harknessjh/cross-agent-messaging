@@ -31,7 +31,15 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from tools.cam1lib import journal, lifecycle, participants, profile, project, state
+from tools.cam1lib import (
+    compatibility_cli,
+    journal,
+    lifecycle,
+    participants,
+    profile,
+    project,
+    state,
+)
 from tools.cam1lib.protocol import CamUsageError, CamValidationError, parse_exact_bytes
 from tools.cam1lib.state import StateStore
 
@@ -168,6 +176,8 @@ def _parser() -> argparse.ArgumentParser:
     state_commands.add_parser(
         "rebuild", help="rebuild disposable state projections from the journal"
     )
+
+    compatibility_cli.register_parser(domains)
 
     message_parser = domains.add_parser("message")
     message_commands = message_parser.add_subparsers(
@@ -860,12 +870,14 @@ def _handle_project(args: argparse.Namespace) -> int:
 
 def _handle_journal(args: argparse.Namespace, binding: project.ProjectBinding) -> int:
     if args.journal_command == "append":
-        if args.event_type.startswith(("state.", "message.", "transport.", "journal.")):
+        if args.event_type.startswith(
+            ("state.", "message.", "transport.", "journal.", "compatibility.")
+        ):
             raise project.ProjectError(
                 "journal.event_reserved",
-                "state.*, message.*, transport.*, and journal.* event names are "
-                "reserved for validated internal operations; use note.* for "
-                "operator notes",
+                "state.*, message.*, transport.*, journal.*, and compatibility.* "
+                "event names are reserved for validated internal operations; use "
+                "note.* for operator notes",
             )
         exact_message = (
             project.read_private_bytes(
@@ -1098,8 +1110,26 @@ def main(argv: list[str] | None = None) -> int:
             return _handle_participant(args, binding, store)
         if args.domain == "state":
             return _handle_state(args, store)
+        if args.domain == "compatibility":
+            return_code, payload = compatibility_cli.handle(args, binding, store)
+            _emit(payload, stream=sys.stderr if return_code else sys.stdout)
+            return return_code
         if args.domain == "message":
             return _handle_message(args, binding)
+    except state.CompatibilityUpgradeRequired as error:
+        _emit(
+            {
+                "ok": False,
+                "status": "upgrade_required",
+                "error": error.as_dict(),
+                "recovery": {
+                    "command": "compatibility status",
+                    "detail": "run with the same global project and state-root options",
+                },
+            },
+            stream=sys.stderr,
+        )
+        return 2
     except (project.ProjectError, CamUsageError) as error:
         _emit(
             {"ok": False, "error": {"code": error.code, "detail": error.detail}},

@@ -18,6 +18,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
+from .compatibility import (
+    COMPATIBILITY_EVENT_TYPES,
+    COMPATIBILITY_GATE_ACTIVATED_EVENT,
+    COMPATIBILITY_PLAN_EVENT,
+    COMPATIBILITY_STAGING_EVENT_TYPES,
+    CompatibilityEventError,
+    CompatibilityGate,
+    CompatibilityInspection,
+    CompatibilityProjection,
+    CompatibilityUpgradeRequired,
+    require_reader_support,
+)
 from .journal import _verified_records_for_transaction, decode_exact_message
 from .lifecycle import LifecycleEntry, LifecycleProjection
 from .participants import Participant, ParticipantRoster
@@ -26,6 +38,7 @@ from .project import (
     ProjectError,
     ProjectTransaction,
     _transaction_cache,
+    project_transaction,
     replace_private_json,
     require_project_transaction,
 )
@@ -60,6 +73,17 @@ STATE_EVENT_TYPES = frozenset(
         LIFECYCLE_ROOT_REGISTERED,
         LIFECYCLE_REPLY_APPLIED,
         LIFECYCLE_EXPIRED_UNCONFIRMED,
+        COMPATIBILITY_GATE_ACTIVATED_EVENT,
+    }
+)
+PARTICIPANT_STATE_EVENT_TYPES = frozenset(
+    {
+        PARTICIPANT_ADDED,
+        PARTICIPANT_BOUND,
+        PARTICIPANT_ROUTE_OBSERVED,
+        PARTICIPANT_ROUTE_CONFIRMED,
+        PARTICIPANT_INVALIDATED,
+        PARTICIPANT_RETIRED,
     }
 )
 
@@ -74,8 +98,9 @@ class StateError(ProjectError):
 class ProjectionRefreshError(StateError):
     """A journal event committed but its disposable cache refresh failed."""
 
-    def __init__(self, *, record_id: str, sequence: int):
+    def __init__(self, *, record_id: str, record_sha256: str, sequence: int):
         self.record_id = record_id
+        self.record_sha256 = record_sha256
         self.sequence = sequence
         super().__init__(
             "state.projection_refresh",
@@ -89,6 +114,9 @@ class StateSnapshot:
 
     roster: ParticipantRoster
     lifecycle: LifecycleProjection
+    compatibility: CompatibilityProjection = field(
+        default_factory=CompatibilityProjection
+    )
     journal_sequence: int = 0
     journal_record_sha256: str | None = None
     _message_bytes: dict[str, bytes] = field(default_factory=dict, repr=False)
@@ -102,6 +130,7 @@ class StateSnapshot:
             "journal_position": self._journal_position(),
             "participants": self.roster.as_dict()["participants"],
             "lifecycle": self.lifecycle.as_dict()["entries"],
+            "compatibility": self.compatibility.as_dict(),
         }
 
     def _journal_position(self) -> dict[str, Any]:
@@ -711,6 +740,48 @@ def _apply_event(
     return applier(snapshot, attributes, exact_message)
 
 
+def _apply_compatibility_record(
+    snapshot: StateSnapshot,
+    record: Mapping[str, Any],
+    *,
+    inspect_gate: bool,
+) -> CompatibilityGate | None:
+    """Apply one verified compatibility record through the shared kernel path."""
+
+    event_type = cast(str, record["event_type"])
+    attributes = record.get("attributes")
+    if not isinstance(attributes, dict):
+        raise _state_error(
+            "state.event_attributes",
+            f"invalid compatibility event at journal sequence {record['sequence']}",
+        )
+    _require_no_message(decode_exact_message(record))
+    if event_type in COMPATIBILITY_STAGING_EVENT_TYPES:
+        observer = (
+            snapshot.compatibility.observe_plan
+            if event_type == COMPATIBILITY_PLAN_EVENT
+            else snapshot.compatibility.observe_readiness
+        )
+        observer(
+            attributes,
+            record_id=cast(str, record["record_id"]),
+            record_sha256=cast(str, record["record_sha256"]),
+            sequence=cast(int, record["sequence"]),
+            recorded_at=cast(str, record["recorded_at"]),
+        )
+        return None
+    activation = (
+        snapshot.compatibility.inspect_activation
+        if inspect_gate
+        else snapshot.compatibility.activate
+    )
+    return activation(
+        attributes,
+        participants=snapshot.roster.participants,
+        recorded_at=cast(str, record["recorded_at"]),
+    )
+
+
 def _empty_snapshot(project: ProjectBinding) -> StateSnapshot:
     return StateSnapshot(
         roster=ParticipantRoster(project.project_id),
@@ -725,14 +796,13 @@ def _select_participant(roster: ParticipantRoster, selector: str) -> Participant
     raise CamUsageError("roster.participant_unknown", "participant is not known")
 
 
-def _transaction_snapshot_locked(
+def _working_snapshot(
     project: ProjectBinding,
     transaction: ProjectTransaction,
-) -> StateSnapshot:
-    """Return the private canonical snapshot, replaying only an appended suffix."""
+    records: list[dict[str, Any]],
+) -> tuple[StateSnapshot, dict[str, Any], int]:
+    """Validate and isolate the process-local replay cache."""
 
-    require_project_transaction(project, transaction)
-    records = _verified_records_for_transaction(project, transaction)
     caches = _transaction_cache(project, transaction)
     cached = caches.get(_STATE_CACHE_KEY)
     if cached is None:
@@ -741,21 +811,41 @@ def _transaction_snapshot_locked(
         snapshot = cached
     else:
         raise _state_error("state.cache", "state transaction cache is invalid")
-
     start = snapshot.journal_sequence
     if start < 0 or start > len(records):
         raise _state_error("state.cache", "state cache journal position is invalid")
     if start and snapshot.journal_record_sha256 != records[start - 1]["record_sha256"]:
         raise _state_error("state.cache", "state cache journal digest is invalid")
-
     if cached is not None and start < len(records):
-        # Apply an unprojected journal suffix to a working copy so a malformed
-        # state event cannot partially corrupt the last known-good snapshot.
+        # A malformed suffix must not mutate the last known-good cache.
         snapshot = deepcopy(snapshot)
+    return snapshot, caches, start
+
+
+def _transaction_snapshot_locked(
+    project: ProjectBinding,
+    transaction: ProjectTransaction,
+) -> StateSnapshot:
+    """Return the private canonical snapshot, replaying only an appended suffix."""
+
+    require_project_transaction(project, transaction)
+    records = _verified_records_for_transaction(project, transaction)
+    snapshot, caches, start = _working_snapshot(project, transaction, records)
     for record in records[start:]:
         snapshot.journal_sequence = cast(int, record["sequence"])
         snapshot.journal_record_sha256 = cast(str, record["record_sha256"])
         event_type = cast(str, record["event_type"])
+        if event_type in COMPATIBILITY_EVENT_TYPES:
+            try:
+                _apply_compatibility_record(snapshot, record, inspect_gate=False)
+            except CompatibilityUpgradeRequired as error:
+                raise error.at_sequence(cast(int, record["sequence"])) from None
+            except (CompatibilityEventError, StateError) as error:
+                raise _state_error(
+                    "state.event_invalid",
+                    f"invalid {event_type} at journal sequence {record['sequence']} ({error.code})",
+                ) from None
+            continue
         if event_type not in STATE_EVENT_TYPES:
             if event_type.startswith("state."):
                 raise _state_error(
@@ -776,7 +866,11 @@ def _transaction_snapshot_locked(
                 attributes=attributes,
                 exact_message=decode_exact_message(record),
             )
-        except (CamUsageError, CamValidationError, StateError) as error:
+        except (
+            CamUsageError,
+            CamValidationError,
+            StateError,
+        ) as error:
             code = getattr(error, "code", error.__class__.__name__)
             raise _state_error(
                 "state.event_invalid",
@@ -784,6 +878,92 @@ def _transaction_snapshot_locked(
             ) from None
     caches[_STATE_CACHE_KEY] = snapshot
     return snapshot
+
+
+def _inspect_compatibility_locked(
+    project: ProjectBinding,
+    transaction: ProjectTransaction,
+) -> CompatibilityInspection:
+    """Replay only roster and compatibility events for upgrade reporting."""
+
+    require_project_transaction(project, transaction)
+    records = _verified_records_for_transaction(project, transaction)
+    snapshot = _empty_snapshot(project)
+    upgrade_required: CompatibilityUpgradeRequired | None = None
+    for record in records:
+        event_type = cast(str, record["event_type"])
+        snapshot.journal_sequence = cast(int, record["sequence"])
+        snapshot.journal_record_sha256 = cast(str, record["record_sha256"])
+        if event_type not in PARTICIPANT_STATE_EVENT_TYPES | COMPATIBILITY_EVENT_TYPES:
+            continue
+        try:
+            if event_type in COMPATIBILITY_EVENT_TYPES:
+                gate = _apply_compatibility_record(snapshot, record, inspect_gate=True)
+                if gate is not None:
+                    try:
+                        require_reader_support(gate)
+                    except CompatibilityUpgradeRequired as error:
+                        upgrade_required = error.at_sequence(
+                            cast(int, record["sequence"])
+                        )
+                        # Later feature state may change roster semantics that
+                        # this older inspection kernel cannot interpret.
+                        break
+            else:
+                attributes = record.get("attributes")
+                if not isinstance(attributes, dict):
+                    raise _state_error(
+                        "state.event_attributes",
+                        f"invalid inspection event at journal sequence {record['sequence']}",
+                    )
+                _apply_event(
+                    snapshot,
+                    event_type=event_type,
+                    attributes=attributes,
+                    exact_message=decode_exact_message(record),
+                )
+        except (
+            CamUsageError,
+            CamValidationError,
+            CompatibilityEventError,
+            StateError,
+        ) as error:
+            code = getattr(error, "code", error.__class__.__name__)
+            raise _state_error(
+                "state.event_invalid",
+                f"invalid {event_type} at journal sequence {record['sequence']} ({code})",
+            ) from None
+    return CompatibilityInspection(
+        roster=deepcopy(snapshot.roster),
+        compatibility=deepcopy(snapshot.compatibility),
+        journal_sequence=snapshot.journal_sequence,
+        journal_record_sha256=snapshot.journal_record_sha256,
+        verified_journal_sequence=(
+            cast(int, records[-1]["sequence"]) if records else 0
+        ),
+        verified_journal_record_sha256=(
+            cast(str, records[-1]["record_sha256"]) if records else None
+        ),
+        upgrade_required=upgrade_required,
+    )
+
+
+def inspect_compatibility(
+    project: ProjectBinding,
+    *,
+    transaction: ProjectTransaction | None = None,
+) -> CompatibilityInspection:
+    """Inspect compatibility state even when ordinary replay needs an upgrade.
+
+    This verified, non-mutating view deliberately ignores lifecycle and
+    feature-specific state.  It exists only to report upgrade requirements and
+    MUST NOT be used as evidence that ordinary state replay or mutation is safe.
+    """
+
+    if transaction is not None:
+        return _inspect_compatibility_locked(project, transaction)
+    with project_transaction(project) as acquired:
+        return _inspect_compatibility_locked(project, acquired)
 
 
 def _replay_locked(

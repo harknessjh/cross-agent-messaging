@@ -1,0 +1,239 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Copyright © 2026 John Harkness. Licensed under the PolyForm Noncommercial License 1.0.0; see LICENSE.",
+  "title": "CAM compatibility staging and activation event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event_type", "attributes"],
+  "properties": {
+    "event_type": {
+      "enum": [
+        "compatibility.upgrade.planned",
+        "compatibility.participant.ready",
+        "state.compatibility.gate_activated"
+      ]
+    },
+    "attributes": { "type": "object" }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "event_type": { "const": "compatibility.upgrade.planned" },
+        "attributes": { "$ref": "#/$defs/plan" }
+      }
+    },
+    {
+      "properties": {
+        "event_type": { "const": "compatibility.participant.ready" },
+        "attributes": { "$ref": "#/$defs/readiness" }
+      }
+    },
+    {
+      "properties": {
+        "event_type": { "const": "state.compatibility.gate_activated" },
+        "attributes": { "$ref": "#/$defs/activation" }
+      }
+    }
+  ],
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]+)?Z$"
+    },
+    "operatorReference": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^\\S(?:[^\\r\\n]*\\S)?$"
+    },
+    "featureId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 54,
+      "pattern": "^[a-z][a-z0-9]*(?:\\.[a-z][a-z0-9]*)*$"
+    },
+    "capability": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9]*(?:\\.[a-z][a-z0-9]*)*/[1-9][0-9]{0,8}$"
+    },
+    "capabilities": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/capability" }
+    },
+    "frozenParticipant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["participant_id", "binding_generation"],
+      "properties": {
+        "participant_id": { "$ref": "#/$defs/uuid" },
+        "binding_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        }
+      }
+    },
+    "readinessReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["participant_id", "record_id", "record_sha256"],
+      "properties": {
+        "participant_id": { "$ref": "#/$defs/uuid" },
+        "record_id": { "$ref": "#/$defs/uuid" },
+        "record_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "boundedJson": {
+      "anyOf": [
+        { "type": "null" },
+        { "type": "boolean" },
+        { "type": "integer", "minimum": -9007199254740991, "maximum": 9007199254740991 },
+        { "type": "number", "minimum": -9007199254740991, "maximum": 9007199254740991 },
+        { "type": "string", "maxLength": 4096 },
+        {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/boundedJson" }
+        },
+        {
+          "type": "object",
+          "maxProperties": 32,
+          "propertyNames": {
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-zA-Z][a-zA-Z0-9_.-]*$"
+          },
+          "additionalProperties": { "$ref": "#/$defs/boundedJson" }
+        }
+      ]
+    },
+    "plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "plan_id",
+        "feature_id",
+        "feature_version",
+        "feature_config",
+        "validation_profile_sha256",
+        "required_reader_epoch",
+        "required_capabilities",
+        "frozen_participants",
+        "expires_at",
+        "operator_reference"
+      ],
+      "properties": {
+        "format": { "const": "CAM-COMPAT/1" },
+        "plan_id": { "$ref": "#/$defs/uuid" },
+        "feature_id": { "$ref": "#/$defs/featureId" },
+        "feature_version": { "type": "integer", "minimum": 1, "maximum": 999999999 },
+        "feature_config": {
+          "type": "object",
+          "maxProperties": 32,
+          "propertyNames": {
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-zA-Z][a-zA-Z0-9_.-]*$"
+          },
+          "additionalProperties": { "$ref": "#/$defs/boundedJson" }
+        },
+        "validation_profile_sha256": { "$ref": "#/$defs/sha256" },
+        "required_reader_epoch": { "type": "integer", "minimum": 1, "maximum": 2147483647 },
+        "required_capabilities": { "$ref": "#/$defs/capabilities" },
+        "frozen_participants": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/frozenParticipant" }
+        },
+        "expires_at": { "$ref": "#/$defs/timestamp" },
+        "operator_reference": { "$ref": "#/$defs/operatorReference" }
+      }
+    },
+    "readiness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "plan_id",
+        "plan_record_id",
+        "plan_record_sha256",
+        "participant_id",
+        "binding_generation",
+        "reader_epoch",
+        "capabilities",
+        "validation_profile_sha256",
+        "ready_at",
+        "operator_reference"
+      ],
+      "properties": {
+        "format": { "const": "CAM-COMPAT/1" },
+        "plan_id": { "$ref": "#/$defs/uuid" },
+        "plan_record_id": { "$ref": "#/$defs/uuid" },
+        "plan_record_sha256": { "$ref": "#/$defs/sha256" },
+        "participant_id": { "$ref": "#/$defs/uuid" },
+        "binding_generation": { "type": "integer", "minimum": 1, "maximum": 2147483647 },
+        "reader_epoch": { "type": "integer", "minimum": 1, "maximum": 2147483647 },
+        "capabilities": { "$ref": "#/$defs/capabilities" },
+        "validation_profile_sha256": { "$ref": "#/$defs/sha256" },
+        "ready_at": { "$ref": "#/$defs/timestamp" },
+        "operator_reference": { "$ref": "#/$defs/operatorReference" }
+      }
+    },
+    "activation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "plan_id",
+        "plan_record_id",
+        "plan_record_sha256",
+        "feature_id",
+        "feature_version",
+        "validation_profile_sha256",
+        "required_reader_epoch",
+        "required_capabilities",
+        "readiness",
+        "activated_at",
+        "operator_reference"
+      ],
+      "properties": {
+        "format": { "const": "CAM-COMPAT/1" },
+        "plan_id": { "$ref": "#/$defs/uuid" },
+        "plan_record_id": { "$ref": "#/$defs/uuid" },
+        "plan_record_sha256": { "$ref": "#/$defs/sha256" },
+        "feature_id": { "$ref": "#/$defs/featureId" },
+        "feature_version": { "type": "integer", "minimum": 1, "maximum": 999999999 },
+        "validation_profile_sha256": { "$ref": "#/$defs/sha256" },
+        "required_reader_epoch": { "type": "integer", "minimum": 1, "maximum": 2147483647 },
+        "required_capabilities": { "$ref": "#/$defs/capabilities" },
+        "readiness": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/readinessReference" }
+        },
+        "activated_at": { "$ref": "#/$defs/timestamp" },
+        "operator_reference": { "$ref": "#/$defs/operatorReference" }
+      }
+    }
+  }
+}

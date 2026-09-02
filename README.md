@@ -116,6 +116,9 @@ when later chain state is available, but it does not resist a compromised
 process running as the same user. See
 [Project binding, roster, and journal](docs/PROJECT_JOURNAL.md).
 
+Reader and project-state upgrades use the staged, atomic
+[compatibility kernel](docs/COMPATIBILITY.md).
+
 The journal normally fails closed without repair. A narrowly scoped,
 operator-confirmed command can recover only an incomplete EOF record: it first
 archives the exact damaged bytes, then atomically installs the verified prefix

@@ -52,6 +52,8 @@ Shell examples assume a POSIX environment such as macOS, Linux, or WSL. Other pl
   path. The [detailed Codex-to-Claude procedure](docs/CODEX_TO_CLAUDE.md) and
   reference tools in [`tools/`](tools/) provide non-normative commands and
   troubleshooting.
+- [Compatibility upgrades](docs/COMPATIBILITY.md) explains the reference
+  kernel's staged reader and project-state rollout.
 
 ### Terminology
 

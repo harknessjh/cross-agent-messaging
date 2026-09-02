@@ -9,8 +9,13 @@ import datetime as dt
 import uuid
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
+from copy import deepcopy
 from typing import Any, cast
 
+from .compatibility import (
+    COMPATIBILITY_GATE_ACTIVATED_EVENT,
+    CompatibilityGate,
+)
 from .journal import (
     _verified_records_for_transaction,
     append_record,
@@ -91,6 +96,49 @@ class StateStore:
         with _transaction(self.project, transaction) as active:
             return _replay_locked(self.project, active)
 
+    def compatibility_activate(
+        self,
+        attributes: Mapping[str, Any],
+        *,
+        now: dt.datetime | None = None,
+        transaction: ProjectTransaction | None = None,
+    ) -> tuple[CompatibilityGate, dict[str, Any]]:
+        """Commit one pre-staged gate and distinguish cache-refresh failure.
+
+        Every compatibility invariant is checked against an isolated snapshot
+        before the journal append. Once appended, a projection failure is
+        reported as ``ProjectionRefreshError`` so callers know the canonical
+        activation committed and MUST NOT retry it.
+        """
+
+        with _transaction(self.project, transaction) as active:
+            snapshot = _replay_locked(self.project, active)
+            observed, recorded_at = _event_time(now)
+            gate = snapshot.compatibility.activate(
+                attributes,
+                participants=snapshot.roster.participants,
+                recorded_at=recorded_at,
+            )
+            record = append_record(
+                self.project,
+                event_type=COMPATIBILITY_GATE_ACTIVATED_EVENT,
+                attributes=attributes,
+                now=observed,
+                transaction=active,
+            )
+            snapshot.journal_sequence = cast(int, record["sequence"])
+            snapshot.journal_record_sha256 = cast(str, record["record_sha256"])
+            _cache_snapshot(self.project, active, snapshot)
+            try:
+                _write_projections(self.project, snapshot)
+            except ProjectError:
+                raise ProjectionRefreshError(
+                    record_id=cast(str, record["record_id"]),
+                    record_sha256=cast(str, record["record_sha256"]),
+                    sequence=cast(int, record["sequence"]),
+                ) from None
+            return deepcopy(gate), deepcopy(record)
+
     def preserved_message(
         self,
         message_id: str,
@@ -157,6 +205,7 @@ class StateStore:
         except ProjectError:
             raise ProjectionRefreshError(
                 record_id=cast(str, record["record_id"]),
+                record_sha256=cast(str, record["record_sha256"]),
                 sequence=cast(int, record["sequence"]),
             ) from None
         return result
