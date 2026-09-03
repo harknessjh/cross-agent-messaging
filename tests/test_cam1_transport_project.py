@@ -18,7 +18,9 @@ from tools.cam1lib import journal, project, state
 
 if __package__:
     from .test_cam1_transport import (
+        CLAUDE_PARTICIPANT,
         CLAUDE_SESSION,
+        CODEX_PARTICIPANT,
         CODEX_THREAD,
         ProjectBoundTransportTestCase,
         build_first_contact,
@@ -26,7 +28,9 @@ if __package__:
     )
 else:
     from test_cam1_transport import (
+        CLAUDE_PARTICIPANT,
         CLAUDE_SESSION,
+        CODEX_PARTICIPANT,
         CODEX_THREAD,
         ProjectBoundTransportTestCase,
         build_first_contact,
@@ -430,6 +434,114 @@ class ProjectTransportGuardTests(ProjectBoundTransportTestCase):
         self.assertLess(intent_index, lifecycle_index)
         self.assertLess(lifecycle_index, accepted_index)
         self.assertEqual(journal.decode_exact_message(records[intent_index]), raw)
+
+    def test_send_preparation_replays_only_relevant_history_once(self) -> None:
+        self.add_codex_participant()
+        self.add_claude_participant()
+
+        def new_hello() -> bytes:
+            return cam1.build_hello(
+                sender_vendor="claude-code",
+                sender_name="local-worker",
+                sender_session=CLAUDE_SESSION,
+                recipient_vendor="codex",
+                recipient_name="example-coordinator",
+                recipient_session=CODEX_THREAD,
+                reply_transport="claude_send_message",
+                reply_address=CLAUDE_SESSION,
+            )
+
+        prior_raw = new_hello()
+        prior_envelope = cam1.parse_exact_bytes(prior_raw)
+        with project.project_transaction(self.binding) as transaction:
+            for index in range(16):
+                journal.append_record(
+                    self.binding,
+                    event_type="message.inbound.observed",
+                    exact_message=(f"unrelated-{index:02d}:".encode() + b"x" * 8_192),
+                    attributes={"source": "unrelated_scale_fixture"},
+                    transaction=transaction,
+                )
+            journal.append_record(
+                self.binding,
+                event_type="message.outbound.intent",
+                exact_message=prior_raw,
+                attributes={
+                    "participant_id": CODEX_PARTICIPANT,
+                    "sender_participant_id": CLAUDE_PARTICIPANT,
+                    "recipient_participant_id": CODEX_PARTICIPANT,
+                    "message_id": prior_envelope["message_id"],
+                    "renewal_of": None,
+                    "causal_context": None,
+                },
+                transaction=transaction,
+            )
+
+        current_raw = new_hello()
+        current_path = self.private_envelope("filtered-history.json", current_raw)
+        validated = cam1_transport._validate_envelope(str(current_path), None)
+        store = state.StateStore(self.binding)
+        real_replay = journal.replay_records
+        real_decode = journal.decode_exact_message
+
+        with project.project_transaction(self.binding) as transaction:
+            recipient = store.snapshot(transaction=transaction).roster.select(
+                "example-coordinator"
+            )
+            attempt = cam1_transport._SendAttempt(
+                participant_id=recipient.participant_id,
+                transport="codex_queue",
+                route_address=CODEX_THREAD,
+            )
+            with (
+                mock.patch.object(
+                    cam1_transport.journal,
+                    "replay_records",
+                    wraps=real_replay,
+                ) as replay,
+                mock.patch.object(
+                    cam1_transport,
+                    "_require_reply_slot_available",
+                    wraps=cam1_transport._require_reply_slot_available,
+                ) as reply_slot,
+                mock.patch.object(
+                    cam1_transport,
+                    "_require_safe_retry",
+                    wraps=cam1_transport._require_safe_retry,
+                ) as retry,
+                mock.patch.object(
+                    cam1_transport.causal,
+                    "build_outbound_context",
+                    wraps=cam1_transport.causal.build_outbound_context,
+                ) as causal_context,
+                mock.patch.object(
+                    cam1_transport.journal,
+                    "decode_exact_message",
+                    wraps=real_decode,
+                ) as decode,
+            ):
+                cam1_transport._prepare_and_journal_intent(
+                    self.binding,
+                    store,
+                    transaction,
+                    validated,
+                    attempt,
+                    recipient_participant=recipient,
+                    renewal_of=None,
+                    retry_after_intent=None,
+                    validation_profile={},
+                    dirty_validator_override=False,
+                )
+
+        self.assertEqual(replay.call_count, 1)
+        self.assertEqual(
+            replay.call_args.kwargs["event_types"],
+            cam1_transport.causal.CAUSAL_JOURNAL_EVENT_TYPES,
+        )
+        history = reply_slot.call_args.kwargs["records"]
+        self.assertIs(history, retry.call_args.kwargs["records"])
+        self.assertIs(history, causal_context.call_args.args[0])
+        self.assertEqual(decode.call_count, 1)
 
     def test_codex_state_preflight_precedes_journal_and_product_invocation(
         self,

@@ -21,6 +21,14 @@ TransportError = _native.TransportError
 ValidatedEnvelope = _native.ValidatedEnvelope
 _canonical_uuid = _native._canonical_uuid
 
+RETRY_JOURNAL_EVENT_TYPES = frozenset(
+    {
+        "message.outbound.intent",
+        "transport.accepted",
+        "transport.not_accepted",
+    }
+)
+
 
 @dataclass(frozen=True, slots=True)
 class _RetryFingerprint:
@@ -195,7 +203,27 @@ def require_safe_retry(
 ) -> str | None:
     """Refuse blind semantic repeats after accepted, unknown, or orphaned sends."""
 
-    records = journal.replay_records(binding)
+    records = journal.replay_records(
+        binding,
+        event_types=RETRY_JOURNAL_EVENT_TYPES,
+    )
+    return _require_safe_retry_from_records(
+        records,
+        validated,
+        retry_after_intent=retry_after_intent,
+        known_renewal_roots=known_renewal_roots,
+    )
+
+
+def _require_safe_retry_from_records(
+    records: tuple[dict[str, Any], ...],
+    validated: ValidatedEnvelope,
+    *,
+    retry_after_intent: str | None,
+    known_renewal_roots: frozenset[str],
+) -> str | None:
+    """Apply retry policy to one caller-owned, transaction-consistent history."""
+
     requested = _retry_fingerprint(validated.raw, validated.envelope)
     matching = _matching_retry_intents(records, requested, known_renewal_roots)
     return _confirmed_retry_intent(

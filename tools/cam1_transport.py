@@ -192,9 +192,17 @@ def _require_safe_retry(
     *,
     retry_after_intent: str | None,
     known_renewal_roots: frozenset[str],
+    records: tuple[dict[str, Any], ...] | None = None,
 ) -> str | None:
     """Apply journal-backed retry policy through the stable facade seam."""
 
+    if records is not None:
+        return _retry._require_safe_retry_from_records(
+            records,
+            validated,
+            retry_after_intent=retry_after_intent,
+            known_renewal_roots=known_renewal_roots,
+        )
     return _retry.require_safe_retry(
         binding,
         validated,
@@ -318,6 +326,8 @@ def _require_roster_endpoints(
 def _require_reply_slot_available(
     binding: project.ProjectBinding,
     validated: ValidatedEnvelope,
+    *,
+    records: tuple[dict[str, Any], ...] | None = None,
 ) -> None:
     """Reserve one reply transition until its prior transport outcome is known."""
 
@@ -325,7 +335,11 @@ def _require_reply_slot_available(
     if envelope.get("type") not in cam1.REPLY_TYPES:
         return
     root_id = _canonical_uuid(envelope.get("in_reply_to"), label="in_reply_to")
-    records = journal.replay_records(binding)
+    if records is None:
+        records = journal.replay_records(
+            binding,
+            event_types=_retry.RETRY_JOURNAL_EVENT_TYPES,
+        )
     outcomes = _transport_outcomes(records)
     for record in records:
         if record["event_type"] != "message.outbound.intent":
@@ -404,7 +418,15 @@ def _prepare_and_journal_intent(
             now=event_now,
             transaction=transaction,
         )
-        _require_reply_slot_available(binding, validated)
+        history_records = journal.replay_records(
+            binding,
+            event_types=causal.CAUSAL_JOURNAL_EVENT_TYPES,
+        )
+        _require_reply_slot_available(
+            binding,
+            validated,
+            records=history_records,
+        )
         known_renewal_roots: frozenset[str] = frozenset()
         if plan.preview.renewal_of is not None:
             snapshot = store.snapshot(transaction=transaction)
@@ -420,12 +442,10 @@ def _prepare_and_journal_intent(
             validated,
             retry_after_intent=retry_after_intent,
             known_renewal_roots=known_renewal_roots,
+            records=history_records,
         )
         causal_context = causal.build_outbound_context(
-            journal.replay_records(
-                binding,
-                event_types=causal.CAUSAL_JOURNAL_EVENT_TYPES,
-            ),
+            history_records,
             validated.envelope,
             sender_participant_id=sender_participant.participant_id,
             recipient_participant_id=recipient_participant.participant_id,
