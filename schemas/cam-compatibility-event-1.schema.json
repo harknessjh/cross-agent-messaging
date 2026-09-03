@@ -55,7 +55,7 @@
       "minLength": 1,
       "maxLength": 512,
       "pattern": "^\\S(?:[^\\r\\n]*\\S)?$",
-      "not": { "pattern": "[\\r\\n]" }
+      "not": { "pattern": "[\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]" }
     },
     "featureId": {
       "type": "string",

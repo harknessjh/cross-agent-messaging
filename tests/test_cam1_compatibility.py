@@ -431,6 +431,28 @@ class CompatibilityKernelTests(unittest.TestCase):
             compatibility.validate_activation(activation)
         self.assertEqual(context.exception.code, "compatibility.event_schema")
 
+        separators = ("\u2028", "\u2029", "\u0085", "\v", "\f")
+        validators = (
+            (compatibility.validate_plan, self.plan_attributes()),
+            (
+                compatibility.validate_readiness,
+                self.readiness_attributes(plan, plan_record),
+            ),
+            (
+                compatibility.validate_activation,
+                self.activation_attributes(plan, plan_record, []),
+            ),
+        )
+        for separator in separators:
+            for validator, candidate in validators:
+                with self.subTest(
+                    separator=ord(separator), validator=validator.__name__
+                ):
+                    invalid = dict(candidate)
+                    invalid["operator_reference"] = f"operator{separator}confirmation"
+                    with self.assertRaises(compatibility.CompatibilityEventError):
+                        validator(invalid)
+
     def test_readiness_must_follow_and_match_exact_plan_record(self) -> None:
         plan = self.plan_attributes(
             frozen_participants=[
