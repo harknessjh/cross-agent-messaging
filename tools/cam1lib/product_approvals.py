@@ -58,7 +58,6 @@ REGISTRY_FORMAT = "CAM-PRODUCT-EXECUTABLE-APPROVAL/1"
 REGISTRY_NAME = "product-executables-v1.jsonl"
 APPROVAL_EVENT = "product_executable.approved"
 REVOCATION_EVENT = "product_executable.revoked"
-RECOVERY_EVENT = "product_executable.recovered_partial_tail"
 MAX_RECORD_BYTES = 32_768
 MAX_REGISTRY_BYTES = 16 * 1_048_576
 MAX_REGISTRY_RECORDS = 10_000
@@ -293,7 +292,6 @@ def _open_registry(*, exclusive: bool, create: bool) -> tuple[Path, int, BinaryI
     directory = _registry_directory(create=create)
     parent_descriptor = _open_private_directory(directory, label="approval.directory")
     descriptor: int | None = None
-    created_identity: tuple[int, int] | None = None
     try:
         flags = _APPEND_FLAGS if exclusive else _READ_FLAGS
         try:
@@ -316,14 +314,11 @@ def _open_registry(*, exclusive: bool, create: bool) -> tuple[Path, int, BinaryI
                     REGISTRY_NAME, _APPEND_FLAGS, dir_fd=parent_descriptor
                 )
             else:
-                created_metadata = _prepare_created_private_file(
-                    descriptor, label="approval.registry"
-                )
-                created_identity = (
-                    created_metadata.st_dev,
-                    created_metadata.st_ino,
-                )
+                _prepare_created_private_file(descriptor, label="approval.registry")
                 os.fsync(parent_descriptor)
+                # The filename is now visible to other processes. Even if this
+                # creator later loses or times out on the advisory lock, it must
+                # never unlink an inode that another process may already hold.
         _validate_private_file(descriptor, label="approval.registry")
         _recovery.acquire_registry_lock(
             descriptor,
@@ -353,12 +348,10 @@ def _open_registry(*, exclusive: bool, create: bool) -> tuple[Path, int, BinaryI
     except ProductApprovalError:
         if descriptor is not None:
             os.close(descriptor)
-        _remove_created_registry(parent_descriptor, created_identity)
         raise
     except (OSError, ProjectError) as error:
         if descriptor is not None:
             os.close(descriptor)
-        _remove_created_registry(parent_descriptor, created_identity)
         code = getattr(error, "code", "product_approval.registry_open")
         detail = getattr(
             error, "detail", "approval registry could not be opened safely"
@@ -366,29 +359,6 @@ def _open_registry(*, exclusive: bool, create: bool) -> tuple[Path, int, BinaryI
         raise ProductApprovalError(str(code), str(detail)) from error
     finally:
         os.close(parent_descriptor)
-
-
-def _remove_created_registry(
-    parent_descriptor: int, expected_identity: tuple[int, int] | None
-) -> None:
-    """Best-effort cleanup of an unchanged empty registry creation failure."""
-
-    if expected_identity is None:
-        return
-    try:
-        current = os.stat(
-            REGISTRY_NAME,
-            dir_fd=parent_descriptor,
-            follow_symlinks=False,
-        )
-        if (
-            current.st_dev,
-            current.st_ino,
-        ) == expected_identity and current.st_size == 0:
-            os.unlink(REGISTRY_NAME, dir_fd=parent_descriptor)
-            os.fsync(parent_descriptor)
-    except OSError:
-        pass
 
 
 def _parse_record(raw: bytes) -> dict[str, Any]:
@@ -472,30 +442,6 @@ def _parse_record(raw: bytes) -> dict[str, Any]:
             attributes["approval_record_id"],
             label="approval_record_id",
         )
-    elif event_type == RECOVERY_EVENT:
-        if "archive_file" not in attributes:
-            raise ProductApprovalError(
-                "product_approval.record",
-                "recovery event does not contain recovery attributes",
-            )
-        _recovery.validate_archive_name(attributes["archive_file"])
-        _bounded_text(attributes["reason"], label="reason", maximum=500)
-        if (
-            attributes["archive_sha256"] != attributes["damaged_registry_sha256"]
-            or attributes["archive_byte_length"]
-            != attributes["damaged_registry_byte_length"]
-            or attributes["verified_prefix_byte_length"]
-            + attributes["partial_tail_byte_length"]
-            != attributes["damaged_registry_byte_length"]
-            or attributes["verified_prefix_record_count"] != value["sequence"] - 1
-            or attributes["verified_prefix_last_record_sha256"]
-            != value["previous_record_sha256"]
-            or attributes["partial_tail_fragment_count"] != 1
-        ):
-            raise ProductApprovalError(
-                "product_approval.recovery_record",
-                "approval recovery record guards are internally inconsistent",
-            )
     else:
         raise ProductApprovalError(
             "product_approval.record",
@@ -518,6 +464,12 @@ def _verify(handle: BinaryIO) -> tuple[list[dict[str, Any]], int]:
             raise ProductApprovalError(
                 "product_approval.registry_limit",
                 "approval registry exceeds its bounded limits",
+            )
+        if not raw.endswith(b"\n") and len(raw) <= MAX_RECORD_BYTES:
+            raise ProductApprovalError(
+                "product_approval.recovery_required",
+                "approval registry ends with one incomplete record; run the "
+                "read-only product-recovery-status command",
             )
         record = _parse_record(raw)
         if record["sequence"] != len(records) + 1:
@@ -545,8 +497,6 @@ def _active_records(
 ) -> dict[tuple[str, str], dict[str, Any]]:
     active: dict[tuple[str, str], dict[str, Any]] = {}
     for record in records:
-        if record["event_type"] == RECOVERY_EVENT:
-            continue
         attributes = cast(dict[str, Any], record["attributes"])
         key = (cast(str, attributes["vendor"]), cast(str, attributes["canonical_path"]))
         if record["event_type"] == APPROVAL_EVENT:
@@ -1101,14 +1051,11 @@ def approval_status(
 
 def _recovery_api() -> _recovery.RecoveryLedgerApi:
     return _recovery.RecoveryLedgerApi(
-        recovery_event=RECOVERY_EVENT,
         max_registry_bytes=MAX_REGISTRY_BYTES,
         max_record_bytes=MAX_RECORD_BYTES,
-        max_registry_records=MAX_REGISTRY_RECORDS,
         open_registry=_open_registry,
         verify=_verify,
         active_records=_active_records,
-        build_record=_build_record,
         operator_reference=_operator_reference,
         begin_operation=begin_operation,
     )
@@ -1125,9 +1072,21 @@ def approval_recovery_status() -> dict[str, Any]:
 def recover_partial_tail(**kwargs: Any) -> dict[str, Any]:
     """Archive and remove one operator-confirmed incomplete EOF fragment."""
 
-    return _recovery.call_with_stable_errors(
-        _recovery.recover_partial_tail, api=_recovery_api(), **kwargs
-    )
+    try:
+        return _recovery.call_with_stable_errors(
+            _recovery.recover_partial_tail, api=_recovery_api(), **kwargs
+        )
+    except _recovery.RecoveryMutationError:
+        raise
+    except ProductApprovalError as error:
+        raise _recovery.RecoveryMutationError(
+            error.code,
+            error.detail,
+            audit={
+                "mutation_state": "not_attempted",
+                "reconciliation_arguments": ["product-recovery-status"],
+            },
+        ) from error
 
 
 def revoke_approval(

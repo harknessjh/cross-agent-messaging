@@ -1212,7 +1212,9 @@ The reference local formats are defined by
 and
 [`cam-journal-record-1.schema.json`](schemas/cam-journal-record-1.schema.json).
 The separate account product-approval ledger uses
-[`cam-product-executable-approval-1.schema.json`](schemas/cam-product-executable-approval-1.schema.json).
+[`cam-product-executable-approval-1.schema.json`](schemas/cam-product-executable-approval-1.schema.json),
+while exceptional immutable recovery evidence uses
+[`cam-product-executable-recovery-1.schema.json`](schemas/cam-product-executable-recovery-1.schema.json).
 
 The reference approval ledger is the owner-private append-only hash chain at:
 
@@ -1246,16 +1248,32 @@ Before removing an eligible fragment, the implementation MUST obtain a bounded
 exclusive lock, re-open and revalidate the same registry object, require a
 non-placeholder direct operator reference, and fsync an exact owner-private
 archive of the complete damaged bytes under `~/CAM/Approvals/`. It MUST preserve
-the registry inode while locked, truncate only to the verified prefix, fsync,
-then append and fsync a typed hash-chained recovery record. That record MUST
-bind the archive, damaged-ledger, verified-prefix, and partial-tail digests and
-byte counts. Recovery MUST leave the active approval projection unchanged.
+the registry inode while locked and publish an immutable, owner-private,
+no-follow/no-replace recovery manifest that binds the archive, damaged-ledger,
+verified-prefix, and partial-tail digests and byte counts, reason, and direct
+operator reference. Only after both artifacts are fsynced may it truncate and
+fsync the primary registry to the verified prefix. The existing
+`CAM-PRODUCT-EXECUTABLE-APPROVAL/1` ledger MUST remain approve/revoke-only so a
+prior `/1` reader can replay it. Recovery MUST leave the active approval
+projection unchanged.
 
-The required in-place ordering has bounded crash states: before truncation the
-original damaged bytes remain; after truncation a valid prefix remains; during
-the recovery-record append that prefix may have one new incomplete EOF fragment
-that is itself eligible for a later inspected recovery. A complete earlier
-record is never edited or deleted.
+The required in-place ordering has bounded crash states: before artifact
+publication the original damaged bytes remain; after archive publication the
+original plus exact archive remain; after manifest publication those bytes and
+the immutable prepared intent remain; after truncation the valid prefix plus
+both artifacts remain. The manifest's prefix guards make the final state
+reconcilable after a crash. A complete earlier primary-ledger record is never
+edited or deleted.
+
+Every mutating recovery result MUST classify primary-ledger mutation as
+`not_attempted`, `committed`, or `unknown`. An error after `ftruncate` begins
+MUST NOT claim the registry was unchanged. A post-fsync verification failure
+MUST report committed-but-verification-uncertain with exact artifact paths,
+registry identity, expected prefix guards, and the read-only
+`product-recovery-status` reconciliation step. Old mutation guards MUST NOT be
+reused. Evidence names MUST be deterministic for the damaged-ledger digest;
+an interrupted retry MUST reuse matching evidence or refuse mismatched evidence,
+not create duplicate full archives.
 
 ### Project identity and location
 

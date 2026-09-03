@@ -1,11 +1,12 @@
 # SPDX-FileCopyrightText: 2026 John Harkness
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
-"""Descriptor-safe inspection and archiving for approval-ledger recovery.
+"""Descriptor-safe inspection and mutation for approval-ledger recovery.
 
-This module owns bounded byte inspection and archive publication. The approval
-record codec, chain verification, active-state projection, and guarded in-place
-mutation remain in :mod:`cam1lib.product_approvals`.
+Immutable evidence publication is isolated in
+:mod:`cam1lib.product_approval_recovery_evidence`. The approval record codec,
+chain verification, and active-state projection remain in
+:mod:`cam1lib.product_approvals`.
 """
 
 from __future__ import annotations
@@ -16,36 +17,39 @@ import fcntl
 import hashlib
 import io
 import os
-import secrets
 import time
-import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO
 
+from . import product_approval_recovery_evidence as _evidence
 from .errors import ProjectError
-from .native_fs import rename_noreplace
-from .product_executables import ProductApprovalError, _bounded_text, _sha256
+from .product_executables import (
+    ProductApprovalError,
+    _bounded_text,
+    _sha256,
+)
 from .secure_fs import (
-    PRIVATE_FILE_MODE,
     _open_private_directory,
-    _prepare_created_private_file,
-    _unlink_matching_entry,
     _validate_private_file,
     _validate_private_file_metadata,
-    _write_all,
 )
 
 _COPY_CHUNK_BYTES = 1_048_576
-_ARCHIVE_PREFIX = "product-executables-v1.damaged-"
-_ARCHIVE_SUFFIX = ".jsonl"
-_READ_FLAGS = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
-_ARCHIVE_CREATE_FLAGS = (
-    os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-)
+MAX_RECOVERY_REASON_LENGTH = _evidence.MAX_RECOVERY_REASON_LENGTH
+_RECOVERY_NAMESPACE = _evidence.RECOVERY_NAMESPACE
+parse_recovery_manifest = _evidence.parse_recovery_manifest
 
 VerifyPrefix = Callable[[BinaryIO], tuple[list[dict[str, Any]], int]]
+
+
+class RecoveryMutationError(ProductApprovalError):
+    """A recovery error with an explicit primary-ledger mutation state."""
+
+    def __init__(self, code: str, detail: str, *, audit: dict[str, Any]):
+        super().__init__(code, detail)
+        self.audit = audit
 
 
 def _file_identity(metadata: os.stat_result) -> tuple[int, int, int, int, int]:
@@ -78,16 +82,13 @@ def call_with_stable_errors(
 class RecoveryLedgerApi:
     """Ledger-policy callbacks supplied without introducing an import cycle."""
 
-    recovery_event: str
     max_registry_bytes: int
     max_record_bytes: int
-    max_registry_records: int
     open_registry: Callable[..., tuple[Path, int, BinaryIO]]
     verify: VerifyPrefix
     active_records: Callable[
         [list[dict[str, Any]]], dict[tuple[str, str], dict[str, Any]]
     ]
-    build_record: Callable[..., tuple[dict[str, Any], bytes]]
     operator_reference: Callable[[Any], str]
     begin_operation: Callable[[], None]
 
@@ -149,30 +150,15 @@ class PartialApprovalTailReport:
         )
 
 
-def validate_archive_name(value: Any) -> str:
-    """Validate the canonical owner-private recovery archive filename."""
-
-    filename = _bounded_text(value, label="archive_file", maximum=255)
-    if (
-        Path(filename).name != filename
-        or not filename.startswith(_ARCHIVE_PREFIX)
-        or not filename.endswith(_ARCHIVE_SUFFIX)
-    ):
-        raise ProductApprovalError(
-            "product_approval.recovery_archive",
-            "approval recovery archive filename is invalid",
-        )
-    token = filename[len(_ARCHIVE_PREFIX) : -len(_ARCHIVE_SUFFIX)]
-    try:
-        canonical_token = str(uuid.UUID(token))
-    except (AttributeError, ValueError):
-        canonical_token = ""
-    if token != canonical_token:
-        raise ProductApprovalError(
-            "product_approval.recovery_archive",
-            "approval recovery archive filename is invalid",
-        )
-    return filename
+def inspect_recovery_evidence(
+    approvals_directory: Path,
+    *,
+    report: PartialApprovalTailReport,
+) -> dict[str, Any]:
+    return _evidence.inspect_recovery_evidence(
+        approvals_directory,
+        report=report,
+    )
 
 
 def acquire_registry_lock(
@@ -251,38 +237,6 @@ def range_digest(descriptor: int, *, offset: int, length: int) -> str:
     return digest.hexdigest()
 
 
-def _copy_range(
-    source_descriptor: int,
-    target_descriptor: int,
-    *,
-    offset: int,
-    length: int,
-) -> str:
-    digest = hashlib.sha256()
-    position = offset
-    remaining = length
-    while remaining:
-        try:
-            chunk = os.pread(
-                source_descriptor, min(_COPY_CHUNK_BYTES, remaining), position
-            )
-        except OSError:
-            raise ProductApprovalError(
-                "product_approval.recovery_read",
-                "approval registry could not be copied for recovery",
-            ) from None
-        if not chunk:
-            raise ProductApprovalError(
-                "product_approval.recovery_changed",
-                "approval registry changed while the recovery archive was written",
-            )
-        _write_all(target_descriptor, chunk)
-        digest.update(chunk)
-        position += len(chunk)
-        remaining -= len(chunk)
-    return digest.hexdigest()
-
-
 def _last_complete_record_offset(descriptor: int, *, size: int) -> int:
     position = size
     while position:
@@ -311,7 +265,6 @@ def inspect_partial_tail_locked(
     *,
     max_registry_bytes: int,
     max_record_bytes: int,
-    max_registry_records: int,
     verify_prefix: VerifyPrefix,
 ) -> tuple[PartialApprovalTailReport, list[dict[str, Any]]]:
     """Inspect exactly one incomplete EOF fragment under an existing lock."""
@@ -355,11 +308,6 @@ def inspect_partial_tail_locked(
             "product_approval.recovery_prefix",
             "approval-registry prefix verification did not consume the exact prefix",
         )
-    if len(records) >= max_registry_records:
-        raise ProductApprovalError(
-            "product_approval.registry_limit",
-            "verified prefix cannot accommodate a recovery record",
-        )
     report = PartialApprovalTailReport(
         registry_sha256=range_digest(descriptor, offset=0, length=size),
         registry_bytes=size,
@@ -384,116 +332,6 @@ def inspect_partial_tail_locked(
             "approval registry changed during recovery inspection",
         )
     return report, records
-
-
-def create_recovery_archive(
-    approvals_directory: Path,
-    *,
-    source_descriptor: int,
-    report: PartialApprovalTailReport,
-) -> tuple[str, str]:
-    """Publish and verify an exact owner-private copy before source mutation."""
-
-    directory_descriptor = _open_private_directory(
-        approvals_directory, label="approval.directory"
-    )
-    token = str(uuid.uuid4())
-    pending_name = f".product-approval-recovery-{token}.pending"
-    archive_name = f"{_ARCHIVE_PREFIX}{token}{_ARCHIVE_SUFFIX}"
-    archive_descriptor: int | None = None
-    pending_exists = False
-    pending_identity: tuple[int, int] | None = None
-    sealed_exists = False
-    succeeded = False
-    try:
-        try:
-            archive_descriptor = os.open(
-                pending_name,
-                _ARCHIVE_CREATE_FLAGS,
-                PRIVATE_FILE_MODE,
-                dir_fd=directory_descriptor,
-            )
-            pending_exists = True
-            metadata = os.fstat(archive_descriptor)
-            pending_identity = (metadata.st_dev, metadata.st_ino)
-        except OSError:
-            raise ProductApprovalError(
-                "product_approval.recovery_archive_create",
-                "approval recovery archive could not be created securely",
-            ) from None
-        _prepare_created_private_file(
-            archive_descriptor, label="approval.recovery_archive"
-        )
-        copied_digest = _copy_range(
-            source_descriptor,
-            archive_descriptor,
-            offset=0,
-            length=report.registry_bytes,
-        )
-        if not secrets.compare_digest(copied_digest, report.registry_sha256):
-            raise ProductApprovalError(
-                "product_approval.recovery_changed",
-                "approval registry changed while the recovery archive was written",
-            )
-        os.fsync(archive_descriptor)
-        os.close(archive_descriptor)
-        archive_descriptor = None
-        try:
-            rename_noreplace(directory_descriptor, pending_name, archive_name)
-        except FileExistsError:
-            raise ProductApprovalError(
-                "product_approval.recovery_archive_exists",
-                "approval recovery archive destination already exists",
-            ) from None
-        except OSError:
-            raise ProductApprovalError(
-                "product_approval.recovery_archive_seal",
-                "approval recovery archive could not be sealed",
-            ) from None
-        pending_exists = False
-        sealed_exists = True
-        try:
-            verified_descriptor = os.open(
-                archive_name, _READ_FLAGS, dir_fd=directory_descriptor
-            )
-        except OSError:
-            raise ProductApprovalError(
-                "product_approval.recovery_archive_seal",
-                "sealed approval recovery archive could not be verified",
-            ) from None
-        try:
-            sealed_metadata = _validate_private_file(
-                verified_descriptor, label="approval.recovery_archive"
-            )
-            if (
-                pending_identity != (sealed_metadata.st_dev, sealed_metadata.st_ino)
-                or sealed_metadata.st_size != report.registry_bytes
-            ):
-                raise ProductApprovalError(
-                    "product_approval.recovery_archive_changed",
-                    "sealed approval recovery archive identity changed",
-                )
-            sealed_digest = range_digest(
-                verified_descriptor, offset=0, length=report.registry_bytes
-            )
-            if not secrets.compare_digest(sealed_digest, report.registry_sha256):
-                raise ProductApprovalError(
-                    "product_approval.recovery_archive_changed",
-                    "sealed approval recovery archive contents changed",
-                )
-        finally:
-            os.close(verified_descriptor)
-        os.fsync(directory_descriptor)
-        succeeded = True
-        return archive_name, str(approvals_directory / archive_name)
-    finally:
-        if archive_descriptor is not None:
-            os.close(archive_descriptor)
-        if pending_exists and pending_identity is not None:
-            _unlink_matching_entry(directory_descriptor, pending_name, pending_identity)
-        if not succeeded and sealed_exists and pending_identity is not None:
-            _unlink_matching_entry(directory_descriptor, archive_name, pending_identity)
-        os.close(directory_descriptor)
 
 
 def _bounded_nonnegative_integer(value: Any, *, label: str) -> int:
@@ -522,6 +360,37 @@ def _active_signature(
     )
 
 
+def _mutation_audit(
+    *,
+    mutation_state: str,
+    registry: Path,
+    report: PartialApprovalTailReport,
+    archive_path: str,
+    manifest_path: str,
+    manifest: dict[str, Any] | None,
+) -> dict[str, Any]:
+    result = {
+        "mutation_state": mutation_state,
+        "registry": str(registry),
+        "registry_identity": {
+            "device": report.registry_device,
+            "inode": report.registry_inode,
+        },
+        "expected_repaired_registry": {
+            "sha256": report.verified_prefix_sha256,
+            "bytes": report.verified_prefix_bytes,
+            "record_count": report.verified_prefix_record_count,
+            "last_record_sha256": report.verified_prefix_last_record_sha256,
+        },
+        "archive_path": archive_path,
+        "manifest_path": manifest_path,
+        "reconciliation_arguments": ["product-recovery-status"],
+    }
+    if manifest is not None:
+        result["recovery_manifest"] = manifest
+    return result
+
+
 def _recovery_report_locked(
     descriptor: int,
     *,
@@ -531,7 +400,6 @@ def _recovery_report_locked(
         descriptor,
         max_registry_bytes=api.max_registry_bytes,
         max_record_bytes=api.max_record_bytes,
-        max_registry_records=api.max_registry_records,
         verify_prefix=api.verify,
     )
     api.active_records(records)
@@ -623,12 +491,14 @@ def approval_recovery_status(*, api: RecoveryLedgerApi) -> dict[str, Any]:
                 "registry_sha256": range_digest(descriptor, offset=0, length=total),
             }
         report, _records = _recovery_report_locked(descriptor, api=api)
+        evidence = inspect_recovery_evidence(registry.parent, report=report)
         return {
             "ok": True,
             "status": "recoverable_partial_tail",
             "registry": str(registry),
             "recovery_required": True,
             "recovery": report.summary(),
+            "existing_recovery_evidence": evidence,
             "recovery_arguments": _recovery_arguments(report),
             "next_step": (
                 "Review the exact guards and obtain direct operator confirmation. "
@@ -733,7 +603,11 @@ def recover_partial_tail(
     expected_tail_length = _bounded_nonnegative_integer(
         expected_tail_bytes, label="expected_tail_bytes"
     )
-    normalized_reason = _bounded_text(reason, label="reason", maximum=500)
+    normalized_reason = _bounded_text(
+        reason,
+        label="reason",
+        maximum=MAX_RECOVERY_REASON_LENGTH,
+    )
     normalized_reference = api.operator_reference(operator_reference)
 
     registry, descriptor, handle = api.open_registry(exclusive=True, create=False)
@@ -771,73 +645,99 @@ def recover_partial_tail(
                 "approval registry changed or does not match the inspected recovery guards",
             )
         active_before = api.active_records(records)
-        archive_file, archive_path = create_recovery_archive(
+        archive_file, archive_path = _evidence.create_recovery_archive(
             registry.parent,
             source_descriptor=descriptor,
             report=report,
         )
-        attributes = {
-            "archive_file": archive_file,
-            "archive_sha256": report.registry_sha256,
-            "archive_byte_length": report.registry_bytes,
-            "damaged_registry_sha256": report.registry_sha256,
-            "damaged_registry_byte_length": report.registry_bytes,
-            "verified_prefix_sha256": report.verified_prefix_sha256,
-            "verified_prefix_byte_length": report.verified_prefix_bytes,
-            "verified_prefix_record_count": report.verified_prefix_record_count,
-            "verified_prefix_last_record_sha256": (
-                report.verified_prefix_last_record_sha256
-            ),
-            "partial_tail_sha256": report.partial_tail_sha256,
-            "partial_tail_byte_length": report.partial_tail_bytes,
-            "partial_tail_fragment_count": 1,
-            "reason": normalized_reason,
-            "operator_reference": normalized_reference,
-        }
-        recovery_record, recovery_raw = api.build_record(
-            records,
-            event_type=api.recovery_event,
-            attributes=attributes,
-            now=now,
+        expected_manifest_path = str(
+            registry.parent
+            / (
+                f"{_evidence.MANIFEST_PREFIX}{_evidence.recovery_id(report)}"
+                f"{_evidence.MANIFEST_SUFFIX}"
+            )
         )
-        if report.verified_prefix_bytes + len(recovery_raw) > api.max_registry_bytes:
-            raise ProductApprovalError(
-                "product_approval.registry_limit",
-                "verified prefix cannot accommodate the recovery record",
+        try:
+            recovery_manifest, manifest_path = _evidence.create_recovery_manifest(
+                registry.parent,
+                archive_file=archive_file,
+                report=report,
+                reason=normalized_reason,
+                operator_reference=normalized_reference,
+                now=now,
             )
+        except ProductApprovalError as error:
+            raise RecoveryMutationError(
+                error.code,
+                error.detail,
+                audit=_mutation_audit(
+                    mutation_state="not_attempted",
+                    registry=registry,
+                    report=report,
+                    archive_path=archive_path,
+                    manifest_path=expected_manifest_path,
+                    manifest=None,
+                ),
+            ) from error
 
-        current_report, current_records = _recovery_report_locked(descriptor, api=api)
-        _revalidate_registry_path(registry, descriptor, current_report)
-        if current_report.guard_tuple() != report.guard_tuple() or _active_signature(
-            api.active_records(current_records)
-        ) != _active_signature(active_before):
-            raise ProductApprovalError(
-                "product_approval.recovery_changed",
-                "approval registry changed after recovery inspection",
+        try:
+            current_report, current_records = _recovery_report_locked(
+                descriptor, api=api
             )
+            _revalidate_registry_path(registry, descriptor, current_report)
+            if (
+                current_report.guard_tuple() != report.guard_tuple()
+                or _active_signature(api.active_records(current_records))
+                != _active_signature(active_before)
+            ):
+                raise ProductApprovalError(
+                    "product_approval.recovery_changed",
+                    "approval registry changed after recovery inspection",
+                )
+        except ProductApprovalError as error:
+            raise RecoveryMutationError(
+                error.code,
+                error.detail,
+                audit=_mutation_audit(
+                    mutation_state="not_attempted",
+                    registry=registry,
+                    report=report,
+                    archive_path=archive_path,
+                    manifest_path=manifest_path,
+                    manifest=recovery_manifest,
+                ),
+            ) from error
 
         try:
             os.ftruncate(descriptor, report.verified_prefix_bytes)
-            os.fsync(descriptor)
-        except OSError:
-            raise ProductApprovalError(
+        except OSError as error:
+            raise RecoveryMutationError(
                 "product_approval.recovery_truncate",
-                "approval registry partial tail could not be removed",
-            ) from None
-
+                "approval registry partial-tail removal was not completed",
+                audit=_mutation_audit(
+                    mutation_state="unknown",
+                    registry=registry,
+                    report=report,
+                    archive_path=archive_path,
+                    manifest_path=manifest_path,
+                    manifest=recovery_manifest,
+                ),
+            ) from error
         try:
-            os.lseek(descriptor, 0, os.SEEK_END)
-            _write_all(descriptor, recovery_raw)
             os.fsync(descriptor)
-        except (OSError, ProjectError) as error:
-            try:
-                os.ftruncate(descriptor, report.verified_prefix_bytes)
-                os.fsync(descriptor)
-            except OSError:
-                pass
-            raise ProductApprovalError(
-                "product_approval.recovery_write",
-                "approval recovery record append did not complete",
+        except OSError as error:
+            raise RecoveryMutationError(
+                "product_approval.recovery_commit_uncertain",
+                "approval registry reached the verified prefix but fsync failed; "
+                "durability is uncertain and the old guards must not be reused",
+                audit=_mutation_audit(
+                    mutation_state="unknown",
+                    registry=registry,
+                    report=report,
+                    archive_path=archive_path,
+                    manifest_path=manifest_path,
+                    manifest=recovery_manifest,
+                ),
             ) from error
 
         try:
@@ -845,29 +745,64 @@ def recover_partial_tail(
             final_records, final_bytes = api.verify(handle)
             active_after = api.active_records(final_records)
             if (
-                final_bytes != report.verified_prefix_bytes + len(recovery_raw)
-                or final_records[-1]["record_id"] != recovery_record["record_id"]
+                final_bytes != report.verified_prefix_bytes
+                or range_digest(
+                    descriptor,
+                    offset=0,
+                    length=report.verified_prefix_bytes,
+                )
+                != report.verified_prefix_sha256
                 or _active_signature(active_after) != _active_signature(active_before)
             ):
                 raise ProductApprovalError(
                     "product_approval.recovery_verify",
                     "recovered approval registry did not preserve active approvals",
                 )
-        except ProductApprovalError:
-            try:
-                os.ftruncate(descriptor, report.verified_prefix_bytes)
-                os.fsync(descriptor)
-            except OSError:
-                pass
-            raise
+        except (OSError, ProjectError, ProductApprovalError) as error:
+            api.begin_operation()
+            return {
+                "ok": False,
+                "status": "recovery_committed_verification_uncertain",
+                **_mutation_audit(
+                    mutation_state="committed",
+                    registry=registry,
+                    report=report,
+                    archive_path=archive_path,
+                    manifest_path=manifest_path,
+                    manifest=recovery_manifest,
+                ),
+                "verification_error": {
+                    "code": getattr(
+                        error,
+                        "code",
+                        "product_approval.recovery_verify_io",
+                    ),
+                    "detail": getattr(
+                        error,
+                        "detail",
+                        "post-commit approval-ledger verification failed",
+                    ),
+                },
+                "next_step": (
+                    "Do not reuse the old recovery guards. Run the returned "
+                    "read-only product-recovery-status command and compare the "
+                    "primary ledger to expected_repaired_registry and the immutable "
+                    "recovery manifest."
+                ),
+            }
         api.begin_operation()
         return {
             "ok": True,
             "status": "recovered_partial_tail",
-            "registry": str(registry),
-            "archive_path": archive_path,
+            **_mutation_audit(
+                mutation_state="committed",
+                registry=registry,
+                report=report,
+                archive_path=archive_path,
+                manifest_path=manifest_path,
+                manifest=recovery_manifest,
+            ),
             "original": report.summary(),
-            "recovery_record": recovery_record,
             "record_count": len(final_records),
             "active_approval_count": len(active_after),
             "active_approvals_unchanged": True,

@@ -18,18 +18,74 @@ if str(ROOT) not in sys.path:
 from tools.cam1lib import product_approvals  # noqa: E402
 
 
+def _wait_for(path: Path, *, detail: str) -> None:
+    deadline = time.monotonic() + 10
+    while not path.exists():
+        if time.monotonic() >= deadline:
+            raise SystemExit(detail)
+        time.sleep(0.005)
+
+
+def _run_create_lock_timeout() -> int:
+    if len(sys.argv) != 8:
+        raise SystemExit(
+            "usage: _product_approval_process.py create-lock-timeout ACCOUNT_HOME "
+            "PUBLISHED CONTINUE VENDOR PRODUCT_BIN FINGERPRINT"
+        )
+    account_home, published, proceed, vendor, product_bin, fingerprint = sys.argv[2:]
+    real_lock = product_approvals._recovery.acquire_registry_lock
+
+    def coordinated_lock(
+        descriptor: int,
+        *,
+        exclusive: bool,
+        timeout_seconds: float,
+        poll_seconds: float,
+    ) -> None:
+        Path(published).touch(mode=0o600)
+        _wait_for(Path(proceed), detail="creator continuation gate was not opened")
+        real_lock(
+            descriptor,
+            exclusive=exclusive,
+            timeout_seconds=0.05,
+            poll_seconds=min(poll_seconds, 0.005),
+        )
+
+    with (
+        mock.patch.object(
+            product_approvals,
+            "account_home",
+            return_value=Path(account_home),
+        ),
+        mock.patch.object(
+            product_approvals._recovery,
+            "acquire_registry_lock",
+            side_effect=coordinated_lock,
+        ),
+    ):
+        try:
+            product_approvals.approve_candidate(
+                vendor=vendor,
+                product_bin=product_bin,
+                expected_fingerprint_sha256=fingerprint,
+                operator_reference="direct creation-race test confirmation",
+            )
+        except product_approvals.ProductApprovalError as error:
+            print(json.dumps({"code": error.code}, sort_keys=True))
+            return 0
+    raise SystemExit("creator unexpectedly acquired the registry lock")
+
+
 def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "create-lock-timeout":
+        return _run_create_lock_timeout()
     if len(sys.argv) != 6:
         raise SystemExit(
             "usage: _product_approval_process.py ACCOUNT_HOME GATE "
             "VENDOR PRODUCT_BIN FINGERPRINT"
         )
     account_home, gate, vendor, product_bin, fingerprint = sys.argv[1:]
-    deadline = time.monotonic() + 10
-    while not Path(gate).exists():
-        if time.monotonic() >= deadline:
-            raise SystemExit("concurrency gate was not opened")
-        time.sleep(0.005)
+    _wait_for(Path(gate), detail="concurrency gate was not opened")
     with mock.patch.object(
         product_approvals,
         "account_home",

@@ -273,9 +273,30 @@ def product_recovery_status() -> dict[str, Any]:
 
 def recover_product_partial_tail(**kwargs: Any) -> dict[str, Any]:
     try:
-        return product_approvals.recover_partial_tail(**kwargs)
+        result = product_approvals.recover_partial_tail(**kwargs)
+        arguments = result.get("reconciliation_arguments")
+        if isinstance(arguments, list):
+            command = (
+                sys.executable,
+                str(Path(__file__).resolve().with_name("cam1_transport.py")),
+                *arguments,
+            )
+            result["reconciliation_command"] = list(command)
+            result["reconciliation_command_text"] = shlex.join(command)
+        return result
     except product_approvals.ProductApprovalError as error:
-        raise TransportError(error.code, error.detail) from error
+        audit = getattr(error, "audit", None)
+        if isinstance(audit, dict):
+            arguments = audit.get("reconciliation_arguments")
+            if isinstance(arguments, list):
+                command = (
+                    sys.executable,
+                    str(Path(__file__).resolve().with_name("cam1_transport.py")),
+                    *arguments,
+                )
+                audit["reconciliation_command"] = list(command)
+                audit["reconciliation_command_text"] = shlex.join(command)
+        raise TransportError(error.code, error.detail, audit=audit) from error
 
 
 def revoke_product_executable(**kwargs: Any) -> dict[str, Any]:

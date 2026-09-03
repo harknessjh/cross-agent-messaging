@@ -5,11 +5,15 @@ from __future__ import annotations
 
 import concurrent.futures
 import errno
+import fcntl
 import hashlib
 import json
 import os
 import stat
+import subprocess
+import sys
 import tempfile
+import time
 import unittest
 import uuid
 from pathlib import Path
@@ -20,6 +24,10 @@ from tools.cam1lib import (
     product_approval_recovery,
     product_approvals,
     product_executables,
+)
+
+APPROVAL_PROCESS_HELPER = (
+    Path(__file__).resolve().with_name("_product_approval_process.py")
 )
 
 
@@ -159,23 +167,31 @@ class ProductApprovalRecoveryTests(unittest.TestCase):
             status["recovery"]["registry_sha256"],
         )
         self.assertTrue(result["active_approvals_unchanged"])
+        self.assertEqual(result["mutation_state"], "committed")
         self.assertFalse(self.marker.exists())
 
         verified = product_approvals.approval_status()
-        self.assertEqual(verified["record_count"], 2)
+        self.assertEqual(verified["record_count"], 1)
         self.assertEqual(verified["active"][0]["record_id"], approval_id)
-        self.assertTrue(self.registry.read_bytes().startswith(prefix))
-        records = [json.loads(line) for line in self.registry.read_bytes().splitlines()]
-        recovery_record = records[-1]
+        self.assertEqual(self.registry.read_bytes(), prefix)
+        # A reader that knows only the original approve/revoke ledger vocabulary
+        # can replay the recovered primary file without encountering a new event.
+        with self.registry.open("rb") as legacy_handle:
+            legacy_records, legacy_bytes = product_approvals._verify(legacy_handle)
+        self.assertEqual(legacy_bytes, len(prefix))
         self.assertEqual(
-            recovery_record["event_type"], product_approvals.RECOVERY_EVENT
+            {record["event_type"] for record in legacy_records},
+            {product_approvals.APPROVAL_EVENT},
         )
-        self.assertEqual(recovery_record["sequence"], 2)
-        self.assertEqual(
-            recovery_record["previous_record_sha256"], records[0]["record_sha256"]
+
+        manifest_path = Path(result["manifest_path"])
+        self.assertEqual(stat.S_IMODE(manifest_path.stat().st_mode), 0o600)
+        manifest = product_approval_recovery.parse_recovery_manifest(
+            manifest_path.read_bytes()
         )
+        self.assertEqual(manifest["status"], "prepared")
         self.assertEqual(
-            recovery_record["attributes"]["partial_tail_sha256"],
+            manifest["partial_tail_sha256"],
             hashlib.sha256(damaged[len(prefix) :]).hexdigest(),
         )
 
@@ -353,23 +369,43 @@ class ProductApprovalRecoveryTests(unittest.TestCase):
 
     def test_recovery_refuses_archive_symlink_without_registry_mutation(self) -> None:
         _prefix, damaged, status = self.damage_registry()
-        token = uuid.UUID("00000000-0000-4000-8000-000000000099")
+        token = uuid.uuid5(
+            product_approval_recovery._RECOVERY_NAMESPACE,
+            status["recovery"]["registry_sha256"],
+        )
         archive = self.registry.parent / f"product-executables-v1.damaged-{token}.jsonl"
         outside = self.home / "outside"
         outside.write_bytes(b"outside")
         archive.symlink_to(outside)
 
-        with (
-            mock.patch.object(
-                product_approval_recovery.uuid, "uuid4", return_value=token
-            ),
-            self.assertRaises(product_approvals.ProductApprovalError) as symlink,
-        ):
+        with self.assertRaises(product_approvals.ProductApprovalError) as symlink:
             product_approvals.recover_partial_tail(**self.recovery_kwargs(status))
         self.assertEqual(
-            symlink.exception.code, "product_approval.recovery_archive_exists"
+            symlink.exception.code, "product_approval.recovery_archive_changed"
         )
         self.assertTrue(archive.is_symlink())
+        self.assertEqual(outside.read_bytes(), b"outside")
+        self.assertEqual(self.registry.read_bytes(), damaged)
+
+    def test_recovery_refuses_manifest_symlink_without_registry_mutation(self) -> None:
+        _prefix, damaged, status = self.damage_registry()
+        token = uuid.uuid5(
+            product_approval_recovery._RECOVERY_NAMESPACE,
+            status["recovery"]["registry_sha256"],
+        )
+        manifest = (
+            self.registry.parent / f"product-executables-v1.recovery-{token}.json"
+        )
+        outside = self.home / "outside-manifest"
+        outside.write_bytes(b"outside")
+        manifest.symlink_to(outside)
+
+        with self.assertRaises(product_approvals.ProductApprovalError) as symlink:
+            product_approvals.recover_partial_tail(**self.recovery_kwargs(status))
+        self.assertEqual(
+            symlink.exception.code, "product_approval.recovery_manifest_changed"
+        )
+        self.assertTrue(manifest.is_symlink())
         self.assertEqual(outside.read_bytes(), b"outside")
         self.assertEqual(self.registry.read_bytes(), damaged)
 
@@ -395,50 +431,242 @@ class ProductApprovalRecoveryTests(unittest.TestCase):
             outcomes = list(executor.map(lambda _index: recover(), range(2)))
         self.assertEqual(outcomes.count("recovered_partial_tail"), 1)
         self.assertEqual(outcomes.count("product_approval.recovery_not_needed"), 1)
-        self.assertEqual(product_approvals.approval_status()["record_count"], 2)
+        self.assertEqual(product_approvals.approval_status()["record_count"], 1)
         archives = list(
             self.registry.parent.glob("product-executables-v1.damaged-*.jsonl")
         )
         self.assertEqual(len(archives), 1)
         self.assertEqual(archives[0].read_bytes(), damaged)
 
-    def test_abrupt_interruption_leaves_a_recoverable_partial_tail(self) -> None:
+    def test_abrupt_interruption_after_truncate_leaves_valid_prefix_and_evidence(
+        self,
+    ) -> None:
         prefix, damaged, status = self.damage_registry()
-        original_write = product_approval_recovery._write_all
-        calls = 0
+        original_truncate = product_approval_recovery.os.ftruncate
 
-        def interrupted_write(descriptor: int, raw: bytes) -> None:
-            nonlocal calls
-            calls += 1
-            if calls == 1:
-                original_write(descriptor, raw)
-                return
-            original_write(descriptor, raw[:17])
+        def interrupted_truncate(descriptor: int, length: int) -> None:
+            original_truncate(descriptor, length)
             raise KeyboardInterrupt
 
         with (
             mock.patch.object(
-                product_approval_recovery, "_write_all", side_effect=interrupted_write
+                product_approval_recovery.os,
+                "ftruncate",
+                side_effect=interrupted_truncate,
             ),
             self.assertRaises(KeyboardInterrupt),
         ):
             product_approvals.recover_partial_tail(**self.recovery_kwargs(status))
 
-        interrupted = self.registry.read_bytes()
-        self.assertTrue(interrupted.startswith(prefix))
-        self.assertGreater(len(interrupted), len(prefix))
+        self.assertEqual(self.registry.read_bytes(), prefix)
         follow_up = product_approvals.approval_recovery_status()
-        self.assertEqual(follow_up["status"], "recoverable_partial_tail")
-        self.assertEqual(follow_up["recovery"]["verified_prefix_bytes"], len(prefix))
+        self.assertEqual(follow_up["status"], "recovery_not_needed")
         archives = list(
             self.registry.parent.glob("product-executables-v1.damaged-*.jsonl")
         )
         self.assertEqual(len(archives), 1)
         self.assertEqual(archives[0].read_bytes(), damaged)
-        self.assertEqual(
-            follow_up["recovery"]["partial_tail_sha256"],
-            hashlib.sha256(interrupted[len(prefix) :]).hexdigest(),
+        manifests = list(
+            self.registry.parent.glob("product-executables-v1.recovery-*.json")
         )
+        self.assertEqual(len(manifests), 1)
+        manifest = product_approval_recovery.parse_recovery_manifest(
+            manifests[0].read_bytes()
+        )
+        self.assertEqual(
+            manifest["verified_prefix_sha256"], hashlib.sha256(prefix).hexdigest()
+        )
+
+    def test_existing_prepared_evidence_is_reused_after_pretruncate_failure(
+        self,
+    ) -> None:
+        prefix, damaged, status = self.damage_registry()
+        arguments = self.recovery_kwargs(status)
+        with (
+            mock.patch.object(
+                product_approval_recovery,
+                "_revalidate_registry_path",
+                side_effect=product_approvals.ProductApprovalError(
+                    "synthetic.pretruncate", "synthetic pretruncate failure"
+                ),
+            ),
+            self.assertRaises(
+                product_approval_recovery.RecoveryMutationError
+            ) as failed,
+        ):
+            product_approvals.recover_partial_tail(**arguments)
+        self.assertEqual(failed.exception.audit["mutation_state"], "not_attempted")
+        self.assertEqual(self.registry.read_bytes(), damaged)
+        self.assertEqual(
+            product_approvals.approval_recovery_status()["existing_recovery_evidence"][
+                "status"
+            ],
+            "prepared",
+        )
+        before = sorted(path.name for path in self.registry.parent.iterdir())
+        result = product_approvals.recover_partial_tail(**arguments)
+        after = sorted(path.name for path in self.registry.parent.iterdir())
+        self.assertEqual(before, after)
+        self.assertEqual(self.registry.read_bytes(), prefix)
+        self.assertEqual(result["mutation_state"], "committed")
+
+    def test_reason_bound_matches_manifest_schema(self) -> None:
+        _prefix, damaged, status = self.damage_registry()
+        arguments = self.recovery_kwargs(status)
+        arguments["reason"] = "r" * 600
+        with self.assertRaises(product_approvals.ProductApprovalError) as runtime:
+            product_approvals.recover_partial_tail(**arguments)
+        self.assertEqual(runtime.exception.code, "product_approval.field")
+        self.assertEqual(runtime.exception.audit["mutation_state"], "not_attempted")
+        self.assertEqual(self.registry.read_bytes(), damaged)
+
+        arguments["reason"] = "r" * 500
+        recovered = product_approvals.recover_partial_tail(**arguments)
+        manifest = dict(recovered["recovery_manifest"])
+        manifest["reason"] = "r" * 600
+        unsigned = dict(manifest)
+        unsigned.pop("record_sha256")
+        manifest["record_sha256"] = product_approvals._digest(unsigned)
+        with self.assertRaises(product_approvals.ProductApprovalError):
+            product_approval_recovery.parse_recovery_manifest(
+                product_approvals._canonical_json(manifest)
+            )
+
+    def test_fsync_failure_after_truncate_reports_unknown_mutation(self) -> None:
+        prefix, damaged, status = self.damage_registry()
+        real_fsync = product_approval_recovery.os.fsync
+        registry_inode = self.registry.stat().st_ino
+
+        def fail_registry_fsync(descriptor: int) -> None:
+            if os.fstat(descriptor).st_ino == registry_inode and os.fstat(
+                descriptor
+            ).st_size == len(prefix):
+                raise OSError(errno.EIO, "synthetic commit fsync failure")
+            real_fsync(descriptor)
+
+        with (
+            mock.patch.object(
+                product_approval_recovery.os,
+                "fsync",
+                side_effect=fail_registry_fsync,
+            ),
+            self.assertRaises(
+                product_approval_recovery.RecoveryMutationError
+            ) as uncertain,
+        ):
+            product_approvals.recover_partial_tail(**self.recovery_kwargs(status))
+        self.assertEqual(uncertain.exception.audit["mutation_state"], "unknown")
+        self.assertEqual(self.registry.read_bytes(), prefix)
+        self.assertNotEqual(self.registry.read_bytes(), damaged)
+        self.assertEqual(
+            uncertain.exception.audit["reconciliation_arguments"],
+            ["product-recovery-status"],
+        )
+        self.assertTrue(Path(uncertain.exception.audit["archive_path"]).exists())
+        self.assertTrue(Path(uncertain.exception.audit["manifest_path"]).exists())
+
+    def test_postcommit_verification_failure_returns_uncertain_result(self) -> None:
+        prefix, _damaged, status = self.damage_registry()
+        real_verify = product_approvals._verify
+        calls = 0
+
+        def fail_final_verification(
+            handle: object,
+        ) -> tuple[list[dict[str, object]], int]:
+            nonlocal calls
+            calls += 1
+            if calls >= 3:
+                raise OSError(errno.EIO, "synthetic final verification failure")
+            return real_verify(handle)
+
+        arguments = list(status["recovery_arguments"])
+        arguments[arguments.index("DIRECT_OPERATOR_REFERENCE")] = (
+            "direct postcommit verification test"
+        )
+        arguments[
+            arguments.index("Describe the observed interrupted approval-ledger append")
+        ] = "postcommit verification test"
+        with mock.patch.object(
+            product_approvals, "_verify", side_effect=fail_final_verification
+        ):
+            returncode, result = self.invoke_product_cli(*arguments)
+        self.assertEqual(returncode, 3)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "recovery_committed_verification_uncertain")
+        self.assertEqual(result["mutation_state"], "committed")
+        self.assertEqual(self.registry.read_bytes(), prefix)
+        self.assertTrue(Path(result["archive_path"]).exists())
+        self.assertTrue(Path(result["manifest_path"]).exists())
+        self.assertEqual(
+            result["reconciliation_arguments"], ["product-recovery-status"]
+        )
+        self.assertIn("reconciliation_command", result)
+        with self.assertRaises(product_approvals.ProductApprovalError) as stale:
+            product_approvals.recover_partial_tail(**self.recovery_kwargs(status))
+        self.assertEqual(stale.exception.code, "product_approval.recovery_not_needed")
+
+    def test_ordinary_status_directs_only_bounded_eof_tail_to_recovery(self) -> None:
+        self.approve()
+        complete = self.registry.read_bytes()
+        self.registry.write_bytes(complete + b'{"interrupted":')
+        self.registry.chmod(0o600)
+        with self.assertRaises(product_approvals.ProductApprovalError) as partial:
+            product_approvals.approval_status()
+        self.assertEqual(partial.exception.code, "product_approval.recovery_required")
+
+        self.registry.write_bytes(complete + b"not-json\n")
+        self.registry.chmod(0o600)
+        with self.assertRaises(product_approvals.ProductApprovalError) as malformed:
+            product_approvals.approval_status()
+        self.assertEqual(malformed.exception.code, "product_approval.record")
+
+    def test_created_registry_remains_linked_when_creator_loses_lock(self) -> None:
+        candidate = product_executables.discover_candidate(
+            "claude-code", str(self.executable), allow_path_lookup=False
+        )
+        published = self.home / "registry-published"
+        proceed = self.home / "creator-proceed"
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                str(APPROVAL_PROCESS_HELPER),
+                "create-lock-timeout",
+                str(self.home),
+                str(published),
+                str(proceed),
+                "claude-code",
+                str(self.executable),
+                candidate.fingerprint_sha256,
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        deadline = time.monotonic() + 10
+        while not published.exists():
+            if time.monotonic() >= deadline:
+                process.kill()
+                self.fail("creator did not publish the registry")
+            time.sleep(0.005)
+        descriptor = os.open(self.registry, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            winner_inode = os.fstat(descriptor).st_ino
+            proceed.touch(mode=0o600)
+            stdout, stderr = process.communicate(timeout=10)
+            self.assertEqual(process.returncode, 0, stderr)
+            self.assertEqual(
+                json.loads(stdout)["code"], "product_approval.lock_timeout"
+            )
+            os.write(descriptor, b"winner-owned-inode\n")
+            os.fsync(descriptor)
+            self.assertTrue(self.registry.exists())
+            self.assertEqual(self.registry.stat().st_ino, winner_inode)
+            self.assertEqual(self.registry.read_bytes(), b"winner-owned-inode\n")
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
 
     def test_registry_lock_wait_is_bounded(self) -> None:
         self.approve()
@@ -500,13 +728,14 @@ class ProductApprovalRecoveryTests(unittest.TestCase):
             arguments.index("Describe the observed interrupted approval-ledger append")
         ] = "CLI test interrupted append"
         with mock.patch.object(
-            product_approval_recovery,
+            product_approval_recovery._evidence,
             "_write_all",
             side_effect=OSError(errno.ENOSPC, "synthetic archive failure"),
         ):
             returncode, failed = self.invoke_product_cli(*arguments)
         self.assertEqual(returncode, 2)
         self.assertEqual(failed["error"]["code"], "product_approval.recovery_io")
+        self.assertEqual(failed["audit"]["mutation_state"], "not_attempted")
         self.assertEqual(self.registry.read_bytes(), damaged)
         self.assertEqual(
             list(self.registry.parent.glob("product-executables-v1.damaged-*.jsonl")),
@@ -528,8 +757,9 @@ class ProductApprovalRecoveryTests(unittest.TestCase):
         returncode, recovered = self.invoke_product_cli(*arguments)
         self.assertEqual(returncode, 0)
         self.assertEqual(recovered["status"], "recovered_partial_tail")
+        self.assertEqual(recovered["mutation_state"], "committed")
         self.assertTrue(recovered["active_approvals_unchanged"])
-        self.assertEqual(product_approvals.approval_status()["record_count"], 2)
+        self.assertEqual(product_approvals.approval_status()["record_count"], 1)
         self.assertFalse(self.marker.exists())
 
 

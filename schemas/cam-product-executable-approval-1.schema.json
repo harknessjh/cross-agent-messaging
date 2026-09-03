@@ -10,13 +10,12 @@
     "sequence": {"type": "integer", "minimum": 1, "maximum": 10000},
     "record_id": {"type": "string", "format": "uuid"},
     "recorded_at": {"type": "string", "format": "date-time", "maxLength": 64},
-    "event_type": {"enum": ["product_executable.approved", "product_executable.revoked", "product_executable.recovered_partial_tail"]},
+    "event_type": {"enum": ["product_executable.approved", "product_executable.revoked"]},
     "previous_record_sha256": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]},
     "attributes": {
       "oneOf": [
         {"$ref": "#/$defs/approval"},
-        {"$ref": "#/$defs/revocation"},
-        {"$ref": "#/$defs/recovery"}
+        {"$ref": "#/$defs/revocation"}
       ]
     },
     "record_sha256": {"$ref": "#/$defs/sha256"}
@@ -94,32 +93,6 @@
         "canonical_path": {"$ref": "#/$defs/path"},
         "fingerprint_sha256": {"$ref": "#/$defs/sha256"},
         "approval_record_id": {"type": "string", "format": "uuid"},
-        "operator_reference": {"$ref": "#/$defs/singleLine"}
-      }
-    },
-    "recovery": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["archive_file", "archive_sha256", "archive_byte_length", "damaged_registry_sha256", "damaged_registry_byte_length", "verified_prefix_sha256", "verified_prefix_byte_length", "verified_prefix_record_count", "verified_prefix_last_record_sha256", "partial_tail_sha256", "partial_tail_byte_length", "partial_tail_fragment_count", "reason", "operator_reference"],
-      "properties": {
-        "archive_file": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 255,
-          "pattern": "^product-executables-v1\\.damaged-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.jsonl$"
-        },
-        "archive_sha256": {"$ref": "#/$defs/sha256"},
-        "archive_byte_length": {"type": "integer", "minimum": 1, "maximum": 16777216},
-        "damaged_registry_sha256": {"$ref": "#/$defs/sha256"},
-        "damaged_registry_byte_length": {"type": "integer", "minimum": 1, "maximum": 16777216},
-        "verified_prefix_sha256": {"$ref": "#/$defs/sha256"},
-        "verified_prefix_byte_length": {"type": "integer", "minimum": 0, "maximum": 16777216},
-        "verified_prefix_record_count": {"type": "integer", "minimum": 0, "maximum": 9999},
-        "verified_prefix_last_record_sha256": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]},
-        "partial_tail_sha256": {"$ref": "#/$defs/sha256"},
-        "partial_tail_byte_length": {"type": "integer", "minimum": 1, "maximum": 32768},
-        "partial_tail_fragment_count": {"const": 1},
-        "reason": {"$ref": "#/$defs/singleLine"},
         "operator_reference": {"$ref": "#/$defs/singleLine"}
       }
     }

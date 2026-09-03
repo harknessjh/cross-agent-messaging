@@ -196,8 +196,11 @@ reason and `DIRECT_OPERATOR_REFERENCE` placeholders in the command, and run it
 with every guard otherwise unchanged. The command revalidates every guard under
 a bounded exclusive lock,
 archives and fsyncs the exact damaged bytes under `~/CAM/Approvals/`, preserves
-the ledger inode, and appends a typed recovery record without changing active
-approvals.
+the ledger inode, publishes an immutable prepared-recovery manifest, and
+truncates the primary `/1` ledger to its verified approve/revoke prefix without
+changing active approvals. If it reports mutation `unknown` or committed but
+verification uncertain, do not reuse the old guards; run the returned read-only
+reconciliation command.
 
 Do not use recovery for a complete malformed line, invalid canonical bytes,
 digest or hash-chain damage, an oversized file or tail, or changed inspection
@@ -1086,8 +1089,11 @@ Operational recovery rules:
   and tail guards, then obtain direct confirmation before running the returned
   `product-recover-partial-tail` arguments. The command first fsyncs an exact
   owner-private archive under `~/CAM/Approvals/`, preserves the ledger inode,
-  and records recovery without changing active approvals. Never use it for a
-  complete malformed line or an invalid prefix.
+  publishes immutable recovery evidence, and preserves only the verified
+  approve/revoke prefix without changing active approvals. Never use it for a
+  complete malformed line or an invalid prefix. Treat `mutation_state: unknown`
+  or committed-but-verification-uncertain as a reconciliation task, not a safe
+  failure or permission to retry old guards.
 - **A command reports `product_approval.lock_timeout`:** let the bounded account
   approval operation finish, inspect status, and retry. Do not delete or replace
   the registry and do not infer whether the other mutation completed.

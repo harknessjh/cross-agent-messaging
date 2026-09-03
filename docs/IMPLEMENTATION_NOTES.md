@@ -403,15 +403,21 @@ and accepts only one incomplete EOF fragment after a fully verified prefix. The
 mutating command reopens under an exclusive lock, checks the inspected
 device/inode, full-ledger SHA-256 and byte count, prefix SHA-256/count/length,
 and tail SHA-256/length, then archives the exact damaged bytes with mode `0600`
-and fsyncs the archive and directory. It re-inspects before preserving the same
-registry inode with an in-place prefix truncation and typed recovery-record
-append. Recovery records do not participate in the active approval projection.
+and fsyncs the archive and directory. A separate canonical
+`CAM-PRODUCT-EXECUTABLE-RECOVERY/1` prepared manifest records the immutable
+archive/full/prefix/tail guards plus the reason and operator reference. It
+re-inspects before preserving the same registry inode with an in-place prefix
+truncation. The primary approval `/1` schema remains approve/revoke-only for
+backward-compatible readers.
 
-This ordering deliberately exposes only recoverable crash states. A crash
-before truncation leaves the original damaged ledger; after truncation it leaves
-a complete verified prefix; during the final append it can leave that prefix
-plus one incomplete recovery-record fragment. A later operator must inspect and
-confirm any further recovery rather than receiving automatic repair.
+This ordering deliberately exposes only reconcilable crash states. A crash
+before truncation leaves the original damaged ledger and any already fsynced
+archive/manifest; after truncation it leaves the complete verified prefix plus
+both artifacts. The manifest is prepared rather than a false completion claim,
+and its prefix guards let read-only status distinguish the outcome. Failures
+after truncation starts carry `mutation_state: unknown`; final-verification
+failures after truncate+fsync carry `mutation_state: committed` and an exact
+read-only reconciliation command. Matching prior evidence is reused on retry.
 
 Approval is attached to the canonical resolved path. A moved `PATH` result or
 retargeted symlink therefore leaves the former canonical-path record active but

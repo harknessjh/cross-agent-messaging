@@ -220,6 +220,8 @@ For every cross-session message:
     returned `product-recover-partial-tail` command with every guard unchanged,
     a specific reason, and a non-placeholder operator reference. Never use it
     for a complete malformed line, an invalid prefix, or an oversized ledger.
+    If mutation is `unknown` or committed but verification is uncertain, do not
+    reuse old guards; run the returned read-only reconciliation command.
 
 The journal is required audit history but is not a broker, inbox, database,
 daemon, delivery service, source of truth about reported work, or source of

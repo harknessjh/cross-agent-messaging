@@ -315,7 +315,7 @@ def main(
                     operator_reference=args.operator_reference,
                 )
             api.emit(api.with_validation_profile(result))
-            return 0
+            return 0 if result.get("ok") is not False else 3
 
         if args.command == "doctor":
             try:

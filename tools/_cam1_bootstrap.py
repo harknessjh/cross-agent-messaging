@@ -63,6 +63,7 @@ _SOURCE_PATHS = {
     "tools.cam1lib.participants": "cam1lib/participants.py",
     "tools.cam1lib.profile": "cam1lib/profile.py",
     "tools.cam1lib.product_approval_recovery": "cam1lib/product_approval_recovery.py",
+    "tools.cam1lib.product_approval_recovery_evidence": "cam1lib/product_approval_recovery_evidence.py",
     "tools.cam1lib.product_approvals": "cam1lib/product_approvals.py",
     "tools.cam1lib.product_executables": "cam1lib/product_executables.py",
     "tools.cam1lib.project": "cam1lib/project.py",

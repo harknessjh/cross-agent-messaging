@@ -250,11 +250,13 @@ address that threat and is outside CAM/1's current same-user boundary.
   mutating command requires its exact full-ledger, inode, prefix, and tail guards
   plus a non-placeholder direct operator reference; it reopens under a bounded
   exclusive lock, revalidates the complete prefix and active projection, and
-  fsyncs an exact owner-only archive before truncating only the incomplete EOF
-  fragment. It appends a typed recovery record without changing active
-  approvals. Complete malformed, noncanonical, digest-invalid, chain-invalid,
-  oversized, or interior corruption remains investigation-only. A lock timeout
-  is a refusal, not permission to bypass the ledger.
+  fsyncs an exact owner-only archive and immutable prepared-recovery manifest
+  before truncating only the incomplete EOF fragment. The primary `/1` ledger
+  remains approve/revoke-only and active approvals do not change. Complete
+  malformed, noncanonical, digest-invalid, chain-invalid, oversized, or
+  interior corruption remains investigation-only. A lock timeout is a refusal,
+  not permission to bypass the ledger. Once a registry filename is published,
+  a failed lock attempt never unlinks it.
 - Do not use an unpacked or otherwise unversioned source tree for live sends.
   Offline validation remains available, but live use requires verifiable Git
   revision and clean/dirty state in addition to the content profile.

@@ -159,7 +159,9 @@ class ValidationProfileTests(unittest.TestCase):
     def test_profile_closes_over_approval_recovery_code_and_schema(self) -> None:
         expected = {
             "schemas/cam-product-executable-approval-1.schema.json",
+            "schemas/cam-product-executable-recovery-1.schema.json",
             "tools/cam1lib/product_approval_recovery.py",
+            "tools/cam1lib/product_approval_recovery_evidence.py",
         }
         profiled = {
             path.relative_to(ROOT).as_posix() for path in profile._profile_paths(ROOT)
@@ -170,6 +172,12 @@ class ValidationProfileTests(unittest.TestCase):
                 "tools.cam1lib.product_approval_recovery"
             ],
             "cam1lib/product_approval_recovery.py",
+        )
+        self.assertEqual(
+            profile._cam1_bootstrap._SOURCE_PATHS[
+                "tools.cam1lib.product_approval_recovery_evidence"
+            ],
+            "cam1lib/product_approval_recovery_evidence.py",
         )
 
     def test_profile_reports_runtime_outside_the_source_digest(self) -> None:

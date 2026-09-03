@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Copyright © 2026 John Harkness. Licensed under the PolyForm Noncommercial License 1.0.0; see LICENSE.",
+  "title": "CAM product executable approval-ledger recovery evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "recovery_id", "prepared_at", "status", "registry_file", "archive_file", "archive_sha256", "archive_byte_length", "damaged_registry_sha256", "damaged_registry_byte_length", "verified_prefix_sha256", "verified_prefix_byte_length", "verified_prefix_record_count", "verified_prefix_last_record_sha256", "partial_tail_sha256", "partial_tail_byte_length", "partial_tail_fragment_count", "reason", "operator_reference", "record_sha256"],
+  "properties": {
+    "format": {"const": "CAM-PRODUCT-EXECUTABLE-RECOVERY/1"},
+    "recovery_id": {"type": "string", "format": "uuid"},
+    "prepared_at": {"type": "string", "format": "date-time", "maxLength": 64},
+    "status": {"const": "prepared"},
+    "registry_file": {"const": "product-executables-v1.jsonl"},
+    "archive_file": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^product-executables-v1\\.damaged-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.jsonl$"
+    },
+    "archive_sha256": {"$ref": "#/$defs/sha256"},
+    "archive_byte_length": {"type": "integer", "minimum": 1, "maximum": 16777216},
+    "damaged_registry_sha256": {"$ref": "#/$defs/sha256"},
+    "damaged_registry_byte_length": {"type": "integer", "minimum": 1, "maximum": 16777216},
+    "verified_prefix_sha256": {"$ref": "#/$defs/sha256"},
+    "verified_prefix_byte_length": {"type": "integer", "minimum": 0, "maximum": 16777216},
+    "verified_prefix_record_count": {"type": "integer", "minimum": 0, "maximum": 10000},
+    "verified_prefix_last_record_sha256": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]},
+    "partial_tail_sha256": {"$ref": "#/$defs/sha256"},
+    "partial_tail_byte_length": {"type": "integer", "minimum": 1, "maximum": 32768},
+    "partial_tail_fragment_count": {"const": 1},
+    "reason": {"$ref": "#/$defs/reason"},
+    "operator_reference": {"$ref": "#/$defs/singleLine"},
+    "record_sha256": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "pattern": "^\\S(?:.*\\S)?$",
+      "$comment": "The runtime also rejects every Unicode Cc, Cf, Cs, Zl, and Zp code point.",
+      "not": {"pattern": "[\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff]"}
+    },
+    "singleLine": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^\\S(?:.*\\S)?$",
+      "$comment": "The runtime also rejects every Unicode Cc, Cf, Cs, Zl, and Zp code point.",
+      "not": {"pattern": "[\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff]"}
+    }
+  }
+}
