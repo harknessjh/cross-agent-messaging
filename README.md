@@ -124,6 +124,13 @@ The approval ledger is not a project journal. It records which unchanged local
 product executables CAM may invoke and is reused across Git projects under the
 same operating-system account.
 
+If an interrupted approval-ledger append leaves one incomplete EOF fragment,
+`product-recovery-status` can inspect it without mutation. Only the separately
+operator-confirmed `product-recover-partial-tail` command may archive the exact
+damaged bytes, preserve the fully verified prefix, and append a recovery record.
+It never repairs complete malformed, altered, noncanonical, or chain-invalid
+records. This exceptional account-ledger recovery is not part of onboarding.
+
 Reader and project-state upgrades use the staged, atomic
 [compatibility kernel](docs/COMPATIBILITY.md).
 

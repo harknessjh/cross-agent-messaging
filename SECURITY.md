@@ -245,6 +245,16 @@ address that threat and is outside CAM/1's current same-user boundary.
   before product I/O even when a project has not activated the corresponding
   compatibility feature. Project-gate records document an atomic reader rollout
   and do not create the account approval or grant action authority.
+- Treat an incomplete account approval-ledger append as an exceptional operator
+  recovery, never an automatic repair. Run `product-recovery-status` first. The
+  mutating command requires its exact full-ledger, inode, prefix, and tail guards
+  plus a non-placeholder direct operator reference; it reopens under a bounded
+  exclusive lock, revalidates the complete prefix and active projection, and
+  fsyncs an exact owner-only archive before truncating only the incomplete EOF
+  fragment. It appends a typed recovery record without changing active
+  approvals. Complete malformed, noncanonical, digest-invalid, chain-invalid,
+  oversized, or interior corruption remains investigation-only. A lock timeout
+  is a refusal, not permission to bypass the ledger.
 - Do not use an unpacked or otherwise unversioned source tree for live sends.
   Offline validation remains available, but live use requires verifiable Git
   revision and clean/dirty state in addition to the content profile.

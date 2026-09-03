@@ -156,6 +156,22 @@ class ValidationProfileTests(unittest.TestCase):
                     after.validation_profile_sha256,
                 )
 
+    def test_profile_closes_over_approval_recovery_code_and_schema(self) -> None:
+        expected = {
+            "schemas/cam-product-executable-approval-1.schema.json",
+            "tools/cam1lib/product_approval_recovery.py",
+        }
+        profiled = {
+            path.relative_to(ROOT).as_posix() for path in profile._profile_paths(ROOT)
+        }
+        self.assertLessEqual(expected, profiled)
+        self.assertEqual(
+            profile._cam1_bootstrap._SOURCE_PATHS[
+                "tools.cam1lib.product_approval_recovery"
+            ],
+            "cam1lib/product_approval_recovery.py",
+        )
+
     def test_profile_reports_runtime_outside_the_source_digest(self) -> None:
         report = profile.validation_profile_report()
         self.assertTrue(report["available"])
@@ -559,6 +575,36 @@ class ValidationProfileTests(unittest.TestCase):
                     "codex",
                     "--product-bin",
                     str(executable),
+                ),
+                ("product-recovery-status",),
+                (
+                    "product-recover-partial-tail",
+                    "--expected-registry-sha256",
+                    "a" * 64,
+                    "--expected-registry-bytes",
+                    "1",
+                    "--expected-registry-device",
+                    "1",
+                    "--expected-registry-inode",
+                    "1",
+                    "--expected-registry-ctime-ns",
+                    "1",
+                    "--expected-registry-mtime-ns",
+                    "1",
+                    "--expected-prefix-sha256",
+                    "b" * 64,
+                    "--expected-prefix-bytes",
+                    "0",
+                    "--expected-prefix-record-count",
+                    "0",
+                    "--expected-tail-sha256",
+                    "c" * 64,
+                    "--expected-tail-bytes",
+                    "1",
+                    "--reason",
+                    "synthetic interrupted append",
+                    "--operator-reference",
+                    "direct synthetic recovery confirmation",
                 ),
                 (
                     "product-revoke",

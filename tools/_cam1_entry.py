@@ -19,6 +19,8 @@ _LIVE_TRANSPORT_COMMANDS = frozenset(
         "product-discover",
         "product-approve",
         "product-status",
+        "product-recovery-status",
+        "product-recover-partial-tail",
         "product-revoke",
         "claude-list",
         "claude-preflight",

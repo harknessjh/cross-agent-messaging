@@ -32,6 +32,8 @@ class TransportCliApi:
     discover_product_executable: Callable[..., dict[str, Any]]
     approve_product_executable: Callable[..., dict[str, Any]]
     product_executable_status: Callable[..., dict[str, Any]]
+    product_recovery_status: Callable[..., dict[str, Any]]
+    recover_product_partial_tail: Callable[..., dict[str, Any]]
     revoke_product_executable: Callable[..., dict[str, Any]]
     resolve_project: Callable[[argparse.Namespace], Any]
     list_local_peers: Callable[..., Any]
@@ -131,6 +133,35 @@ def build_parser(api: TransportCliApi) -> argparse.ArgumentParser:
     )
     status_parser.add_argument("--vendor", choices=("codex", "claude-code"))
     status_parser.add_argument("--product-bin")
+
+    subparsers.add_parser(
+        "product-recovery-status",
+        help="inspect one incomplete approval-ledger EOF fragment without mutation",
+    )
+
+    recovery_parser = subparsers.add_parser(
+        "product-recover-partial-tail",
+        help="archive and remove one operator-confirmed incomplete ledger fragment",
+    )
+    recovery_parser.add_argument("--expected-registry-sha256", required=True)
+    recovery_parser.add_argument("--expected-registry-bytes", type=int, required=True)
+    recovery_parser.add_argument("--expected-registry-device", type=int, required=True)
+    recovery_parser.add_argument("--expected-registry-inode", type=int, required=True)
+    recovery_parser.add_argument(
+        "--expected-registry-ctime-ns", type=int, required=True
+    )
+    recovery_parser.add_argument(
+        "--expected-registry-mtime-ns", type=int, required=True
+    )
+    recovery_parser.add_argument("--expected-prefix-sha256", required=True)
+    recovery_parser.add_argument("--expected-prefix-bytes", type=int, required=True)
+    recovery_parser.add_argument(
+        "--expected-prefix-record-count", type=int, required=True
+    )
+    recovery_parser.add_argument("--expected-tail-sha256", required=True)
+    recovery_parser.add_argument("--expected-tail-bytes", type=int, required=True)
+    recovery_parser.add_argument("--reason", required=True)
+    recovery_parser.add_argument("--operator-reference", required=True)
 
     revoke_parser = subparsers.add_parser(
         "product-revoke", help="append a guarded revocation for one active approval"
@@ -256,6 +287,24 @@ def main(
             elif args.command == "product-status":
                 result = api.product_executable_status(
                     vendor=args.vendor, product_bin=args.product_bin
+                )
+            elif args.command == "product-recovery-status":
+                result = api.product_recovery_status()
+            elif args.command == "product-recover-partial-tail":
+                result = api.recover_product_partial_tail(
+                    expected_registry_sha256=args.expected_registry_sha256,
+                    expected_registry_bytes=args.expected_registry_bytes,
+                    expected_registry_device=args.expected_registry_device,
+                    expected_registry_inode=args.expected_registry_inode,
+                    expected_registry_ctime_ns=args.expected_registry_ctime_ns,
+                    expected_registry_mtime_ns=args.expected_registry_mtime_ns,
+                    expected_prefix_sha256=args.expected_prefix_sha256,
+                    expected_prefix_bytes=args.expected_prefix_bytes,
+                    expected_prefix_record_count=args.expected_prefix_record_count,
+                    expected_tail_sha256=args.expected_tail_sha256,
+                    expected_tail_bytes=args.expected_tail_bytes,
+                    reason=args.reason,
+                    operator_reference=args.operator_reference,
                 )
             else:
                 result = api.revoke_product_executable(

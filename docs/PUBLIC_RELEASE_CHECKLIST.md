@@ -100,6 +100,15 @@ Use this checklist against the exact commit proposed for publication. A green so
   operator-approved absolute product executable path; every project preflight,
   send, and reply must also resolve the bound project. Doctor may discover and
   report candidate paths but does not approve them.
+- Confirm approval-ledger shared and exclusive locks use a bounded monotonic
+  wait and fail closed on timeout. Exercise status and mutation contention
+  without deleting a lock target or weakening transaction semantics.
+- Confirm approval-ledger recovery is never automatic: status must precede a
+  directly confirmed mutation with exact identity/full-ledger/prefix/tail
+  guards. Verify the exact owner-private archive bytes, unchanged active
+  approvals, stale-guard refusal, complete/interior corruption refusal,
+  symlink and permission refusal, concurrent recovery, and interrupted recovery
+  crash states.
 - Confirm that project initialization writes only to private Git administrative
   state and the external journal root, linked worktrees share the project UUID,
   and no journal is tracked by Git. Confirm enrollment works after `git init`

@@ -138,6 +138,8 @@ _legacy_product_confirmation = _products._legacy_product_confirmation
 discover_product_executable = _products.discover_product_executable
 approve_product_executable = _products.approve_product_executable
 product_executable_status = _products.product_executable_status
+product_recovery_status = _products.product_recovery_status
+recover_product_partial_tail = _products.recover_product_partial_tail
 revoke_product_executable = _products.revoke_product_executable
 _require_current_product_approval = _products._require_current_product_approval
 
@@ -639,6 +641,8 @@ def _cli_api() -> _transport_cli.TransportCliApi:
         discover_product_executable=module.discover_product_executable,
         approve_product_executable=module.approve_product_executable,
         product_executable_status=module.product_executable_status,
+        product_recovery_status=module.product_recovery_status,
+        recover_product_partial_tail=module.recover_product_partial_tail,
         revoke_product_executable=module.revoke_product_executable,
         resolve_project=module._resolve_project,
         list_local_peers=module.list_local_peers,

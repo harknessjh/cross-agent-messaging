@@ -1229,6 +1229,34 @@ eliminate the final metadata-check-to-exec race. Approval, guarded revocation,
 and replacement append new records under a process-safe exclusive lock; they
 MUST NOT rewrite or silently supersede an active record.
 
+Approval-ledger lock acquisition MUST use a bounded monotonic wait. A timeout
+MUST fail closed as contention; it MUST NOT bypass verification, execute a
+product, delete the lock target, or infer whether another mutation completed.
+
+Approval-ledger recovery is an exceptional, operator-directed operation and
+MUST NOT run automatically. A conforming implementation MUST first expose a
+read-only status operation. Recovery is permitted only for exactly one
+incomplete EOF fragment following a fully schema-valid, canonical,
+digest-valid, contiguous, hash-chain-valid prefix. It MUST refuse a complete
+malformed line, an invalid prefix, an oversized tail or ledger, and a ledger
+whose inspected identity, complete-file digest, prefix guards, or tail guards
+have changed.
+
+Before removing an eligible fragment, the implementation MUST obtain a bounded
+exclusive lock, re-open and revalidate the same registry object, require a
+non-placeholder direct operator reference, and fsync an exact owner-private
+archive of the complete damaged bytes under `~/CAM/Approvals/`. It MUST preserve
+the registry inode while locked, truncate only to the verified prefix, fsync,
+then append and fsync a typed hash-chained recovery record. That record MUST
+bind the archive, damaged-ledger, verified-prefix, and partial-tail digests and
+byte counts. Recovery MUST leave the active approval projection unchanged.
+
+The required in-place ordering has bounded crash states: before truncation the
+original damaged bytes remain; after truncation a valid prefix remains; during
+the recovery-record append that prefix may have one new incomplete EOF fragment
+that is itself eligible for a later inspected recovery. A complete earlier
+record is never edited or deleted.
+
 ### Project identity and location
 
 The implementation MUST create a private pointer at:

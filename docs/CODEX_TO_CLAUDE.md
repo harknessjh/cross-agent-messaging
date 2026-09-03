@@ -177,6 +177,32 @@ account database rather than the `HOME` environment variable. `product-status`
 verifies and reports active records without executing a product. A guarded
 `product-revoke` appends a revocation; it never rewrites approval history.
 
+### Recover an interrupted approval-ledger append
+
+This is an exceptional operator repair, not an onboarding step. Never run it
+automatically. First inspect the owner-private account ledger without changing
+it:
+
+```bash
+.venv/bin/python tools/cam1_transport.py product-recovery-status
+```
+
+A clean or missing ledger reports that recovery is not needed. Only a result
+with `status: recoverable_partial_tail` supplies `recovery_arguments` and a
+copyable `recovery_command`. Review its registry identity, complete-ledger
+SHA-256 and byte count, verified-prefix guards, partial-tail guards, and the
+account archive directory. Obtain direct operator confirmation, replace the
+reason and `DIRECT_OPERATOR_REFERENCE` placeholders in the command, and run it
+with every guard otherwise unchanged. The command revalidates every guard under
+a bounded exclusive lock,
+archives and fsyncs the exact damaged bytes under `~/CAM/Approvals/`, preserves
+the ledger inode, and appends a typed recovery record without changing active
+approvals.
+
+Do not use recovery for a complete malformed line, invalid canonical bytes,
+digest or hash-chain damage, an oversized file or tail, or changed inspection
+guards. Those conditions require investigation rather than truncation.
+
 After both approvals, run `doctor` with the returned absolute paths:
 
 ```bash
@@ -1052,6 +1078,16 @@ blind-retry a send whose transport outcome is unknown.
 Operational recovery rules:
 
 - **Doctor or journal verification fails:** stop. Do not bypass either check.
+- **The account approval ledger has one incomplete EOF record:** run
+  `product-recovery-status`, review its exact identity, complete-file, prefix,
+  and tail guards, then obtain direct confirmation before running the returned
+  `product-recover-partial-tail` arguments. The command first fsyncs an exact
+  owner-private archive under `~/CAM/Approvals/`, preserves the ledger inode,
+  and records recovery without changing active approvals. Never use it for a
+  complete malformed line or an invalid prefix.
+- **A command reports `product_approval.lock_timeout`:** let the bounded account
+  approval operation finish, inspect status, and retry. Do not delete or replace
+  the registry and do not infer whether the other mutation completed.
 - **The journal has one incomplete EOF record:** an operator may run `journal
   recovery-status`, confirm the returned full digest and project UUID, then run
   `journal recover-partial-tail` with a reason and operator reference. The

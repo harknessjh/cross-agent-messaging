@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import shlex
+import sys
+from pathlib import Path
 from typing import Any
 
 from tools import cam1
@@ -248,6 +250,30 @@ def approve_product_executable(**kwargs: Any) -> dict[str, Any]:
 def product_executable_status(**kwargs: Any) -> dict[str, Any]:
     try:
         return product_approvals.approval_status(**kwargs)
+    except product_approvals.ProductApprovalError as error:
+        raise TransportError(error.code, error.detail) from error
+
+
+def product_recovery_status() -> dict[str, Any]:
+    try:
+        result = product_approvals.approval_recovery_status()
+        arguments = result.get("recovery_arguments")
+        if isinstance(arguments, list):
+            command = (
+                sys.executable,
+                str(Path(__file__).resolve().with_name("cam1_transport.py")),
+                *arguments,
+            )
+            result["recovery_command"] = list(command)
+            result["recovery_command_text"] = shlex.join(command)
+        return result
+    except product_approvals.ProductApprovalError as error:
+        raise TransportError(error.code, error.detail) from error
+
+
+def recover_product_partial_tail(**kwargs: Any) -> dict[str, Any]:
+    try:
+        return product_approvals.recover_partial_tail(**kwargs)
     except product_approvals.ProductApprovalError as error:
         raise TransportError(error.code, error.detail) from error
 

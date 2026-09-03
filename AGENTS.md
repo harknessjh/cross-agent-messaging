@@ -213,6 +213,13 @@ For every cross-session message:
     may proceed, after `journal recovery-status` reports the exact digest. It
     archives every damaged byte and refuses complete malformed, altered, or
     chain-invalid records. Never trim the file manually.
+19. If the account product-approval ledger has one incomplete EOF fragment,
+    never repair it automatically or as part of onboarding. Run
+    `product-recovery-status`, show the exact identity/full-file/prefix/tail
+    guards, and wait for direct operator confirmation. Only then run the
+    returned `product-recover-partial-tail` command with every guard unchanged,
+    a specific reason, and a non-placeholder operator reference. Never use it
+    for a complete malformed line, an invalid prefix, or an oversized ledger.
 
 The journal is required audit history but is not a broker, inbox, database,
 daemon, delivery service, source of truth about reported work, or source of

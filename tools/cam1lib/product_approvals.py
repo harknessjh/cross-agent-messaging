@@ -25,6 +25,7 @@ from typing import Any, BinaryIO, cast
 
 from jsonschema import Draft202012Validator, FormatChecker
 
+from . import product_approval_recovery as _recovery
 from .errors import ProjectError
 from .product_executables import (
     ExecutableCandidate,
@@ -57,9 +58,12 @@ REGISTRY_FORMAT = "CAM-PRODUCT-EXECUTABLE-APPROVAL/1"
 REGISTRY_NAME = "product-executables-v1.jsonl"
 APPROVAL_EVENT = "product_executable.approved"
 REVOCATION_EVENT = "product_executable.revoked"
+RECOVERY_EVENT = "product_executable.recovered_partial_tail"
 MAX_RECORD_BYTES = 32_768
 MAX_REGISTRY_BYTES = 16 * 1_048_576
 MAX_REGISTRY_RECORDS = 10_000
+REGISTRY_LOCK_TIMEOUT_SECONDS = 5.0
+REGISTRY_LOCK_POLL_SECONDS = 0.05
 _READ_FLAGS = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
 _APPEND_FLAGS = (
     os.O_RDWR
@@ -321,7 +325,12 @@ def _open_registry(*, exclusive: bool, create: bool) -> tuple[Path, int, BinaryI
                 )
                 os.fsync(parent_descriptor)
         _validate_private_file(descriptor, label="approval.registry")
-        fcntl.flock(descriptor, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        _recovery.acquire_registry_lock(
+            descriptor,
+            exclusive=exclusive,
+            timeout_seconds=REGISTRY_LOCK_TIMEOUT_SECONDS,
+            poll_seconds=REGISTRY_LOCK_POLL_SECONDS,
+        )
         # The mode/owner/link count can change while this process blocks on
         # the advisory lock.  Revalidate after acquisition, before trusting
         # any ledger bytes.
@@ -416,9 +425,10 @@ def _parse_record(raw: bytes) -> dict[str, Any]:
             "product_approval.record_digest", "approval registry digest is invalid"
         )
     attributes = cast(dict[str, Any], value["attributes"])
-    _canonical_stored_path(attributes["canonical_path"])
+    event_type = value["event_type"]
     _operator_reference(attributes["operator_reference"])
-    if value["event_type"] == APPROVAL_EVENT:
+    if event_type == APPROVAL_EVENT:
+        _canonical_stored_path(attributes["canonical_path"])
         if "fingerprint" not in attributes or "basis" not in attributes:
             raise ProductApprovalError(
                 "product_approval.record",
@@ -451,15 +461,45 @@ def _parse_record(raw: bytes) -> dict[str, Any]:
                 migration["source_reference"],
                 label="migration.source_reference",
             )
-    elif "approval_record_id" not in attributes or "fingerprint" in attributes:
-        raise ProductApprovalError(
-            "product_approval.record",
-            "revocation event does not contain revocation attributes",
-        )
-    else:
+    elif event_type == REVOCATION_EVENT:
+        _canonical_stored_path(attributes["canonical_path"])
+        if "approval_record_id" not in attributes or "fingerprint" in attributes:
+            raise ProductApprovalError(
+                "product_approval.record",
+                "revocation event does not contain revocation attributes",
+            )
         _canonical_uuid(
             attributes["approval_record_id"],
             label="approval_record_id",
+        )
+    elif event_type == RECOVERY_EVENT:
+        if "archive_file" not in attributes:
+            raise ProductApprovalError(
+                "product_approval.record",
+                "recovery event does not contain recovery attributes",
+            )
+        _recovery.validate_archive_name(attributes["archive_file"])
+        _bounded_text(attributes["reason"], label="reason", maximum=500)
+        if (
+            attributes["archive_sha256"] != attributes["damaged_registry_sha256"]
+            or attributes["archive_byte_length"]
+            != attributes["damaged_registry_byte_length"]
+            or attributes["verified_prefix_byte_length"]
+            + attributes["partial_tail_byte_length"]
+            != attributes["damaged_registry_byte_length"]
+            or attributes["verified_prefix_record_count"] != value["sequence"] - 1
+            or attributes["verified_prefix_last_record_sha256"]
+            != value["previous_record_sha256"]
+            or attributes["partial_tail_fragment_count"] != 1
+        ):
+            raise ProductApprovalError(
+                "product_approval.recovery_record",
+                "approval recovery record guards are internally inconsistent",
+            )
+    else:
+        raise ProductApprovalError(
+            "product_approval.record",
+            "approval registry event type is unsupported",
         )
     return value
 
@@ -505,6 +545,8 @@ def _active_records(
 ) -> dict[tuple[str, str], dict[str, Any]]:
     active: dict[tuple[str, str], dict[str, Any]] = {}
     for record in records:
+        if record["event_type"] == RECOVERY_EVENT:
+            continue
         attributes = cast(dict[str, Any], record["attributes"])
         key = (cast(str, attributes["vendor"]), cast(str, attributes["canonical_path"]))
         if record["event_type"] == APPROVAL_EVENT:
@@ -606,18 +648,12 @@ def _append_locked(
             "product_approval.registry_limit",
             "approval registry exceeds its bounded limits",
         )
-    unsigned = {
-        "format": REGISTRY_FORMAT,
-        "sequence": len(records) + 1,
-        "record_id": str(uuid.uuid4()),
-        "recorded_at": _utc_text(now),
-        "event_type": event_type,
-        "previous_record_sha256": (records[-1]["record_sha256"] if records else None),
-        "attributes": attributes,
-    }
-    record = {**unsigned, "record_sha256": _digest(unsigned)}
-    raw = _canonical_json(record) + b"\n"
-    _parse_record(raw)
+    record, raw = _build_record(
+        records,
+        event_type=event_type,
+        attributes=attributes,
+        now=now,
+    )
     if total + len(raw) > MAX_REGISTRY_BYTES:
         raise ProductApprovalError(
             "product_approval.registry_limit",
@@ -643,6 +679,30 @@ def _append_locked(
             "approval registry size did not match the completed append",
         )
     return record
+
+
+def _build_record(
+    records: list[dict[str, Any]],
+    *,
+    event_type: str,
+    attributes: dict[str, Any],
+    now: dt.datetime | None,
+) -> tuple[dict[str, Any], bytes]:
+    """Build and locally verify one canonical record without mutating the ledger."""
+
+    unsigned = {
+        "format": REGISTRY_FORMAT,
+        "sequence": len(records) + 1,
+        "record_id": str(uuid.uuid4()),
+        "recorded_at": _utc_text(now),
+        "event_type": event_type,
+        "previous_record_sha256": (records[-1]["record_sha256"] if records else None),
+        "attributes": attributes,
+    }
+    record = {**unsigned, "record_sha256": _digest(unsigned)}
+    raw = _canonical_json(record) + b"\n"
+    _parse_record(raw)
+    return record, raw
 
 
 def _approve_fingerprinted_candidate(
@@ -1037,6 +1097,37 @@ def approval_status(
         handle.close()
         fcntl.flock(descriptor, fcntl.LOCK_UN)
         os.close(descriptor)
+
+
+def _recovery_api() -> _recovery.RecoveryLedgerApi:
+    return _recovery.RecoveryLedgerApi(
+        recovery_event=RECOVERY_EVENT,
+        max_registry_bytes=MAX_REGISTRY_BYTES,
+        max_record_bytes=MAX_RECORD_BYTES,
+        max_registry_records=MAX_REGISTRY_RECORDS,
+        open_registry=_open_registry,
+        verify=_verify,
+        active_records=_active_records,
+        build_record=_build_record,
+        operator_reference=_operator_reference,
+        begin_operation=begin_operation,
+    )
+
+
+def approval_recovery_status() -> dict[str, Any]:
+    """Inspect the ledger for one recoverable EOF fragment without mutation."""
+
+    return _recovery.call_with_stable_errors(
+        _recovery.approval_recovery_status, api=_recovery_api()
+    )
+
+
+def recover_partial_tail(**kwargs: Any) -> dict[str, Any]:
+    """Archive and remove one operator-confirmed incomplete EOF fragment."""
+
+    return _recovery.call_with_stable_errors(
+        _recovery.recover_partial_tail, api=_recovery_api(), **kwargs
+    )
 
 
 def revoke_approval(

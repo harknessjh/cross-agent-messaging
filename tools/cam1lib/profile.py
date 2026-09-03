@@ -52,6 +52,7 @@ REQUIRED_PROFILE_PATHS = (
     "tools/cam1lib/participants.py",
     "tools/cam1lib/profile.py",
     "tools/cam1lib/project.py",
+    "tools/cam1lib/product_approval_recovery.py",
     "tools/cam1lib/product_approvals.py",
     "tools/cam1lib/product_executables.py",
     "tools/cam1lib/protocol.py",

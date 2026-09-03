@@ -393,6 +393,26 @@ directly confirms the guarded `product-revoke`, rediscovers the executable, and
 then approves the replacement fingerprint. Each transition remains visible in
 the append-only account ledger.
 
+The approval registry uses bounded monotonic advisory-lock waits for both reads
+and writes. A lock timeout reports contention without weakening the transaction
+or guessing whether another operation completed.
+
+Crash-tail repair is isolated in `cam1lib.product_approval_recovery`. The normal
+approval path never invokes it. `product-recovery-status` takes a shared lock
+and accepts only one incomplete EOF fragment after a fully verified prefix. The
+mutating command reopens under an exclusive lock, checks the inspected
+device/inode, full-ledger SHA-256 and byte count, prefix SHA-256/count/length,
+and tail SHA-256/length, then archives the exact damaged bytes with mode `0600`
+and fsyncs the archive and directory. It re-inspects before preserving the same
+registry inode with an in-place prefix truncation and typed recovery-record
+append. Recovery records do not participate in the active approval projection.
+
+This ordering deliberately exposes only recoverable crash states. A crash
+before truncation leaves the original damaged ledger; after truncation it leaves
+a complete verified prefix; during the final append it can leave that prefix
+plus one incomplete recovery-record fragment. A later operator must inspect and
+confirm any further recovery rather than receiving automatic repair.
+
 Approval is attached to the canonical resolved path. A moved `PATH` result or
 retargeted symlink therefore leaves the former canonical-path record active but
 cannot reuse it for the replacement target. Listing the vendor's active records,
