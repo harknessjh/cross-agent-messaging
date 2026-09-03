@@ -9,8 +9,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from tools import cam1_project
-from tools.cam1lib import builders, journal, project, state, state_projection
+from tools.cam1lib import builders, inbound, journal, project, state, state_projection
 
 if __package__:
     from .test_cam1_project import (
@@ -279,7 +278,7 @@ class ProjectMessageIngestTests(ProjectTestCase):
             "replace_private_json",
             side_effect=project.ProjectError("state.replace", "injected failure"),
         ):
-            return_code, payload = cam1_project._ingest_message(
+            return_code, payload = inbound.ingest_message(
                 binding,
                 message_path=str(path),
                 as_participant="bob-reviewer",
@@ -485,7 +484,7 @@ class ProjectMessageIngestTests(ProjectTestCase):
 
         with (
             mock.patch.object(
-                cam1_project,
+                inbound,
                 "_utc_now",
                 return_value=(
                     after_expiry,
@@ -498,7 +497,7 @@ class ProjectMessageIngestTests(ProjectTestCase):
                 return_value=after_expiry,
             ),
         ):
-            return_code, payload = cam1_project._ingest_message(
+            return_code, payload = inbound.ingest_message(
                 binding,
                 message_path=str(path),
                 as_participant="bob-reviewer",
@@ -543,7 +542,7 @@ class ProjectMessageIngestTests(ProjectTestCase):
             return value, value.isoformat().replace("+00:00", "Z")
 
         with mock.patch.object(
-            cam1_project,
+            inbound,
             "_utc_now",
             side_effect=[
                 observed(before_expiry),
@@ -552,7 +551,7 @@ class ProjectMessageIngestTests(ProjectTestCase):
                 observed(after_expiry),
             ],
         ):
-            return_code, payload = cam1_project._ingest_message(
+            return_code, payload = inbound.ingest_message(
                 binding,
                 message_path=str(path),
                 as_participant="bob-reviewer",
@@ -599,14 +598,14 @@ class ProjectMessageIngestTests(ProjectTestCase):
         after_expiry = NOW + dt.timedelta(minutes=10, seconds=1)
 
         with mock.patch.object(
-            cam1_project,
+            inbound,
             "_utc_now",
             return_value=(
                 after_expiry,
                 after_expiry.isoformat().replace("+00:00", "Z"),
             ),
         ):
-            return_code, payload = cam1_project._ingest_message(
+            return_code, payload = inbound.ingest_message(
                 binding,
                 message_path=str(reply_path),
                 as_participant="project-coordinator",
@@ -678,7 +677,7 @@ class ProjectMessageIngestTests(ProjectTestCase):
 
         with (
             mock.patch.object(
-                cam1_project,
+                inbound,
                 "_utc_now",
                 return_value=(
                     after_expiry,
@@ -691,7 +690,7 @@ class ProjectMessageIngestTests(ProjectTestCase):
                 return_value=after_expiry,
             ),
         ):
-            return_code, payload = cam1_project._ingest_message(
+            return_code, payload = inbound.ingest_message(
                 binding,
                 message_path=str(reply_path),
                 as_participant="project-coordinator",

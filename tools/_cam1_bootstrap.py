@@ -51,6 +51,7 @@ _SOURCE_PATHS = {
     "tools.cam1lib.darwin_acl": "cam1lib/darwin_acl.py",
     "tools.cam1lib.errors": "cam1lib/errors.py",
     "tools.cam1lib.enrollment": "cam1lib/enrollment.py",
+    "tools.cam1lib.inbound": "cam1lib/inbound.py",
     "tools.cam1lib.journal": "cam1lib/journal.py",
     "tools.cam1lib.journal_recovery": "cam1lib/journal_recovery.py",
     "tools.cam1lib.journal_types": "cam1lib/journal_types.py",

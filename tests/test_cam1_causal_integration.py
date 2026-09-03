@@ -14,11 +14,11 @@ import uuid
 from pathlib import Path
 from unittest import mock
 
-from tools import cam1_project
 from tools.cam1lib import (
     builders,
     causal,
     compatibility,
+    inbound,
     journal,
     project,
     protocol,
@@ -308,7 +308,7 @@ class CausalIngestIntegrationTests(ProjectTestCase):
         time_text = _utc_text(observed_at)
         with (
             mock.patch.object(
-                cam1_project,
+                inbound,
                 "_utc_now",
                 return_value=(observed_at, time_text),
             ),
@@ -318,7 +318,7 @@ class CausalIngestIntegrationTests(ProjectTestCase):
                 return_value=observed_at,
             ),
         ):
-            return cam1_project._ingest_message(
+            return inbound.ingest_message(
                 self.binding,
                 message_path=None,
                 exact_message=raw,
@@ -436,7 +436,7 @@ class CausalIngestIntegrationTests(ProjectTestCase):
                     wraps=journal.replay_records,
                 ) as replay,
             ):
-                validation_record = cam1_project._prior_inbound_validation(
+                validation_record = inbound.prior_inbound_validation(
                     self.binding,
                     raw=target,
                     message_id=target_id,
@@ -579,7 +579,7 @@ class CausalIngestIntegrationTests(ProjectTestCase):
     ) -> None:
         raw = _request(now=dt.datetime.now(dt.UTC).replace(microsecond=0))
 
-        code, payload = cam1_project._ingest_message(
+        code, payload = inbound.ingest_message(
             self.binding,
             message_path=None,
             exact_message=raw,
@@ -618,7 +618,7 @@ class CausalIngestIntegrationTests(ProjectTestCase):
             },
         )
 
-        code, payload = cam1_project._ingest_message(
+        code, payload = inbound.ingest_message(
             self.binding,
             message_path=None,
             exact_message=raw,

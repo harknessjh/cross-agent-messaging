@@ -45,6 +45,7 @@ REQUIRED_PROFILE_PATHS = (
     "tools/cam1lib/__init__.py",
     "tools/cam1lib/builders.py",
     "tools/cam1lib/cli.py",
+    "tools/cam1lib/inbound.py",
     "tools/cam1lib/journal.py",
     "tools/cam1lib/lifecycle.py",
     "tools/cam1lib/participants.py",
