@@ -30,6 +30,12 @@ The journal makes conversations reviewable by the human operator. Product
 transports still control delivery, and a transport receipt remains distinct
 from recipient handling or completed work.
 
+Before CAM invokes Codex or Claude Code, a non-executing discovery step binds
+the exact product path and fingerprint to a direct, account-scoped operator
+approval. That approval is reused across projects while the executable remains
+unchanged; it authorizes only CAM's use of that executable, not a message body
+or project action.
+
 ## Deliberate limits
 
 CAM/1 supports sessions running on one host under the same operating-system
@@ -69,7 +75,7 @@ authority.
 - Git and a local target directory initialized with `git init`;
 - installed Codex and Claude Code commands;
 - one independent session from each product on the same host and user account;
-  and
+- direct approval of each unchanged product executable fingerprint; and
 - human confirmation of each session's enrollment identity card.
 
 The target project does not need an initial commit. Start each agent inside the
@@ -106,7 +112,13 @@ CAM adds no files to the application worktree. It stores:
 
 - a private project pointer below `<git-common-dir>/cam1/`; and
 - the owner-only append-only journal below
-  `~/CAM/Journals/<project-slug>--<project-uuid>/`.
+  `~/CAM/Journals/<project-slug>--<project-uuid>/`; plus
+- a separate owner-private, append-only account approval ledger at
+  `~/CAM/Approvals/product-executables-v1.jsonl`.
+
+The approval ledger is not a project journal. It records which unchanged local
+product executables CAM may invoke and is reused across Git projects under the
+same operating-system account.
 
 Reader and project-state upgrades use the staged, atomic
 [compatibility kernel](docs/COMPATIBILITY.md).
@@ -130,6 +142,7 @@ Only the first row is required for a new user.
 | Install CAM/1 and send the first message | **[START HERE](START_HERE.md)** |
 | See the agent command reference or troubleshoot | [Detailed Codex-to-Claude procedure](docs/CODEX_TO_CLAUDE.md) |
 | Inspect the roster or audit journal | [Project journal guide](docs/PROJECT_JOURNAL.md) |
+| Roll out a reader upgrade or understand causal holds | [Compatibility gates](docs/COMPATIBILITY.md) and [causal ordering](docs/CAUSAL_ORDERING.md) |
 | Understand risks or report a vulnerability | [Security policy](SECURITY.md) |
 | Implement or evaluate protocol conformance | [Protocol specification](PROTOCOL.md) and [wire schema](cam-1.schema.json) |
 | Understand tested product behavior | [Implementation notes](docs/IMPLEMENTATION_NOTES.md) |

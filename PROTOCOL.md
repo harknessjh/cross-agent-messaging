@@ -6,19 +6,20 @@
 > for their first round trip.
 
 - Protocol identifier: `CAM/1`
-- Document revision: `1.6`
+- Document revision: `1.7`
 - Status: Community interoperability draft; experimental
-- Reference snapshot: 2026-08-31
+- Reference snapshot: 2026-09-02
 
 > CAM/1 is an independent community interoperability profile. It is not an OpenAI, Anthropic, or Model Context Protocol standard, and publication does not imply endorsement by those projects. Product names are used only to identify the interfaces being described.
 
 `CAM` abbreviates Cross-Agent Messaging. The `/1` component identifies wire major version 1; an incompatible wire contract requires a different major identifier.
 
-Document revision 1.6 adds prompt-driven CAM-checkout selection and makes the
-session's current Git worktree the normal onboarding default. It retains the
-revision 1.5 journal-backed self-enrollment and one-card confirmation model.
-Neither change alters the wire identifier; envelopes continue to declare
-`"protocol":"CAM/1"`.
+Document revision 1.7 adds the staged compatibility kernel, unconditional
+account-scoped product-executable preapproval in supporting reference readers,
+optional journal-only causal ordering, and lighter authority-neutral
+collaboration guidance. These are local reference-profile and documentation
+changes, not CAM/1.1 or a wire-format change. Envelopes continue to declare
+`"protocol":"CAM/1"`, and the core wire schema is unchanged.
 
 ## 1. Purpose
 
@@ -40,8 +41,10 @@ CAM/1 itself defines and operates no queue, inbox, broker, daemon, database,
 coordination board, delivery service, GUI, or automatic executor. Every queue,
 inbox, process, and delivered message described in a transport profile is owned
 by the named product. This profile does require a private per-project
-append-only journal for audit and lifecycle state. The journal records events;
-it never carries, wakes, instructs, or authorizes a session.
+append-only journal for audit and lifecycle state. Supporting reference readers
+also use a separate owner-private account ledger to record which unchanged
+Codex and Claude Code executables they may invoke. Neither record carries,
+wakes, instructs, or authorizes a session.
 
 The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** are to be interpreted as described in [BCP 14](https://www.rfc-editor.org/info/bcp14) when, and only when, they appear in all capitals.
 
@@ -61,6 +64,8 @@ Shell examples assume a POSIX environment such as macOS, Linux, or WSL. Other pl
   troubleshooting.
 - [Compatibility upgrades](docs/COMPATIBILITY.md) explains the reference
   kernel's staged reader and project-state rollout.
+- [Causal ordering](docs/CAUSAL_ORDERING.md) explains the optional shared-
+  journal protection for delayed requests and cancels.
 
 ### Terminology
 
@@ -82,6 +87,9 @@ Shell examples assume a POSIX environment such as macOS, Linux, or WSL. Other pl
   observations.
 - **Project journal**: the required owner-only append-only record for one
   Git-bound CAM project; it is not a transport or authority source.
+- **Product-executable approval**: an account-scoped record that one exact
+  canonical executable path and fingerprint is eligible for CAM product I/O.
+  It is neither session enrollment nor authority for a message or action.
 - **Operator**: a human responsible for a session. Sender and recipient may have different operators.
 - **Side effect**: any state change, code execution, network access, external communication, or irreversible action.
 
@@ -445,26 +453,38 @@ After that operator selection:
    verifies the external journal. An explicit project-root override MAY be used
    for automation or troubleshooting. The target directory MUST be a Git
    worktree, but it MAY have an unborn branch and no initial commit.
-2. The session observes its own full stable session UUID from trusted product
+2. Before product-assisted onboarding, the implementation resolves and
+   fingerprints the session's product executable without executing it. Only
+   this candidate-discovery operation MAY consult `PATH`. If the exact
+   canonical path and fingerprint do not already have an active account-scoped
+   approval, the implementation MUST display a concise candidate card and wait
+   for direct operator approval before appending an approval. A reserved
+   placeholder is not an operator reference. A changed fingerprint MUST require
+   an explicitly guarded revocation, rediscovery, and new approval; the
+   implementation MUST NOT replace or revoke an approval automatically. This
+   approval establishes product-I/O eligibility only and MUST NOT be treated as
+   session enrollment, message trust, action authority, or permission for
+   workload work.
+3. Using that approved absolute executable, the session observes its own full stable session UUID from trusted product
    session metadata, or asks the operator for the full UUID when that metadata
    is unavailable. It MUST NOT infer the UUID from a name, cwd, PID, socket, or
    transient route. A Claude session MUST additionally select exactly one fresh
    Agent View representation of that full UUID in the intended Git project.
-3. The implementation appends a pending proposal containing the project UUID
+4. The implementation appends a pending proposal containing the project UUID
    and display name, project-local common and display names, optional role,
    vendor, full stable session UUID, current Git-project evidence, CAM checkout
    and validation-profile
-   digest, and the resolved absolute product executable candidate. The proposal
+   digest, and the approved absolute product executable. The proposal
    MUST remain outside the active roster and MUST NOT be usable for send,
    receive, callback, or endpoint correlation. A Claude proposal MUST include
    its freshly discovered product label and session kind; those fields MAY be
    absent for Codex when the product does not expose them.
-4. The implementation presents one concise identity card derived from the
+5. The implementation presents one concise identity card derived from the
    exact proposal. The card MUST show the full stable UUID, project identity and
    root, project-local name, product metadata, absolute executable path, and a
    proposal-bound confirmation value. It MUST NOT ask the operator to recognize
    or approve a PID, UDS path, or transient MCP short ref.
-5. The operator reviews the complete card and confirms that exact proposal
+6. The operator reviews the complete card and confirms that exact proposal
    directly in the proposing session. A peer-relayed assertion is insufficient.
    The proposal digest or a bounded derivative MAY correlate the response to
    the displayed card, but it is not authentication, a signature, or action
@@ -473,14 +493,14 @@ After that operator selection:
    enrollment-confirmation responses as transaction-local correlation syntax.
    Such exact matching MUST NOT be generalized to other operator input and
    remains correlation, not authentication or action authority.
-6. Before confirmation, the implementation MUST recheck the current stable
+7. Before confirmation, the implementation MUST recheck the current stable
    session, Git project, CAM validation profile, and executable path against the
    proposal. Drift requires a fresh proposal. One atomic journal event then
    marks the proposal confirmed and creates its participant and session binding.
    For Codex, that same event MAY establish the UUID-backed local queue route.
    Claude routing remains unavailable until fresh Agent View and `ListAgents`
    correlation.
-7. Repeating the identical proposal or confirmation MUST be idempotent. A
+8. Repeating the identical proposal or confirmation MUST be idempotent. A
    changed pending proposal MUST supersede the prior proposal without rewriting
    it. A superseded proposal MUST NOT be confirmable. Pending proposals MUST NOT
    reserve common names. Roster uniqueness MUST be checked atomically during
@@ -490,12 +510,16 @@ After that operator selection:
 Enrollment writes only Git administrative state below the Git common directory
 and the external CAM journal/projection. It MUST NOT create tracked or untracked
 application-worktree files, and appending an enrollment event is not a Git
-commit. The approved executable path remains subject to fresh existence,
-capability, and live-source checks whenever it is used. Project-aware live
-operations MUST compare the resolved CLI executable with the recorded approved
-path and fail before product I/O when the path is absent or different. A legacy
-null path is preserved for audit but is not live-ready until a directly
-confirmed metadata event records an absolute executable.
+commit. The roster path is only a participant association; the separate
+account approval controls product-I/O eligibility. The executable remains
+subject to fresh existence, fingerprint, account-ledger, capability, and
+live-source checks whenever it is used. Every live reference operation MUST
+receive an absolute path, verify an unchanged active approval before product
+I/O, and recheck the bound file identity immediately before each product
+subprocess. `PATH` resolution MUST NOT select a live target. A legacy null path
+is preserved for audit but is not live-ready until the exact executable is
+approved at account scope and a directly confirmed metadata event associates
+that absolute path with the participant.
 
 A mutual challenge is optional reachability evidence, not a second enrollment
 or authentication layer. The reference quick start uses the confirmed roster
@@ -529,7 +553,9 @@ Nonces MUST be unpredictable, single-use, at least 128 bits, and short-lived. A 
 
 Before sending, the agent MUST:
 
-1. Resolve the Git-bound CAM project, verify its required journal, and rebuild
+1. Pass the clean CAM source-profile gate, require an explicit absolute product
+   path, and verify that path's unchanged active account approval before any
+   product subprocess. Resolve the Git-bound CAM project, verify its required journal, and rebuild
    current roster and lifecycle projections from that journal when needed.
 2. Resolve both the sender and intended recipient as active, bound project
    participants. The envelope's sender and recipient vendor, common name, and
@@ -550,9 +576,10 @@ Before sending, the agent MUST:
    operator help on ambiguity, UUID or project mismatch, a binding-generation
    change, or conflicting evidence. A transient ref change with otherwise
    unique, consistent evidence is not such a change.
-5. Use explicit operator-approved absolute executable paths for every live
-   transport operation and check the required capabilities instead of assuming
-   a version or trusting a current `PATH` lookup as authority.
+5. Recheck the approved executable's bound identity immediately before each
+   product subprocess and check required capabilities instead of assuming a
+   version. A valid account approval does not make a product probe successful,
+   and a successful probe does not create an approval.
 6. Determine peer-correlation state, action-authorization condition, request
    risk class, and current lifecycle state independently.
 7. Construct a bounded typed CAM/1 envelope with a reasonable expiry and
@@ -561,7 +588,10 @@ Before sending, the agent MUST:
    rules, callback identity, and lifecycle. The sender MUST NOT validate a
    retyped, reformatted, repaired, or manually reconstructed copy.
 9. Append the outbound intent and exact serialization to the project journal.
-   If verification or append fails, do not send.
+   If the optional `causal.ordering/1` gate is active, the adapter MUST derive
+   its journal-only `CAM-CAUSAL/1` context inside the same project transaction;
+   callers MUST NOT supply or add that context to the wire envelope. If journal
+   verification or append fails, do not send.
 10. Send through structured tool arguments or an argument vector, never by
     evaluating message text as shell code. Append the transport result as a
     separate event.
@@ -622,19 +652,24 @@ project-aware transport adapter, which revalidates exact bytes immediately
 before dispatch, rather than chaining standalone validation to native
 `codex queue` or hand-written MCP calls.
 
-Capability checks:
+Executable discovery and capability checks:
 
 ```bash
-command -v codex   # operator verifies and retains the absolute result
-ABSOLUTE_CODEX_PATH --version
-ABSOLUTE_CODEX_PATH agents --help
-ABSOLUTE_CODEX_PATH queue --help
+CAM_PYTHON CAM_CHECKOUT/tools/cam1_transport.py product-discover --vendor codex
+CAM_PYTHON CAM_CHECKOUT/tools/cam1_transport.py product-discover --vendor claude-code
 
-command -v claude  # operator verifies and retains the absolute result
-ABSOLUTE_CLAUDE_PATH --version
-ABSOLUTE_CLAUDE_PATH agents --help
-ABSOLUTE_CLAUDE_PATH mcp serve --help
+# After direct approval of each exact candidate card:
+CAM_PYTHON CAM_CHECKOUT/tools/cam1_transport.py \
+  --codex-bin ABSOLUTE_APPROVED_CODEX_PATH \
+  --claude-bin ABSOLUTE_APPROVED_CLAUDE_PATH doctor
 ```
+
+Candidate discovery may consult `PATH` but MUST NOT execute or approve the
+candidate. The returned approval operation MUST bind the reviewed canonical
+path and fingerprint and a truthful direct-operator reference. `doctor` then
+uses only the explicit, actively approved absolute paths and performs the
+bounded version and capability probes. The detailed non-normative sequence is
+in [the transport guide](docs/CODEX_TO_CLAUDE.md#3-check-capabilities-and-fix-the-live-paths).
 
 A Codex sender can normally obtain its callback UUID with:
 
@@ -1088,6 +1123,28 @@ These values appear in the structured `receipt.status` field. A directed message
 
 - Receivers MUST retain processed message IDs and idempotency keys for at least the message lifetime.
 - Receivers of side-effecting requests MUST retain operation-idempotency records for a risk-appropriate period beyond envelope expiry and the permitted retry window.
+- A supporting reference implementation MAY activate the project-scoped
+  `causal.ordering/1` compatibility gate. After activation, its project-aware
+  sender derives `CAM-CAUSAL/1` context on the outbound-intent journal record,
+  including the conversation, direct dependency or supersession, and the
+  sender's journal-known frontier of recipient-authored messages. This context
+  is local journal metadata, not a CAM/1 wire field, and it MUST NOT alter the
+  serialized envelope or legal wire lifecycle.
+- A receiver using that active gate MUST correlate an inbound post-activation
+  `request` or `cancel` to the exact outbound intent in the same canonical
+  project journal. If the instruction does not cover the receiver's
+  potentially dispatched frontier for that conversation, it MUST record one
+  validated hold with `lifecycle_committed:false`, apply no lifecycle or action
+  state, and request a fresh clarification envelope. An exact retransmission
+  remains held. Expiry retains precedence and pre-activation conversations
+  remain grandfathered through their later replies, renewals, cancels, and
+  exact retries.
+- This optional check requires both endpoints to use the same Git-bound project
+  identity, external state root, canonical journal, and project-aware adapters.
+  It cannot protect a send that bypasses those adapters or uses a copied or
+  separate journal. It establishes only what that shared journal recorded; it
+  does not prove product delivery, cognition, agreement, truth, or authority.
+  See [Causal ordering](docs/CAUSAL_ORDERING.md).
 - A pending or held root expires unconfirmed at its own `expires_at` and MUST
   be rejected without action. The receiver MAY return a fresh typed late
   rejection with `nonce: null` and MUST NOT treat the expired nonce as
@@ -1140,6 +1197,23 @@ The reference local formats are defined by
 [`cam-project-binding-1.schema.json`](schemas/cam-project-binding-1.schema.json)
 and
 [`cam-journal-record-1.schema.json`](schemas/cam-journal-record-1.schema.json).
+The separate account product-approval ledger uses
+[`cam-product-executable-approval-1.schema.json`](schemas/cam-product-executable-approval-1.schema.json).
+
+The reference approval ledger is the owner-private append-only hash chain at:
+
+```text
+~/CAM/Approvals/product-executables-v1.jsonl
+```
+
+The account home is obtained from operating-system account data rather than an
+environment override. The ledger is shared across CAM projects for that account
+and is not project history, a transport, trust in a vendor, or action authority.
+An approval binds the executable file's canonical path, SHA-256, size, owner,
+mode, device, inode, and change time. It does not cover dynamic dependencies or
+eliminate the final metadata-check-to-exec race. Approval, guarded revocation,
+and replacement append new records under a process-safe exclusive lock; they
+MUST NOT rewrite or silently supersede an active record.
 
 ### Project identity and location
 
@@ -1192,6 +1266,8 @@ canonical `CAM-JOURNAL/1` record containing:
   state for the recording context;
 - for reference-tool validation and outbound-intent events, the separate CAM
   validation profile and whether a dirty-source override was used;
+- when `causal.ordering/1` is active, derived `CAM-CAUSAL/1` context on the
+  outbound intent and any receiver causal assessment on inbound validation;
 - bounded event attributes; and
 - a SHA-256 digest of the complete record excluding that digest field.
 
@@ -1270,7 +1346,7 @@ The journal-backed participant roster MUST keep these fields distinct:
   mutable without changing identity or authority;
 - vendor;
 - the operator-reviewed absolute product executable path and its metadata
-  revision;
+  revision, distinct from the account ledger's active fingerprint approval;
 - full stable session UUID and operator-correlation evidence;
 - participant state such as active, stale, or retired; and
 - current route observation and its source, time, and correlation state. A

@@ -50,9 +50,17 @@ For every cross-session message:
    CAM creates no application-worktree files: its project pointer remains below
    `<git-common-dir>/cam1/` and its journal remains under `~/CAM/Journals/`.
    Appending to that journal is not creating a Git commit.
-3. Use project-aware self-enrollment for normal first contact. Run
-   `onboarding prepare --vendor codex` or
-   `onboarding prepare --vendor claude-code` from the actual target session.
+3. Before project-aware self-enrollment, run `product-discover` for the
+   session's own vendor. Only that command may consult `PATH`, and it only
+   resolves and fingerprints a candidate; it never executes or approves the
+   product. Reuse an unchanged active account approval or show the complete
+   candidate card and wait for direct operator approval before running the
+   returned `product-approve` command with a truthful operator reference. A
+   changed fingerprint requires guarded `product-status`, `product-revoke`,
+   rediscovery, and fresh approval; never replace or revoke automatically.
+   Then run `onboarding prepare --vendor codex --product-bin ABSOLUTE_PATH` or
+   `onboarding prepare --vendor claude-code --product-bin ABSOLUTE_PATH` from
+   the actual target session.
    It records `state.participant.enrollment_proposed` and displays one exact
    identity card. A pending proposal is non-routable and grants no authority.
    The operator must review that card and return its exact confirmation in the
@@ -71,8 +79,11 @@ For every cross-session message:
    directly confirm a fresh card. Never auto-rename a confirmed card.
 4. Use the project roster to distinguish the participant's common name,
    optional role, product label, stable full session ID, operator-reviewed
-   product executable, and transient transport route. A role is nullable,
-   mutable descriptive metadata; it is not identity or authority. Apply a
+   product executable, and transient transport route. The roster associates a
+   path with a participant; the separate account approval ledger determines
+   whether the unchanged executable is eligible for product I/O. Neither is
+   action authority. A role is nullable, mutable descriptive metadata; it is
+   not identity or authority. Apply a
    directly confirmed descriptive or executable change with the
    `participant update-metadata` command, including `--participant`,
    `--expected-revision`, and `--operator-reference`; it appends
@@ -107,7 +118,8 @@ For every cross-session message:
    `--allow-dirty-validator` and the exact reported
    `--expected-validation-profile-sha256`; the outbound journal records that
    override. Never use it to claim a clean or reproducible release.
-7. Run `tools/cam1_transport.py doctor` and run `claude-preflight` with
+7. Run `tools/cam1_transport.py doctor` with the already account-approved
+   absolute Codex and Claude paths, then run `claude-preflight` with
    `--participant COMMON_NAME`; use `--session-id UUID` only as an optional
    exact guard. Stop if the roster participant does not map uniquely to one
    eligible same-host `name [ref]` route. That ref is transient tool-derived
@@ -116,14 +128,17 @@ For every cross-session message:
    unique fresh correlation to the already operator-bound stable identity.
    Ask for operator help only on ambiguity, UUID/project mismatch, a binding
    generation change, or conflicting evidence such as unexpected product-label
-   or session-kind drift. The operator must approve the absolute product paths
-   displayed in each enrollment card. A legacy entry whose
-   `approved_product_executable` is null is not live-ready: use a directly
-   confirmed `participant update-metadata --product-bin` operation rather than
-   relying on doctor or rebinding identity. Project-aware preflight and send
-   reject a missing or different executable before product I/O. Doctor must
-   succeed with the exact approved paths. Pass `--claude-bin` or `--codex-bin`
-   explicitly to every live list, preflight, send, or reply.
+   or session-kind drift. A legacy entry whose
+   `approved_product_executable` is null is not live-ready: approve the exact
+   product fingerprint at account scope first, then use a directly confirmed
+   `participant update-metadata --product-bin` operation rather than relying
+   on doctor or rebinding identity. Project-aware preflight and send reject a
+   missing, different, unapproved, or changed executable before product I/O.
+   Pass the absolute `--claude-bin` or `--codex-bin` explicitly to every live
+   doctor, list, preflight, send, or reply. Product approval is enforced by
+   readers that advertise it even before a project compatibility gate is
+   active; the related gate records rollout evidence and does not grant
+   execution or action authority.
 8. Build complete envelopes with the typed commands in `tools/cam1.py`.
    `reply_to.transport` names the sender's supported return transport and
    `reply_to.address` is the sender's stable full session UUID; neither field
@@ -140,7 +155,10 @@ For every cross-session message:
    workflow. The project-aware transport helper revalidates the exact envelope
    and, for a reply, its exact `--against` root immediately before dispatch.
 10. Append outbound intent and exact bytes to the required journal before the
-   send attempt. If the journal cannot be verified or appended, do not send.
+   send attempt. If the optional `causal.ordering/1` project gate is active,
+   let the adapter derive `CAM-CAUSAL/1` context from that same canonical
+   journal; never hand-author it or add it to the wire envelope. If the journal
+   cannot be verified or appended, do not send.
 11. Use `tools/cam1_transport.py claude-send --participant NAME` or
    `codex-send --participant NAME` for the separately authorized local
    transport effect. Full session or thread flags are optional exact guards;
@@ -162,6 +180,12 @@ For every cross-session message:
     validate against the exact root, require correlation, apply the stateful
     lifecycle rules, and consult receiver-owned policy before acting.
     Recording malformed, misaddressed, or expired bytes never makes them valid.
+    When the causal gate is active, a post-gate request or cancel that omits
+    the receiver's potentially dispatched journal frontier is held for a fresh
+    clarification envelope with `lifecycle_committed:false`; do not apply its
+    lifecycle or action state, and do not treat an exact retransmission as a
+    repair. This is shared-journal awareness, not proof that either agent read
+    or understood a message, and it does not suspend unrelated work.
     A request `ack: received` advances only through nonce-null
     `status: accepted`; `ack: needs_human_confirmation` advances through
     `ack: accepted` or `ack: rejected`. Never echo one root nonce in two
