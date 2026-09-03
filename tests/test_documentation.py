@@ -154,11 +154,20 @@ class DocumentationTests(unittest.TestCase):
             self.assertIn("doctor guidance in section 3", prompt)
             self.assertIn("sections 4, 5", prompt)
             self.assertIn(
-                "do not run the intentionally nonzero PATH-discovery form", prompt
+                "PATH lookup is only for product-discover", prompt
             )
+            self.assertEqual(prompt.count("product-discover --vendor"), 1)
+            self.assertIn("it must not execute or approve the product", prompt)
+            self.assertIn("Do not approve your own card", prompt)
+            self.assertIn("never revoke or replace an approval automatically", prompt)
+            self.assertIn("DIRECT_OPERATOR_REFERENCE", prompt)
             self.assertIn("Require doctor to exit zero and report ok:true", prompt)
             self.assertLess(
                 prompt.index("validation-profile"),
+                prompt.index("product-discover --vendor"),
+            )
+            self.assertLess(
+                prompt.index("product-discover --vendor"),
                 prompt.index("onboarding prepare"),
             )
 
@@ -256,6 +265,46 @@ class DocumentationTests(unittest.TestCase):
         self.assertIn("Nothing in CAM/1 overrides", core_security)
         self.assertIn("hold the affected requested action", content)
         self.assertNotIn("Stop all live sends and application work", content)
+
+    def test_revision_17_keeps_wire_and_local_policy_state_separate(self) -> None:
+        protocol = (REPOSITORY_ROOT / "PROTOCOL.md").read_text(encoding="utf-8")
+        readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
+        journal = (REPOSITORY_ROOT / "docs" / "PROJECT_JOURNAL.md").read_text(
+            encoding="utf-8"
+        )
+        security = (REPOSITORY_ROOT / "SECURITY.md").read_text(encoding="utf-8")
+        normalized_journal = " ".join(journal.split())
+        normalized_security = " ".join(security.split())
+
+        self.assertIn("Document revision: `1.7`", protocol)
+        self.assertIn("not CAM/1.1 or a wire-format change", protocol)
+        self.assertIn('`"protocol":"CAM/1"`', protocol)
+        self.assertIn("product-executables-v1.jsonl", readme)
+        self.assertIn("product-executables-v1.jsonl", journal)
+        self.assertIn("not part of this project journal", normalized_journal)
+        self.assertIn(
+            "Account approval and roster association are independent",
+            normalized_security,
+        )
+
+    def test_causal_ordering_is_optional_journal_only_and_authority_neutral(self) -> None:
+        causal = (REPOSITORY_ROOT / "docs" / "CAUSAL_ORDERING.md").read_text(
+            encoding="utf-8"
+        )
+        journal = (REPOSITORY_ROOT / "docs" / "PROJECT_JOURNAL.md").read_text(
+            encoding="utf-8"
+        )
+        normalized_causal = " ".join(causal.split())
+        normalized_journal = " ".join(journal.split())
+        self.assertIn("optional causal-ordering gate", causal)
+        self.assertIn("does **not** change the CAM/1 envelope schema", causal)
+        self.assertIn("shared, canonical Git-bound", causal)
+        self.assertIn("lifecycle_committed: false", causal)
+        self.assertIn("does not constrain unrelated work", normalized_causal)
+        self.assertIn("returns exit status", normalized_journal)
+        self.assertIn(
+            "does not prove that an agent read or understood", normalized_journal
+        )
 
     def test_user_facing_prompts_do_not_require_contributor_instructions(self) -> None:
         detailed_guide = (REPOSITORY_ROOT / "docs" / "CODEX_TO_CLAUDE.md").read_text(

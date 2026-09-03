@@ -669,7 +669,7 @@ candidate. The returned approval operation MUST bind the reviewed canonical
 path and fingerprint and a truthful direct-operator reference. `doctor` then
 uses only the explicit, actively approved absolute paths and performs the
 bounded version and capability probes. The detailed non-normative sequence is
-in [the transport guide](docs/CODEX_TO_CLAUDE.md#3-check-capabilities-and-fix-the-live-paths).
+in [the transport guide](docs/CODEX_TO_CLAUDE.md#3-install-and-verify-the-reference-tools).
 
 A Codex sender can normally obtain its callback UUID with:
 
