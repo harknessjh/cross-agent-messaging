@@ -99,7 +99,10 @@ class _Intent:
     message_type: str
     sender_participant_id: str
     recipient_participant_id: str
+    transport: str | None
+    route_address: str | None
     renewal_of: str | None
+    retry_after_intent: str | None
     context: CausalContext | None
 
 
@@ -202,6 +205,7 @@ def _intent_from_record(record: Mapping[str, Any]) -> _Intent:
         )
     context_value = attributes.get("causal_context")
     raw_renewal = attributes.get("renewal_of")
+    raw_retry = attributes.get("retry_after_intent")
     return _Intent(
         record_id=_canonical_uuid(record.get("record_id"), field="record_id"),
         sequence=cast(int, record["sequence"]),
@@ -212,9 +216,25 @@ def _intent_from_record(record: Mapping[str, Any]) -> _Intent:
         recipient_participant_id=_participant_id(
             attributes, "recipient_participant_id"
         ),
+        transport=(
+            cast(str, attributes["transport"])
+            if isinstance(attributes.get("transport"), str) and attributes["transport"]
+            else None
+        ),
+        route_address=(
+            cast(str, attributes["route_address"])
+            if isinstance(attributes.get("route_address"), str)
+            and attributes["route_address"]
+            else None
+        ),
         renewal_of=(
             _canonical_uuid(raw_renewal, field="renewal_of")
             if raw_renewal is not None
+            else None
+        ),
+        retry_after_intent=(
+            _canonical_uuid(raw_retry, field="retry_after_intent")
+            if raw_retry is not None
             else None
         ),
         context=(parse_context(context_value) if context_value is not None else None),
@@ -267,6 +287,10 @@ def _intent_index(intents: Sequence[_Intent]) -> dict[str, _Intent]:
     return {
         message_id: _consistent_intent(grouped, message_id) for message_id in grouped
     }
+
+
+def _intent_record_index(intents: Sequence[_Intent]) -> dict[str, _Intent]:
+    return {intent.record_id: intent for intent in intents}
 
 
 def _referenced_intent(index: Mapping[str, _Intent], message_id: str) -> _Intent:
@@ -486,6 +510,7 @@ def _recipient_frontier(
 
 def _anchor_context(
     index: Mapping[str, _Intent],
+    record_index: Mapping[str, _Intent],
     anchor_id: str,
     *,
     sender_participant_id: str,
@@ -510,6 +535,7 @@ def _anchor_context(
     if anchor.context is None:
         if _contextless_intent_is_grandfathered(
             index,
+            record_index,
             anchor,
             activation_sequence=activation_sequence,
         ):
@@ -523,6 +549,7 @@ def _anchor_context(
 
 def _contextless_intent_is_grandfathered(
     index: Mapping[str, _Intent],
+    record_index: Mapping[str, _Intent],
     intent: _Intent,
     *,
     activation_sequence: int,
@@ -535,25 +562,48 @@ def _contextless_intent_is_grandfathered(
     while current.context is None:
         if current.sequence <= activation_sequence:
             return True
-        if current.message_id in visited:
+        if current.record_id in visited:
             raise CausalError(
                 "causal.reference_order",
                 "contextless conversation ancestry contains a cycle",
             )
-        visited.add(current.message_id)
+        visited.add(current.record_id)
 
-        supersedes = current.renewal_of is not None
-        predecessor_id = current.renewal_of
-        if predecessor_id is None and (
-            current.message_type in REPLY_TYPES or current.message_type == "cancel"
-        ):
-            predecessor_id = _canonical_uuid(
-                parse_exact_bytes(current.raw).get("in_reply_to"),
-                field="in_reply_to",
-            )
-        if predecessor_id is None:
-            return False
-        predecessor = _referenced_intent(index, predecessor_id)
+        retry = current.retry_after_intent is not None
+        supersedes = not retry and current.renewal_of is not None
+        if retry:
+            predecessor = record_index.get(cast(str, current.retry_after_intent))
+            if predecessor is None:
+                raise CausalError(
+                    "causal.retry_context",
+                    "contextless retry ancestry has no prior intent record",
+                )
+            if predecessor.raw != current.raw:
+                raise CausalError(
+                    "causal.retry_context",
+                    "contextless retry ancestry changed exact message bytes",
+                )
+            if (
+                predecessor.sender_participant_id != current.sender_participant_id
+                or predecessor.recipient_participant_id
+                != current.recipient_participant_id
+            ):
+                raise CausalError(
+                    "causal.retry_context",
+                    "contextless retry ancestry changed project participants",
+                )
+        else:
+            predecessor_id = current.renewal_of
+            if predecessor_id is None and (
+                current.message_type in REPLY_TYPES or current.message_type == "cancel"
+            ):
+                predecessor_id = _canonical_uuid(
+                    parse_exact_bytes(current.raw).get("in_reply_to"),
+                    field="in_reply_to",
+                )
+            if predecessor_id is None:
+                return False
+            predecessor = _referenced_intent(index, predecessor_id)
         if predecessor.sequence >= current.sequence:
             raise CausalError(
                 "causal.reference_order",
@@ -600,6 +650,7 @@ def build_outbound_context(
         )
     intents = _all_intents(records)
     index = _validate_intent_contexts(intents)
+    record_index = _intent_record_index(intents)
     if retry_after_intent is not None:
         retry_id = _canonical_uuid(retry_after_intent, field="retry_after_intent")
         matches = [intent for intent in intents if intent.record_id == retry_id]
@@ -619,6 +670,7 @@ def build_outbound_context(
         if prior.context is None:
             if _contextless_intent_is_grandfathered(
                 index,
+                record_index,
                 prior,
                 activation_sequence=activation,
             ):
@@ -639,6 +691,7 @@ def build_outbound_context(
         reply_id = _canonical_uuid(in_reply_to, field="in_reply_to")
         anchor_context = _anchor_context(
             index,
+            record_index,
             reply_id,
             sender_participant_id=sender_id,
             recipient_participant_id=recipient_id,
@@ -650,6 +703,7 @@ def build_outbound_context(
         renewal_id = _canonical_uuid(renewal_of, field="renewal_of")
         renewal_context = _anchor_context(
             index,
+            record_index,
             renewal_id,
             sender_participant_id=sender_id,
             recipient_participant_id=recipient_id,
@@ -709,11 +763,25 @@ def _possible_dispatches(
     possible: set[str] = set()
     for intent in intents:
         linked = outcomes.get(intent.record_id, [])
+        attributes = linked[0].get("attributes") if len(linked) == 1 else None
         conclusively_not_attempted = (
             len(linked) == 1
+            and isinstance(linked[0].get("sequence"), int)
+            and linked[0]["sequence"] > intent.sequence
             and linked[0].get("event_type") == "transport.not_accepted"
-            and isinstance(linked[0].get("attributes"), dict)
-            and linked[0]["attributes"].get("delivery_state") == "not_attempted"
+            and isinstance(attributes, dict)
+            and attributes.get("intent_record_id") == intent.record_id
+            and attributes.get("participant_id") == intent.recipient_participant_id
+            and attributes.get("message_id") == intent.message_id
+            and attributes.get("transport") == intent.transport
+            and intent.transport is not None
+            and attributes.get("route_address") == intent.route_address
+            and intent.route_address is not None
+            and attributes.get("delivery_state") == "not_attempted"
+            and isinstance(attributes.get("error_code"), str)
+            and bool(attributes["error_code"])
+            and isinstance(attributes.get("observed_at"), str)
+            and bool(attributes["observed_at"])
         )
         if not conclusively_not_attempted:
             possible.add(intent.message_id)
@@ -742,6 +810,7 @@ def assess_inbound_order(
         )
     intents = _all_intents(records)
     index = _validate_intent_contexts(intents)
+    record_index = _intent_record_index(intents)
     exact = [intent for intent in intents if intent.raw == raw]
     if not exact:
         return CausalAssessment(
@@ -767,6 +836,7 @@ def assess_inbound_order(
     if current.context is None:
         if _contextless_intent_is_grandfathered(
             index,
+            record_index,
             current,
             activation_sequence=activation,
         ):

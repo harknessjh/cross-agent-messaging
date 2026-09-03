@@ -69,6 +69,7 @@ def _intent(
     recipient: str = RECIPIENT,
     context: causal.CausalContext | None,
     renewal_of: str | None = None,
+    retry_after_intent: str | None = None,
     record_id: str | None = None,
 ) -> dict[str, object]:
     return {
@@ -80,7 +81,11 @@ def _intent(
             "message_id": _message_id(raw),
             "sender_participant_id": sender,
             "recipient_participant_id": recipient,
+            "participant_id": recipient,
+            "transport": "test_transport",
+            "route_address": "test-route",
             "renewal_of": renewal_of,
+            "retry_after_intent": retry_after_intent,
             "causal_context": context.as_dict() if context is not None else None,
         },
     }
@@ -109,6 +114,32 @@ def _accepted(intent: dict[str, object], *, sequence: int) -> dict[str, object]:
         "event_type": "transport.accepted",
         "sequence": sequence,
         "attributes": {"intent_record_id": intent["record_id"]},
+    }
+
+
+def _not_attempted(
+    intent: dict[str, object],
+    *,
+    sequence: int,
+    changed: dict[str, object] | None = None,
+) -> dict[str, object]:
+    intent_attributes = intent["attributes"]
+    assert isinstance(intent_attributes, dict)
+    attributes = {
+        "intent_record_id": intent["record_id"],
+        "participant_id": intent_attributes["participant_id"],
+        "message_id": intent_attributes["message_id"],
+        "transport": intent_attributes["transport"],
+        "route_address": intent_attributes["route_address"],
+        "delivery_state": "not_attempted",
+        "error_code": "transport.synthetic_stop",
+        "observed_at": "2026-09-02T12:00:00Z",
+    }
+    attributes.update(changed or {})
+    return {
+        "event_type": "transport.not_accepted",
+        "sequence": sequence,
+        "attributes": attributes,
     }
 
 
@@ -569,6 +600,55 @@ class CausalContextTests(unittest.TestCase):
         self.assertFalse(assessment.enforced)
         self.assertFalse(assessment.held)
 
+    def test_multihop_preactivation_exact_retries_remain_grandfathered(self) -> None:
+        raw = _request()
+        original_record_id = "00000000-0000-4000-8000-000000000411"
+        first_retry_record_id = "00000000-0000-4000-8000-000000000412"
+        second_retry_record_id = "00000000-0000-4000-8000-000000000413"
+        original = _intent(
+            raw,
+            sequence=1,
+            context=None,
+            record_id=original_record_id,
+        )
+        first_retry = _intent(
+            raw,
+            sequence=3,
+            context=None,
+            retry_after_intent=original_record_id,
+            record_id=first_retry_record_id,
+        )
+        second_retry = _intent(
+            raw,
+            sequence=4,
+            context=None,
+            retry_after_intent=first_retry_record_id,
+            record_id=second_retry_record_id,
+        )
+        records = (original, _activation(sequence=2), first_retry, second_retry)
+
+        for retry_after in (first_retry_record_id, second_retry_record_id):
+            with self.subTest(retry_after=retry_after):
+                self.assertIsNone(
+                    causal.build_outbound_context(
+                        records,
+                        protocol.parse_exact_bytes(raw),
+                        sender_participant_id=SENDER,
+                        recipient_participant_id=RECIPIENT,
+                        renewal_of=None,
+                        retry_after_intent=retry_after,
+                    )
+                )
+
+        assessment = causal.assess_inbound_order(
+            records,
+            raw,
+            local_participant_id=RECIPIENT,
+            sender_participant_id=SENDER,
+        )
+        self.assertFalse(assessment.enforced)
+        self.assertFalse(assessment.held)
+
     def test_postactivation_cancel_depends_on_target_conversation(self) -> None:
         root = _request()
         root_id = _message_id(root)
@@ -694,14 +774,7 @@ class CausalContextTests(unittest.TestCase):
                 (conversation_id,),
             ),
         )
-        outcome = {
-            "event_type": "transport.not_accepted",
-            "sequence": 4,
-            "attributes": {
-                "intent_record_id": recipient_intent["record_id"],
-                "delivery_state": "not_attempted",
-            },
-        }
+        outcome = _not_attempted(recipient_intent, sequence=4)
         current = _request()
         current_intent = _intent(
             current,
@@ -721,6 +794,120 @@ class CausalContextTests(unittest.TestCase):
             sender_participant_id=SENDER,
         )
         self.assertFalse(assessment.held)
+
+    def test_preintent_or_malformed_not_attempted_outcome_remains_required(
+        self,
+    ) -> None:
+        root = _request()
+        conversation_id = _message_id(root)
+        root_intent = _intent(
+            root,
+            sequence=2,
+            context=causal.CausalContext(conversation_id, (), (), ()),
+        )
+        recipient_raw = builders.build_ack(
+            root,
+            sender_vendor="claude-code",
+            sender_name="recipient",
+            sender_session=RECIPIENT_SESSION,
+            reply_transport="claude_send_message",
+            reply_address=RECIPIENT_SESSION,
+            status_value="received",
+            now=NOW,
+        )
+        recipient_intent = _intent(
+            recipient_raw,
+            sequence=4,
+            sender=RECIPIENT,
+            recipient=SENDER,
+            context=causal.CausalContext(
+                conversation_id,
+                (conversation_id,),
+                (),
+                (conversation_id,),
+            ),
+        )
+        current = _request()
+        current_intent = _intent(
+            current,
+            sequence=6,
+            context=causal.CausalContext(
+                conversation_id,
+                (),
+                (conversation_id,),
+                (),
+            ),
+            renewal_of=conversation_id,
+        )
+        malformed_cases = {
+            "pre_intent": _not_attempted(recipient_intent, sequence=3),
+            "pre_intent_plus_valid": (
+                _not_attempted(recipient_intent, sequence=3),
+                _not_attempted(recipient_intent, sequence=5),
+            ),
+            "missing_message_id": _not_attempted(
+                recipient_intent,
+                sequence=5,
+                changed={"message_id": None},
+            ),
+            "wrong_participant": _not_attempted(
+                recipient_intent,
+                sequence=5,
+                changed={"participant_id": THIRD_PARTY},
+            ),
+            "wrong_transport": _not_attempted(
+                recipient_intent,
+                sequence=5,
+                changed={"transport": "different_transport"},
+            ),
+            "missing_route": _not_attempted(
+                recipient_intent,
+                sequence=5,
+                changed={"route_address": None},
+            ),
+            "missing_error": _not_attempted(
+                recipient_intent,
+                sequence=5,
+                changed={"error_code": None},
+            ),
+            "missing_observation_time": _not_attempted(
+                recipient_intent,
+                sequence=5,
+                changed={"observed_at": None},
+            ),
+        }
+
+        for name, outcomes in malformed_cases.items():
+            with self.subTest(name=name):
+                outcome_records = (
+                    outcomes if isinstance(outcomes, tuple) else (outcomes,)
+                )
+                assessment = causal.assess_inbound_order(
+                    (
+                        _activation(),
+                        root_intent,
+                        *(
+                            record
+                            for record in outcome_records
+                            if record["sequence"] < recipient_intent["sequence"]
+                        ),
+                        recipient_intent,
+                        *(
+                            record
+                            for record in outcome_records
+                            if record["sequence"] > recipient_intent["sequence"]
+                        ),
+                        current_intent,
+                    ),
+                    current,
+                    local_participant_id=RECIPIENT,
+                    sender_participant_id=SENDER,
+                )
+                self.assertTrue(assessment.held)
+                self.assertEqual(
+                    assessment.missing_frontier,
+                    (_message_id(recipient_raw),),
+                )
 
     def test_terminal_lifecycle_record_does_not_override_causal_frontier(self) -> None:
         root = _request()

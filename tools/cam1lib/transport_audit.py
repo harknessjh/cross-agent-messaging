@@ -323,7 +323,7 @@ def _prepare_and_journal_intent(
                 sender_participant_id=sender_participant.participant_id,
                 recipient_participant_id=recipient_participant.participant_id,
                 recipient_session_id=recipient_participant.binding.session_id,
-                renewal_of=renewal_of,
+                renewal_of=plan.preview.renewal_of,
                 retry_after_intent=retry_intent_id,
                 validation_profile=validation_profile,
                 dirty_validator_override=dirty_validator_override,

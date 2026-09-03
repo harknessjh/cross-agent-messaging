@@ -14,7 +14,7 @@ import unittest
 from unittest import mock
 
 from tools import cam1, cam1_transport
-from tools.cam1lib import journal, project, state, transport_audit
+from tools.cam1lib import causal, journal, project, state, transport_audit
 
 if __package__:
     from .test_cam1_transport import (
@@ -542,6 +542,82 @@ class ProjectTransportGuardTests(ProjectBoundTransportTestCase):
         self.assertIs(history, retry.call_args.kwargs["records"])
         self.assertIs(history, causal_context.call_args.args[0])
         self.assertEqual(decode.call_count, 1)
+
+    def test_send_journals_canonical_renewal_reference_for_causal_replay(
+        self,
+    ) -> None:
+        self.add_codex_participant()
+        self.add_claude_participant()
+        now = dt.datetime.now(dt.UTC).replace(microsecond=0)
+        prior_time = now - dt.timedelta(minutes=12)
+        idempotency_key = "00000000-0000-4000-8000-000000000997"
+
+        def request(at: dt.datetime) -> bytes:
+            return cam1.build_request(
+                sender_vendor="codex",
+                sender_name="example-coordinator",
+                sender_session=CODEX_THREAD,
+                recipient_vendor="claude-code",
+                recipient_name="local-worker",
+                recipient_session=CLAUDE_SESSION,
+                reply_transport="codex_queue",
+                reply_address=CODEX_THREAD,
+                risk_class="informational",
+                operation="review_structure",
+                intent="Request one local structure review",
+                body="Review the project structure without making changes.",
+                authorization_basis="none",
+                idempotency_key=idempotency_key,
+                now=at,
+            )
+
+        first = request(prior_time)
+        store = state.StateStore(self.binding)
+        first_entry = store.lifecycle_root(first, now=prior_time)
+        store.lifecycle_expired(
+            first_entry.root_message_id,
+            now=prior_time + dt.timedelta(minutes=11),
+        )
+        renewal = request(now)
+        renewal_path = self.private_envelope("canonical-renewal.json", renewal)
+        validated = cam1_transport._validate_envelope(str(renewal_path), None)
+
+        with project.project_transaction(self.binding) as transaction:
+            recipient = store.snapshot(transaction=transaction).roster.select(
+                "local-worker"
+            )
+            attempt = transport_audit._SendAttempt(
+                participant_id=recipient.participant_id,
+                transport="claude_send_message",
+                route_address="local-worker [abcdef]",
+            )
+            transport_audit._prepare_and_journal_intent(
+                self.binding,
+                store,
+                transaction,
+                validated,
+                attempt,
+                recipient_participant=recipient,
+                renewal_of=first_entry.root_message_id.upper(),
+                retry_after_intent=None,
+                validation_profile={},
+                dirty_validator_override=False,
+            )
+
+        records = journal.replay_records(self.binding)
+        intent_records = tuple(
+            record
+            for record in records
+            if record["event_type"] == "message.outbound.intent"
+        )
+        self.assertEqual(
+            intent_records[-1]["attributes"]["renewal_of"],
+            first_entry.root_message_id,
+        )
+        self.assertEqual(
+            causal._all_intents(intent_records)[-1].renewal_of,
+            first_entry.root_message_id,
+        )
 
     def test_codex_state_preflight_precedes_journal_and_product_invocation(
         self,
