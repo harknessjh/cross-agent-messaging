@@ -921,7 +921,8 @@ class CausalSendIngestConcurrencyTests(ProjectBoundTransportTestCase):
     ) -> list[str]:
         command = [
             sys.executable,
-            str(self.tool_checkout / "tools" / "cam1_transport.py"),
+            str(self.tool_checkout / "tests" / "_cam1_cli_test_harness.py"),
+            "transport",
         ]
         if claude_bin is not None:
             command.extend(("--claude-bin", str(claude_bin)))
