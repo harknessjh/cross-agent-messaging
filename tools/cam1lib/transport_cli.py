@@ -84,8 +84,8 @@ def build_parser(api: TransportCliApi) -> argparse.ArgumentParser:
         "--allow-dirty-validator",
         action="store_true",
         help=(
-            "explicitly allow a live send from modified CAM tool source; the exact "
-            "validation profile is journaled"
+            "explicitly allow a live product operation with modified "
+            "non-executable profile data; sends journal the exact profile"
         ),
     )
     parser.add_argument(
@@ -196,33 +196,43 @@ def main(
     try:
         timeout_seconds = api.bounded_timeout(args.timeout_seconds)
         if args.command == "doctor":
-            result = api.doctor(
-                claude_bin=args.claude_bin,
-                codex_bin=args.codex_bin,
-                timeout_seconds=timeout_seconds,
-            )
             try:
                 api.require_live_validation_profile(
                     allow_dirty=args.allow_dirty_validator,
                     expected_sha256=args.expected_validation_profile_sha256,
                 )
             except api.transport_error as error:
-                result["checks"]["validation_profile"] = {
-                    "ok": False,
-                    "code": error.code,
-                    "detail": error.detail,
-                }
-                result["ok"] = False
-                result["status"] = "validation_profile_blocked"
-                live_paths = result.get("live_path_configuration")
-                if isinstance(live_paths, dict):
-                    live_paths["ready"] = False
-            else:
-                result["checks"]["validation_profile"] = {"ok": True}
+                api.emit(
+                    api.with_validation_profile(
+                        {
+                            "ok": False,
+                            "status": "validation_profile_blocked",
+                            "checks": {
+                                "validation_profile": {
+                                    "ok": False,
+                                    "code": error.code,
+                                    "detail": error.detail,
+                                }
+                            },
+                            "live_path_configuration": {"ready": False},
+                        }
+                    )
+                )
+                return 2
+            result = api.doctor(
+                claude_bin=args.claude_bin,
+                codex_bin=args.codex_bin,
+                timeout_seconds=timeout_seconds,
+            )
+            result["checks"]["validation_profile"] = {"ok": True}
             api.emit(api.with_validation_profile(result))
             return 0 if result["ok"] else 2
 
         if args.command == "claude-list":
+            api.require_live_validation_profile(
+                allow_dirty=args.allow_dirty_validator,
+                expected_sha256=args.expected_validation_profile_sha256,
+            )
             claude_bin = api.resolve_binary(args.claude_bin, label="claude")
             protocol, local_peers, excluded = asyncio.run(
                 api.list_local_peers(
@@ -245,6 +255,10 @@ def main(
             return 0
 
         if args.command == "claude-preflight":
+            api.require_live_validation_profile(
+                allow_dirty=args.allow_dirty_validator,
+                expected_sha256=args.expected_validation_profile_sha256,
+            )
             claude_bin = api.resolve_binary(args.claude_bin, label="claude")
             binding = api.resolve_project(args)
             result = asyncio.run(

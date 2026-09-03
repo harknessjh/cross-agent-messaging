@@ -18,6 +18,8 @@ from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from tools import _cam1_bootstrap
+
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 PROFILE_FORMAT = "CAM-VALIDATION-PROFILE/1"
 MAX_PROFILE_COMPONENT_BYTES = 4 * 1_048_576
@@ -32,6 +34,9 @@ REQUIRED_PROFILE_PATHS = (
     "requirements.txt",
     "schemas/cam-journal-record-1.schema.json",
     "schemas/cam-project-binding-1.schema.json",
+    "tools/__init__.py",
+    "tools/_cam1_bootstrap.py",
+    "tools/_cam1_entry.py",
     "tools/cam1.py",
     "tools/cam1_project.py",
     "tools/cam1_transport.py",
@@ -582,6 +587,13 @@ def build_validation_profile(root: Path = REPOSITORY_ROOT) -> ValidationProfile:
 def current_validation_profile() -> ValidationProfile:
     """Return one immutable profile snapshot for this process."""
 
+    try:
+        _cam1_bootstrap.verify_captured_sources()
+    except _cam1_bootstrap.BootstrapError as error:
+        raise ValidationProfileError(
+            "profile.bootstrap_changed",
+            "CAM source changed after the exact-source bootstrap capture",
+        ) from error
     return build_validation_profile()
 
 

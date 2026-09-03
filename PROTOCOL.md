@@ -452,27 +452,35 @@ the coordinated project's source provenance. Their deterministic
 sourceless modules outside standard `__pycache__` directories using sorted
 repository-relative paths and canonical framing. Git HEAD and dirty state,
 Python version, and validation-library versions are reported alongside the
-digest rather than folded into it. The public reference facades MUST prevent
-adjacent ignored bytecode caches from replacing audited source while those
-modules load; ordinary cache files remain derived artifacts outside the
-profile.
+digest rather than folded into it. Direct public reference CLI invocations
+MUST enter isolated interpreter mode before loading implementation modules.
+They MUST load CAM modules from an explicit regular-source allowlist, without
+normal path lookup, adjacent bytecode, or native-module fallback, and MUST
+reject source changes between capture and the live gate. Ordinary cache files
+remain derived artifacts outside the profile. This is source-provenance
+hardening, not authentication of the interpreter or first executed entrypoint
+and not integrity against a same-account attacker.
 
 Every reference validation verdict, inbound validated or rejected event, and
 outbound intent MUST record that profile. This metadata is local audit
 evidence: it is not part of the CAM/1 wire envelope, does not authenticate a
 peer, and does not require independent implementations to share a digest.
 
-The supported reference live sender MUST resolve HEAD to a commit, require the
+Before resolving or probing either product, every supported reference doctor,
+list, preflight, or send operation MUST pass the live source gate. The
+supported reference live sender MUST resolve HEAD to a commit, require the
 same complete profile path set to be regular blobs in that commit and the
 working tree, and compare the exact profiled working bytes with those blobs. It
 MUST reject assume-unchanged, skip-worktree, sparse, duplicated, or otherwise
 concealed index state for profile paths. It MUST refuse a positively dirty CAM
 source checkout by default. A development override MUST require the caller to
 repeat the exact current profile digest, and the outbound intent MUST record
-that the override was used. That override MAY cover ordinary edits to profile
-files already represented in HEAD; it MUST NOT override missing Git history, a
-changed profile path set, or concealed index state. A source tree without its
-own Git metadata MAY be identified by its content digest and runtime metadata.
+that the override was used. That override MAY cover ordinary edits to
+non-executable profile inputs already represented in HEAD; executable Python
+source MUST match regular unconcealed HEAD blobs before import. The override
+MUST NOT cover executable source, missing Git history, a changed profile path
+set, or concealed index state. A source tree without its own Git metadata MAY
+be identified by its content digest and runtime metadata.
 A source tree that claims to be a Git checkout but whose state cannot be
 verified MUST fail closed for live use. Offline validation MAY continue with an
 explicit profile report.

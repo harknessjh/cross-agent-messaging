@@ -134,13 +134,26 @@ and queues, transcripts, backups, or the required journal may retain copies.
   Python source below `tools/` and importable binary or sourceless modules
   outside standard `__pycache__` directories. Compare the exact profiled bytes
   with those blobs and reject assume-unchanged, skip-worktree, or sparse index
-  state. The public facades redirect bytecode lookup while importing audited
-  modules so ignored adjacent caches cannot replace tracked source. The dirty
-  override may cover ordinary tracked edits, but never missing or untracked
-  profile paths or concealed index state.
+  state. Direct public CLI invocations re-enter Python with `-I -B`, capture the
+  exact regular source files in an explicit module allowlist, and compile only
+  those captured bytes. They do not use path-based CAM module discovery,
+  adjacent bytecode, or native-module fallbacks. The live gate also requires
+  the captured files to remain unchanged and runs before doctor, list,
+  preflight, or send can resolve or probe a product. Executable Python source
+  must match regular unconcealed blobs in HEAD before import. The dirty override
+  may cover ordinary tracked edits to non-executable profile inputs, but never
+  executable source, missing or untracked profile paths, or concealed index
+  state.
 - Do not use an unpacked or otherwise unversioned source tree for live sends.
   Offline validation remains available, but live use requires verifiable Git
   revision and clean/dirty state in addition to the content profile.
+- The isolated source bootstrap is provenance hardening, not an external trust
+  root. It cannot authenticate a replaced initial facade or dispatcher, a
+  hostile Python installation or site configuration, a compromised process,
+  or a same-account race that changes and restores bytes between checks. Those
+  cases remain outside the supported boundary. Use the documented direct CLI
+  entrypoints for live operations; imported private transport primitives do
+  not carry the public entrypoint guarantee.
 - Do not pipe standalone validation into a native transport command. A later
   process can mask the validator's nonzero status. Use the project-aware
   adapter, which validates the exact bytes again before dispatch.

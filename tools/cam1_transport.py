@@ -5,47 +5,35 @@
 
 from __future__ import annotations
 
-import hashlib
+import posix as _posix
 import sys
+
+if __name__ == "__main__":
+    _entry = f"{__file__.rsplit('/', 1)[0]}/_cam1_entry.py"
+    if not _entry.startswith("/"):
+        _entry = f"{_posix.getcwd()}/{_entry}"
+    try:
+        _posix.execv(
+            sys.executable,
+            [sys.executable, "-I", "-B", _entry, "cam1_transport", *sys.argv[1:]],
+        )
+    except OSError:
+        sys.stderr.write(
+            '{"error":{"code":"bootstrap.isolation_failed",'
+            '"detail":"could not enter isolated Python mode"},"ok":false}\n'
+        )
+        raise SystemExit(2) from None
+
+import hashlib
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
-# Do not execute adjacent, ignored bytecode while loading the audited modules.
-_previous_dont_write_bytecode = sys.dont_write_bytecode
-_previous_pycache_prefix = sys.pycache_prefix
-sys.dont_write_bytecode = True
-sys.pycache_prefix = "/dev/null/cam1"
-try:
-    if __package__:
-        from . import cam1
-        from . import cam1_transport_native as _native
-        from . import cam1_transport_retry as _retry
-        from .cam1lib import (
-            journal,
-            lifecycle,
-            participants,
-            project,
-            routing,
-            state,
-        )
-        from .cam1lib import transport_cli as _transport_cli
-    else:  # Direct execution adds tools/ rather than the repo to sys.path.
-        import cam1  # type: ignore[no-redef]
-        import cam1_transport_native as _native  # type: ignore[no-redef]
-        import cam1_transport_retry as _retry  # type: ignore[no-redef]
-        from cam1lib import (  # type: ignore[no-redef]
-            journal,
-            lifecycle,
-            participants,
-            project,
-            routing,
-            state,
-        )
-        from cam1lib import transport_cli as _transport_cli  # type: ignore[no-redef]
-finally:
-    sys.dont_write_bytecode = _previous_dont_write_bytecode
-    sys.pycache_prefix = _previous_pycache_prefix
+from tools import cam1
+from tools import cam1_transport_native as _native
+from tools import cam1_transport_retry as _retry
+from tools.cam1lib import journal, lifecycle, participants, project, routing, state
+from tools.cam1lib import transport_cli as _transport_cli
 
 TransportError = _native.TransportError
 ValidatedEnvelope = _native.ValidatedEnvelope

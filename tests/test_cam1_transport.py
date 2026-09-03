@@ -349,6 +349,35 @@ class PeerParsingTests(unittest.TestCase):
             "profile.dirty_source",
         )
 
+    def test_product_commands_gate_before_resolution_or_probe(self) -> None:
+        cases = (
+            ("doctor", ["doctor"]),
+            ("claude-list", ["claude-list"]),
+            (
+                "claude-preflight",
+                ["claude-preflight", "--participant", "example"],
+            ),
+        )
+        for command, arguments in cases:
+            with (
+                self.subTest(command=command),
+                mock.patch.object(
+                    cam1_transport,
+                    "_require_live_validation_profile",
+                    side_effect=cam1_transport.TransportError(
+                        "profile.dirty_source",
+                        "synthetic dirty source",
+                    ),
+                ),
+                mock.patch.object(cam1_transport, "doctor") as doctor,
+                mock.patch.object(cam1_transport, "_resolve_binary") as resolve,
+                mock.patch.object(cam1_transport, "_emit"),
+            ):
+                returncode = cam1_transport.main(arguments)
+            self.assertEqual(returncode, 2)
+            doctor.assert_not_called()
+            resolve.assert_not_called()
+
     def test_dirty_override_evidence_records_use_not_requested_flag(self) -> None:
         clean = cam1.ValidationProfile(
             validation_profile_sha256="a" * 64,

@@ -37,11 +37,15 @@ For every cross-session message:
    profile digest covers every Python source below `tools/`, the schemas,
    runtime requirements, and importable modules outside standard bytecode-cache
    directories; the adjacent source and runtime fields remain separate audit
-   evidence. Public facades ignore adjacent cached bytecode while loading the
-   audited modules. `doctor` and live sends fail closed when this checkout is
-   dirty. A development-only override may cover ordinary tracked edits, but
-   not a missing HEAD, a changed profile path set, or concealed/sparse index
-   flags. It must supply both `--allow-dirty-validator` and the exact reported
+   evidence. Direct public CLI invocations enter isolated Python mode and load
+   an exact captured-source allowlist rather than adjacent source, bytecode, or
+   native-module alternatives. `doctor`, list, preflight, and live sends pass
+   this gate before product resolution or probing and fail closed when this
+   checkout is dirty. A development-only override may cover ordinary tracked
+   edits to non-executable profile inputs, but never executable Python source,
+   a missing HEAD, a changed profile path set, or concealed/sparse index flags.
+   It must supply both
+   `--allow-dirty-validator` and the exact reported
    `--expected-validation-profile-sha256`; the outbound journal records that
    override. Never use it to claim a clean or reproducible release.
 6. Run `tools/cam1_transport.py doctor` and run `claude-preflight` with

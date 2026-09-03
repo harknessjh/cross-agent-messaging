@@ -63,13 +63,16 @@ Use this checklist against the exact commit proposed for publication. A green so
   digest covering every Python source below `tools/` and non-cache importable
   modules, a concrete HEAD, matching regular profile path sets and bytes,
   unconcealed index flags, clean CAM source state, and bounded runtime metadata.
-  Confirm the public facades ignore adjacent cached bytecode while loading
-  audited modules. Verify valid and invalid verdicts plus inbound/outbound
-  journal events carry that profile.
-- Confirm ordinary `doctor` and live sends refuse a dirty CAM checkout. A
+  Confirm direct public CLI invocations use isolated Python and an exact
+  captured-source allowlist, reject adjacent source/bytecode/native collisions,
+  and detect source changes before the live gate. Verify valid and invalid
+  verdicts plus inbound/outbound journal events carry that profile.
+- Confirm ordinary `doctor`, list, preflight, and live sends refuse a dirty CAM
+  checkout before product resolution or probing. A
   development override must require the exact reported digest and record
   `dirty_validator_override`; it is not release evidence and cannot override a
-  missing HEAD, a changed profile path set, or concealed/sparse index state.
+  changed executable Python source, a missing HEAD, a changed profile path set,
+  or concealed/sparse index state.
 - Confirm that every live list, preflight, send, and reply requires an
   operator-approved absolute product executable path; every project preflight,
   send, and reply must also resolve the bound project. Doctor may discover and
