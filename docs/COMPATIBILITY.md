@@ -1,5 +1,10 @@
 # Compatibility upgrades
 
+> **Audience:** operators and maintainers rolling out a new local CAM reader or
+> project-state feature. New users should begin with
+> [START HERE](../START_HERE.md); ordinary first contact does not require this
+> procedure.
+
 The CAM compatibility kernel records readiness for every frozen participant
 binding before a new project-state feature becomes active. It helps prevent
 one updated session from silently writing state that older sessions cannot

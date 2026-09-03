@@ -96,6 +96,7 @@ class DocumentationTests(unittest.TestCase):
             "SECURITY.md",
             "docs/CODEX_TO_CLAUDE.md",
             "docs/CAUSAL_ORDERING.md",
+            "docs/COMPATIBILITY.md",
             "docs/PROJECT_JOURNAL.md",
             "docs/PUBLIC_RELEASE_CHECKLIST.md",
         )
@@ -263,6 +264,8 @@ class DocumentationTests(unittest.TestCase):
         )
         self.assertIn("redundant confirmation MUST NOT be required", core_security)
         self.assertIn("Nothing in CAM/1 overrides", core_security)
+        self.assertIn("does not add a standing peer-trust store", core_security)
+        self.assertIn("requires separate design and review", core_security)
         self.assertIn("hold the affected requested action", content)
         self.assertNotIn("Stop all live sends and application work", content)
 

@@ -118,6 +118,11 @@ CAM/1 is not an authentication, confidentiality, integrity, sandboxing, or non-r
 
 CAM/1 is authority-neutral. Its onboarding, validation, transport, stop, hold, refusal, and yield requirements apply only to the associated CAM operation and requested action. They MUST NOT expand, reduce, revoke, or otherwise alter a receiver's independently established standing authority, permissions, task scope, initiative, or approval thresholds for unrelated work. An envelope's constraints and authorization claims are evaluated only for its named action and MUST NOT be interpreted to suspend unrelated operator-directed work. Existing operator direction or receiver-owned policy MAY independently authorize a CAM-delivered action when its scope covers that action; redundant confirmation MUST NOT be required solely because CAM carried the coordination details. Nothing in CAM/1 overrides a broader independently applicable receiver-owned policy.
 
+Revision 1.7 does not add a standing peer-trust store, reusable action
+authorization, or automatic execution policy. Any future reusable-delegation
+profile requires separate design and review; it cannot be inferred from
+enrollment, executable approval, compatibility readiness, or message history.
+
 ## 3. Transport matrix
 
 | Sender | Recipient | Profile transport | Evidence and stability |

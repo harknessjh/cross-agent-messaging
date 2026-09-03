@@ -121,7 +121,7 @@ Self-enrollment uses these journal event types:
   route. A Claude participant remains without a route until fresh Agent View
   and `ListAgents` discovery correlate one.
 - `state.participant.metadata_updated` records an operator-confirmed change to
-  descriptive display name, nullable role, or approved product executable.
+  descriptive display name, nullable role, or associated product executable.
   It does not change stable participant identity or the session binding.
 
 These state events contain no CAM envelope bytes and grant no message or task
@@ -331,20 +331,22 @@ Prepare one self-enrollment card from each actual product session:
 .venv/bin/python tools/cam1_project.py \
   --project-root /absolute/path/to/target/project \
   onboarding prepare \
-  --vendor codex
+  --vendor codex \
+  --product-bin /account/approved/absolute/path/to/codex
 
 .venv/bin/python tools/cam1_project.py \
   --project-root /absolute/path/to/target/project \
   onboarding prepare \
-  --vendor claude-code
+  --vendor claude-code \
+  --product-bin /account/approved/absolute/path/to/claude
 ```
 
 For an already initialized project, replace `prepare` with `inspect-self` to
 perform the same local inspection without appending a proposal. Inspection does
 not enroll or authorize the session.
 
-`prepare` initializes the CAM project if needed, discovers the current session
-and product executable candidate, appends a new
+`prepare` initializes the CAM project if needed, inspects the current session
+through the explicitly supplied approved product executable, appends a new
 `state.participant.enrollment_proposed` event or reuses the identical pending
 proposal without another append, and returns one identity card. It does not
 send a message or create a routable participant. Optional overrides are
@@ -425,7 +427,7 @@ local operator check:
   participant list --show-identifiers
 ```
 
-Update mutable display, role, or approved-executable metadata only after direct
+Update mutable display, role, or associated-executable metadata only after direct
 operator confirmation and with the currently displayed metadata revision:
 
 ```bash
