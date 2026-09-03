@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.cam1lib import product_approvals
+from tools.cam1lib import product_approvals  # noqa: E402
 
 
 def _wait_for(path: Path, *, detail: str) -> None:
