@@ -15,7 +15,7 @@ import math
 import os
 import re
 import shlex
-import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -29,10 +29,16 @@ from typing import Any
 
 if __package__:
     from . import cam1
-    from .cam1lib import project, routing, state
+    from .cam1lib import product_approvals, project, routing, secure_fs, state
 else:  # Direct execution adds tools/ rather than the repo to sys.path.
     import cam1  # type: ignore[no-redef]
-    from cam1lib import project, routing, state  # type: ignore[no-redef]
+    from cam1lib import (  # type: ignore[no-redef]
+        product_approvals,
+        project,
+        routing,
+        secure_fs,
+        state,
+    )
 
 DEFAULT_TIMEOUT_SECONDS = 20.0
 MAX_TIMEOUT_SECONDS = 120.0
@@ -43,6 +49,10 @@ MAX_RECEIPT_BLOCKS = 8
 # ``codex queue`` currently receives the envelope as one argv value.
 MAX_TRANSPORT_ENVELOPE_BYTES = 64 * 1_024
 MIN_MCP_SDK_VERSION = (2, 1)
+CODEX_STATE_DB_NAME = "state_5.sqlite"
+_CODEX_STATE_FLAGS = (
+    os.O_RDWR | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
+)
 LOCAL_SESSION_KINDS = routing.LOCAL_SESSION_KINDS
 NONLOCAL_MARKERS = routing.NONLOCAL_MARKERS
 PEER_NAME_PATTERN = routing.PEER_NAME_PATTERN
@@ -170,22 +180,45 @@ def _require_live_validation_profile(
     return profile_report, override_used
 
 
-def _resolve_binary(value: str, *, label: str, allow_path_lookup: bool = False) -> str:
-    supplied = Path(value).expanduser()
-    if not supplied.is_absolute() and not allow_path_lookup:
-        raise TransportError(
-            f"{label}.absolute_path_required",
-            f"live {label} operations require an operator-approved absolute path",
+def _approved_binary(value: str, *, label: str) -> tuple[str, dict[str, Any]]:
+    vendor = {"claude": "claude-code", "codex": "codex"}.get(label)
+    if vendor is None:
+        raise TransportError("product_approval.vendor", "product vendor is unsupported")
+    try:
+        resolved, _approval = product_approvals.require_approved_executable(
+            vendor=vendor,
+            product_bin=value,
+            allow_path_lookup=False,
         )
-    candidate = shutil.which(value) if os.path.sep not in value else str(supplied)
-    if candidate is None:
-        raise TransportError(f"{label}.not_found", f"{label} executable was not found")
-    path = Path(candidate).expanduser()
-    if not path.is_file() or not os.access(path, os.X_OK):
+    except product_approvals.ProductApprovalError as error:
+        legacy_codes = {
+            "product_approval.absolute_path_required": f"{label}.absolute_path_required",
+            "product_approval.not_found": f"{label}.not_found",
+            "product_approval.not_executable": f"{label}.not_executable",
+        }
         raise TransportError(
-            f"{label}.not_executable", f"{label} path is not an executable file"
+            legacy_codes.get(error.code, error.code), error.detail
+        ) from error
+    return resolved, _approval
+
+
+def _resolve_binary(value: str, *, label: str) -> str:
+    resolved, _approval = _approved_binary(value, label=label)
+    return resolved
+
+
+def _require_product_metadata(value: str, *, label: str) -> dict[str, Any]:
+    vendor = {"claude": "claude-code", "codex": "codex"}.get(label)
+    if vendor is None:
+        raise TransportError("product_approval.vendor", "product vendor is unsupported")
+    try:
+        _resolved, approval = product_approvals.require_approved_metadata(
+            vendor=vendor,
+            product_bin=value,
         )
-    return str(path.resolve())
+    except product_approvals.ProductApprovalError as error:
+        raise TransportError(error.code, error.detail) from error
+    return approval
 
 
 def _bounded_timeout(value: float) -> float:
@@ -274,44 +307,67 @@ def doctor(
     claude_bin: str,
     codex_bin: str,
     timeout_seconds: float,
+    prevalidated: bool = False,
     _facade: Any | None = None,
 ) -> dict[str, Any]:
     """Check installed prerequisites without opening a messaging session."""
 
+    del prevalidated  # Approval is always re-established inside this primitive.
     facade = _facade if _facade is not None else sys.modules[__name__]
     timeout_seconds = facade._bounded_timeout(timeout_seconds)
     deadline = time.monotonic() + timeout_seconds
     checks: dict[str, Any] = {}
+    explicit_paths = Path(claude_bin).is_absolute() and Path(codex_bin).is_absolute()
+    approval_verified = {"claude": False, "codex": False}
+
+    def approved_path(label: str, path: str) -> str:
+        _require_product_metadata(path, label=label)
+        return path
+
     try:
-        resolved_claude = facade._resolve_binary(
-            claude_bin, label="claude", allow_path_lookup=True
+        resolved_claude, claude_approval = _approved_binary(
+            claude_bin,
+            label="claude",
         )
+        approval_verified["claude"] = True
         checks["claude"] = {
             "path": resolved_claude,
+            "approval": claude_approval,
             "version": facade._run_probe_before(
-                [resolved_claude, "--version"], deadline
+                [approved_path("claude", resolved_claude), "--version"],
+                deadline,
             ),
             "mcp_serve": facade._run_probe_before(
-                [resolved_claude, "mcp", "serve", "--help"],
+                [
+                    approved_path("claude", resolved_claude),
+                    "mcp",
+                    "serve",
+                    "--help",
+                ],
                 deadline,
                 required_text=("claude mcp serve",),
             ),
-            "agent_view": facade._agent_view_probe_before(resolved_claude, deadline),
+            "agent_view": facade._agent_view_probe_before(
+                approved_path("claude", resolved_claude), deadline
+            ),
         }
     except TransportError as error:
         checks["claude"] = {"ok": False, "error": error.code}
 
     try:
-        resolved_codex = facade._resolve_binary(
-            codex_bin, label="codex", allow_path_lookup=True
+        resolved_codex, codex_approval = _approved_binary(
+            codex_bin,
+            label="codex",
         )
+        approval_verified["codex"] = True
         checks["codex"] = {
             "path": resolved_codex,
+            "approval": codex_approval,
             "version": facade._run_probe_before(
-                [resolved_codex, "--version"], deadline
+                [approved_path("codex", resolved_codex), "--version"], deadline
             ),
             "queue": facade._run_probe_before(
-                [resolved_codex, "queue", "--help"],
+                [approved_path("codex", resolved_codex), "queue", "--help"],
                 deadline,
                 required_text=("--thread", "--message"),
             ),
@@ -334,10 +390,7 @@ def doctor(
     )
     resolved_claude = claude.get("path")
     resolved_codex = codex.get("path")
-    explicit_paths = (
-        Path(claude_bin).expanduser().is_absolute()
-        and Path(codex_bin).expanduser().is_absolute()
-    )
+    account_approval_verified = all(approval_verified.values())
     required_arguments = (
         [
             "--claude-bin",
@@ -348,23 +401,16 @@ def doctor(
         if isinstance(resolved_claude, str) and isinstance(resolved_codex, str)
         else None
     )
-    ok = prerequisites_ok and explicit_paths
+    ok = prerequisites_ok
     return {
         "ok": ok,
-        "status": (
-            "ready"
-            if ok
-            else (
-                "operator_path_confirmation_required"
-                if prerequisites_ok and not explicit_paths
-                else "failed"
-            )
-        ),
+        "status": "ready" if ok else "failed",
         "prerequisites_ok": prerequisites_ok,
         "local_only": True,
         "checks": checks,
         "live_path_configuration": {
             "operator_approval_required": True,
+            "account_approval_verified": account_approval_verified,
             "explicit_absolute_paths_supplied": explicit_paths,
             "required_global_arguments": required_arguments,
             "copy_paste_flags": (
@@ -518,10 +564,19 @@ def parse_peers(listing: str) -> tuple[Peer, ...]:
 
 
 async def list_local_peers(
-    *, claude_bin: str, timeout_seconds: float
-) -> tuple[str | None, tuple[Peer, ...], tuple[Peer, ...]]:
+    *,
+    claude_bin: str,
+    timeout_seconds: float,
+) -> tuple[
+    str | None,
+    tuple[Peer, ...],
+    tuple[Peer, ...],
+    tuple[Peer, ...],
+]:
+    claude_bin = _resolve_binary(claude_bin, label="claude")
     try:
         async with asyncio.timeout(timeout_seconds):
+            _require_product_metadata(claude_bin, label="claude")
             async with _claude_client(
                 claude_bin=claude_bin, timeout_seconds=timeout_seconds
             ) as (client, text_content_type):
@@ -539,7 +594,8 @@ async def list_local_peers(
     peers = parse_peers(_listing_text(response))
     return (
         response.protocol_version,
-        tuple(peer for peer in peers if peer.local),
+        tuple(peer for peer in peers if peer.local and peer.addressable),
+        tuple(peer for peer in peers if peer.local and not peer.addressable),
         tuple(peer for peer in peers if not peer.local),
     )
 
@@ -553,7 +609,7 @@ def _resolve_local_peer(target: str, peers: Sequence[Peer]) -> Peer:
 
 def _discover_agent_view_sessions(
     *, claude_bin: str, timeout_seconds: float
-) -> dict[str, routing.AgentViewSession]:
+) -> dict[str, tuple[routing.AgentViewSession, ...]]:
     """Run one bounded full-session discovery without retaining runtime endpoints."""
 
     try:
@@ -580,7 +636,7 @@ def _discover_agent_view_sessions(
 
 
 def _select_agent_view_session(
-    sessions: dict[str, routing.AgentViewSession], session_id: str
+    sessions: dict[str, tuple[routing.AgentViewSession, ...]], session_id: str
 ) -> routing.AgentViewSession:
     try:
         return routing.select_agent_view_session(sessions, session_id)
@@ -611,6 +667,7 @@ _STABLE_AGENT_VIEW_FIELDS = (
     "cwd",
     "kind",
     "started_at_ms",
+    "process_id",
 )
 
 
@@ -838,14 +895,17 @@ async def _preflight_claude_session(
 ) -> dict[str, Any]:
     """Correlate a full sessionId to one unique fresh ListAgents route."""
 
+    claude_bin = _resolve_binary(claude_bin, label="claude")
     try:
         async with asyncio.timeout(timeout_seconds):
+            _require_product_metadata(claude_bin, label="claude")
             sessions = await asyncio.to_thread(
                 _discover_agent_view_sessions,
                 claude_bin=claude_bin,
                 timeout_seconds=timeout_seconds,
             )
             selected = _select_agent_view_session(sessions, session_id)
+            _require_product_metadata(claude_bin, label="claude")
             async with _claude_client(
                 claude_bin=claude_bin, timeout_seconds=timeout_seconds
             ) as (client, text_content_type):
@@ -859,12 +919,15 @@ async def _preflight_claude_session(
                     arguments={},
                 )
                 peers = parse_peers(_listing_text(listing_response))
-                local_peers = tuple(peer for peer in peers if peer.local)
+                local_peers = tuple(
+                    peer for peer in peers if peer.local and peer.addressable
+                )
                 route = _correlate_route(
                     selected,
                     local_peers,
                     requested_target=target,
                 )
+                _require_product_metadata(claude_bin, label="claude")
                 selected = await _refresh_agent_view_session(
                     selected,
                     claude_bin=claude_bin,
@@ -885,7 +948,14 @@ async def _preflight_claude_session(
         "notify_when_idle_supported": _supports_notify_when_idle(
             schemas["SendMessage"]
         ),
+        # The full session UUID, product name, and project context are the
+        # human-verifiable identity. The short MCP ref is transient routing
+        # metadata and must not be presented as something an operator can
+        # independently authenticate.
         "operator_correlation_required": True,
+        "operator_correlation_subject": "stable_session_identity",
+        "operator_identity_confirmation_required": True,
+        "transient_route_confirmation_required": False,
     }
 
 
@@ -899,6 +969,7 @@ async def _send_to_claude(
     summary: str | None,
     timeout_seconds: float,
     before_send: Callable[[ValidatedEnvelope, routing.ClaudeRoute], None],
+    before_dispatch: Callable[[], None],
 ) -> dict[str, Any]:
     """Resolve a full session UUID and send to its fresh local peer route."""
 
@@ -908,14 +979,17 @@ async def _send_to_claude(
     validated_summary = _validated_summary(
         summary if summary is not None else _default_summary(envelope)
     )
+    claude_bin = _resolve_binary(claude_bin, label="claude")
     try:
         async with asyncio.timeout(timeout_seconds):
+            _require_product_metadata(claude_bin, label="claude")
             sessions = await asyncio.to_thread(
                 _discover_agent_view_sessions,
                 claude_bin=claude_bin,
                 timeout_seconds=timeout_seconds,
             )
             selected = _select_agent_view_session(sessions, session_id)
+            _require_product_metadata(claude_bin, label="claude")
             async with _claude_client(
                 claude_bin=claude_bin, timeout_seconds=timeout_seconds
             ) as (client, text_content_type):
@@ -929,12 +1003,15 @@ async def _send_to_claude(
                     arguments={},
                 )
                 peers = parse_peers(_listing_text(listing_response))
-                local_peers = tuple(peer for peer in peers if peer.local)
+                local_peers = tuple(
+                    peer for peer in peers if peer.local and peer.addressable
+                )
                 route = _correlate_route(
                     selected,
                     local_peers,
                     requested_target=target,
                 )
+                _require_product_metadata(claude_bin, label="claude")
                 selected = await _refresh_agent_view_session(
                     selected,
                     claude_bin=claude_bin,
@@ -971,6 +1048,8 @@ async def _send_to_claude(
                 notify_when_idle = _supports_notify_when_idle(schemas["SendMessage"])
                 if notify_when_idle:
                     send_arguments["notify_when_idle"] = True
+                product_approval = _require_product_metadata(claude_bin, label="claude")
+                before_dispatch()
                 response = await _call_connected_tool(
                     client,
                     text_content_type,
@@ -994,6 +1073,7 @@ async def _send_to_claude(
         "mcp_protocol": response.protocol_version,
         "notify_when_idle_requested": notify_when_idle,
         "transport_receipt": response.receipt(),
+        "product_executable_approval": product_approval,
     }
     result["target_session_id"] = selected.session_id
     result["target_agent_view_id"] = selected.agent_view_id
@@ -1043,6 +1123,38 @@ def _codex_queue_receipt(stdout: str, *, expected_thread: str) -> dict[str, str]
     }
 
 
+def _require_codex_state_write_access() -> None:
+    """Fail before journaling or dispatch when local Codex state is read-only."""
+
+    configured_home = os.environ.get("CODEX_HOME")
+    state_root = (
+        Path(configured_home) if configured_home is not None else Path.home() / ".codex"
+    )
+    directory_descriptor: int | None = None
+    state_descriptor: int | None = None
+    try:
+        directory_descriptor = secure_fs._open_directory_fd(state_root)
+        state_descriptor = os.open(
+            CODEX_STATE_DB_NAME,
+            _CODEX_STATE_FLAGS,
+            dir_fd=directory_descriptor,
+        )
+        metadata = os.fstat(state_descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid():
+            raise OSError("Codex state database is not an owned regular file")
+    except (OSError, project.ProjectError):
+        raise TransportError(
+            "codex.state_write_access",
+            "Codex local state cannot be opened for write access; obtain "
+            "user-approved local filesystem access before queue dispatch",
+        ) from None
+    finally:
+        if state_descriptor is not None:
+            os.close(state_descriptor)
+        if directory_descriptor is not None:
+            os.close(directory_descriptor)
+
+
 def _send_to_codex_queue(
     *,
     codex_bin: str,
@@ -1051,9 +1163,11 @@ def _send_to_codex_queue(
     against_path: str | None,
     timeout_seconds: float,
     before_send: Callable[[ValidatedEnvelope], None],
+    before_dispatch: Callable[[], None],
 ) -> dict[str, Any]:
     """Validate and queue one exact envelope to one literal local Codex thread."""
 
+    codex_bin = _resolve_binary(codex_bin, label="codex")
     thread = _canonical_uuid(thread, label="thread")
     validated = _validate_envelope(envelope_path, against_path)
     raw = validated.raw
@@ -1075,7 +1189,10 @@ def _send_to_codex_queue(
         transport="codex_queue",
         address=thread,
     )
+    _require_codex_state_write_access()
     before_send(validated)
+    product_approval = _require_product_metadata(codex_bin, label="codex")
+    before_dispatch()
     try:
         completed = subprocess.run(
             [
@@ -1120,6 +1237,7 @@ def _send_to_codex_queue(
         "target_thread": thread,
         "message_id": envelope["message_id"],
         "transport_receipt": transport_receipt,
+        "product_executable_approval": product_approval,
     }
 
 

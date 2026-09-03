@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import py_compile
+import shlex
 import shutil
 import subprocess
 import sys
@@ -15,7 +16,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from tools.cam1lib import profile
+from tools.cam1lib import product_executables, profile
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -117,6 +118,67 @@ class ValidationProfileTests(unittest.TestCase):
 
         self.assertTrue(expected)
         self.assertLessEqual(expected, profiled)
+
+    def test_profile_includes_compatibility_kernel_inputs(self) -> None:
+        profiled = {
+            path.relative_to(ROOT).as_posix() for path in profile._profile_paths(ROOT)
+        }
+        self.assertIn("tools/cam1lib/compatibility.py", profiled)
+        self.assertIn("schemas/cam-compatibility-event-1.schema.json", profiled)
+        self.assertEqual(
+            profile._cam1_bootstrap._SOURCE_PATHS["tools.cam1lib.compatibility"],
+            "cam1lib/compatibility.py",
+        )
+
+    def test_profile_closes_over_causal_enforcement_code_and_schema(self) -> None:
+        expected = {
+            "schemas/cam-causal-context-1.schema.json",
+            "tools/cam1lib/causal.py",
+        }
+        profiled = {
+            path.relative_to(ROOT).as_posix() for path in profile._profile_paths(ROOT)
+        }
+        self.assertLessEqual(expected, profiled)
+        self.assertEqual(
+            profile._cam1_bootstrap._SOURCE_PATHS["tools.cam1lib.causal"],
+            "cam1lib/causal.py",
+        )
+
+        for relative in sorted(expected):
+            with self.subTest(relative=relative), tempfile.TemporaryDirectory() as root:
+                copied = self.copied_profile_root(Path(root))
+                before = profile.build_validation_profile(copied)
+                path = copied / relative
+                path.write_bytes(path.read_bytes() + b"\n")
+                after = profile.build_validation_profile(copied)
+                self.assertNotEqual(
+                    before.validation_profile_sha256,
+                    after.validation_profile_sha256,
+                )
+
+    def test_profile_closes_over_approval_recovery_code_and_schema(self) -> None:
+        expected = {
+            "schemas/cam-product-executable-approval-1.schema.json",
+            "schemas/cam-product-executable-recovery-1.schema.json",
+            "tools/cam1lib/product_approval_recovery.py",
+            "tools/cam1lib/product_approval_recovery_evidence.py",
+        }
+        profiled = {
+            path.relative_to(ROOT).as_posix() for path in profile._profile_paths(ROOT)
+        }
+        self.assertLessEqual(expected, profiled)
+        self.assertEqual(
+            profile._cam1_bootstrap._SOURCE_PATHS[
+                "tools.cam1lib.product_approval_recovery"
+            ],
+            "cam1lib/product_approval_recovery.py",
+        )
+        self.assertEqual(
+            profile._cam1_bootstrap._SOURCE_PATHS[
+                "tools.cam1lib.product_approval_recovery_evidence"
+            ],
+            "cam1lib/product_approval_recovery_evidence.py",
+        )
 
     def test_profile_reports_runtime_outside_the_source_digest(self) -> None:
         report = profile.validation_profile_report()
@@ -468,6 +530,122 @@ class ValidationProfileTests(unittest.TestCase):
                     self.assertEqual(code, "profile.path_set_mismatch")
                     self.assertFalse(marker.exists())
 
+    def test_dirty_product_commands_cannot_import_or_mutate_approval_state(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            copied, _git_bin = self.initialized_git_profile_root(base / "cam")
+            import_marker = base / "approval-module-imported"
+            account = base / "synthetic-account"
+            account.mkdir(mode=0o700)
+            approval_source = copied / "tools" / "cam1lib" / "product_approvals.py"
+            approval_source.write_bytes(
+                approval_source.read_bytes()
+                + (
+                    "\nfrom pathlib import Path as _InjectedPath\n"
+                    f"_InjectedPath({str(import_marker)!r}).write_text("
+                    "'executed', encoding='utf-8')\n"
+                    "def account_home():\n"
+                    f"    return _InjectedPath({str(account)!r})\n"
+                ).encode()
+            )
+            executable = base / "codex"
+            executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            executable.chmod(0o700)
+            candidate = product_executables.discover_candidate(
+                "codex",
+                str(executable),
+                allow_path_lookup=False,
+            )
+            commands = (
+                (
+                    "product-discover",
+                    "--vendor",
+                    "codex",
+                    "--product-bin",
+                    str(executable),
+                ),
+                (
+                    "product-approve",
+                    "--vendor",
+                    "codex",
+                    "--product-bin",
+                    str(executable),
+                    "--expected-fingerprint-sha256",
+                    candidate.fingerprint_sha256,
+                    "--operator-reference",
+                    "direct synthetic test confirmation",
+                ),
+                (
+                    "product-status",
+                    "--vendor",
+                    "codex",
+                    "--product-bin",
+                    str(executable),
+                ),
+                ("product-recovery-status",),
+                (
+                    "product-recover-partial-tail",
+                    "--expected-registry-sha256",
+                    "a" * 64,
+                    "--expected-registry-bytes",
+                    "1",
+                    "--expected-registry-device",
+                    "1",
+                    "--expected-registry-inode",
+                    "1",
+                    "--expected-registry-ctime-ns",
+                    "1",
+                    "--expected-registry-mtime-ns",
+                    "1",
+                    "--expected-prefix-sha256",
+                    "b" * 64,
+                    "--expected-prefix-bytes",
+                    "0",
+                    "--expected-prefix-record-count",
+                    "0",
+                    "--expected-tail-sha256",
+                    "c" * 64,
+                    "--expected-tail-bytes",
+                    "1",
+                    "--reason",
+                    "synthetic interrupted append",
+                    "--operator-reference",
+                    "direct synthetic recovery confirmation",
+                ),
+                (
+                    "product-revoke",
+                    "--vendor",
+                    "codex",
+                    "--product-bin",
+                    str(executable),
+                    "--approval-record-id",
+                    "00000000-0000-4000-8000-000000000001",
+                    "--expected-fingerprint-sha256",
+                    candidate.fingerprint_sha256,
+                    "--operator-reference",
+                    "direct synthetic test revocation",
+                ),
+            )
+            for command in commands:
+                with self.subTest(command=command[0]):
+                    completed = subprocess.run(
+                        [sys.executable, "tools/cam1_transport.py", *command],
+                        cwd=copied,
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        timeout=20,
+                    )
+                    self.assertEqual(completed.returncode, 2, completed.stderr)
+                    self.assertEqual(
+                        json.loads(completed.stderr)["error"]["code"],
+                        "profile.executable_source_dirty",
+                    )
+                    self.assertFalse(import_marker.exists())
+                    self.assertFalse((account / "CAM").exists())
+
     def test_legacy_profile_bytecode_cannot_replace_hidden_source(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             copied, git_bin = self.initialized_git_profile_root(Path(directory))
@@ -601,6 +779,73 @@ class ValidationProfileTests(unittest.TestCase):
                     json.loads(completed.stderr)["error"]["code"], expected_code
                 )
                 self.assertFalse(marker.exists())
+
+    def test_dirty_onboarding_source_cannot_execute_or_touch_project(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            copied, git_bin = self.initialized_git_profile_root(base / "cam")
+            import_marker = base / "onboarding-imported"
+            product_marker = base / "claude-executed"
+            onboarding_source = copied / "tools" / "cam1lib" / "onboarding.py"
+            onboarding_source.write_bytes(
+                onboarding_source.read_bytes()
+                + (
+                    "\nfrom pathlib import Path as _MarkerPath\n"
+                    f"_MarkerPath({str(import_marker)!r}).write_text("
+                    "'executed', encoding='utf-8')\n"
+                ).encode()
+            )
+            claude_bin = base / "claude"
+            claude_bin.write_text(
+                "#!/bin/sh\n"
+                f"/usr/bin/touch {shlex.quote(str(product_marker))}\n"
+                "printf '[]\\n'\n",
+                encoding="utf-8",
+            )
+            claude_bin.chmod(0o700)
+
+            for index, project_option in enumerate(("--project-root", "--project-r")):
+                with self.subTest(project_option=project_option):
+                    target = base / f"target-{index}"
+                    target.mkdir()
+                    subprocess.run(
+                        [git_bin, "-C", str(target), "init", "--quiet"],
+                        check=True,
+                        capture_output=True,
+                    )
+                    state_root = base / f"state-{index}"
+                    completed = subprocess.run(
+                        [
+                            sys.executable,
+                            "tools/cam1_project.py",
+                            f"{project_option}={target}",
+                            "--state-root",
+                            str(state_root),
+                            "onboarding",
+                            "prepare",
+                            "--vendor",
+                            "claude-code",
+                            "--session-id",
+                            "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+                            "--product-bin",
+                            str(claude_bin),
+                        ],
+                        cwd=copied,
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        timeout=20,
+                    )
+
+                    self.assertEqual(completed.returncode, 2, completed.stderr)
+                    self.assertEqual(
+                        json.loads(completed.stderr)["error"]["code"],
+                        "profile.executable_source_dirty",
+                    )
+                    self.assertFalse(import_marker.exists())
+                    self.assertFalse(product_marker.exists())
+                    self.assertFalse((target / ".git" / "cam1").exists())
+                    self.assertFalse(state_root.exists())
 
     def test_offline_non_git_facades_remain_available(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

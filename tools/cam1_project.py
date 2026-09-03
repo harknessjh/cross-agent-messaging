@@ -27,12 +27,20 @@ if __name__ == "__main__":
 import argparse
 import datetime as dt
 import json
-import uuid
 from pathlib import Path
 from typing import Any
 
-from tools.cam1lib import journal, lifecycle, participants, profile, project, state
-from tools.cam1lib.protocol import CamUsageError, CamValidationError, parse_exact_bytes
+from tools.cam1lib import (
+    compatibility_cli,
+    inbound,
+    journal,
+    onboarding,
+    onboarding_cli,
+    product_approvals,
+    project,
+    state,
+)
+from tools.cam1lib.protocol import CamUsageError, CamValidationError
 from tools.cam1lib.state import StateStore
 
 
@@ -54,9 +62,14 @@ def _emit(payload: dict[str, Any], *, stream: Any = sys.stdout) -> None:
 
 def _parser() -> argparse.ArgumentParser:
     parser = JsonArgumentParser(
-        description="Manage one Git-bound CAM project and its required local journal."
+        description="Manage one Git-bound CAM project and its required local journal.",
+        allow_abbrev=False,
     )
-    parser.add_argument("--project-root", default=".")
+    parser.add_argument(
+        "--project-root",
+        default=".",
+        help="target Git worktree; defaults to the current working directory",
+    )
     parser.add_argument(
         "--state-root",
         help="absolute journal root override; defaults to the account home at ~/CAM/Journals",
@@ -121,23 +134,31 @@ def _parser() -> argparse.ArgumentParser:
     )
     participant_add.add_argument("--common-name", required=True)
     participant_add.add_argument("--display-name", required=True)
-    participant_add.add_argument("--role", required=True)
+    participant_add.add_argument("--role")
     participant_add.add_argument(
         "--vendor", choices=("codex", "claude-code"), required=True
     )
     participant_add.add_argument("--participant-id")
+    participant_add.add_argument("--product-bin")
 
     participant_bind = participant_commands.add_parser(
         "bind", help="bind a participant to an operator-confirmed product session"
     )
     participant_bind.add_argument("--participant", required=True)
     participant_bind.add_argument("--session-id", required=True)
-    participant_bind.add_argument("--session-label", required=True)
-    participant_bind.add_argument("--session-kind")
+    participant_bind.add_argument("--session-label")
+    participant_bind.add_argument(
+        "--session-kind",
+        help="required for Claude Code bindings; optional for Codex",
+    )
     participant_bind.add_argument("--operator-reference", required=True)
 
     participant_confirm = participant_commands.add_parser(
-        "confirm-route", help="confirm the currently observed route"
+        "confirm-route",
+        help=(
+            "record an optional operator guard for the currently observed route; "
+            "not required for a uniquely tool-correlated Claude route"
+        ),
     )
     participant_confirm.add_argument("--participant", required=True)
     participant_confirm.add_argument("--expected-address", required=True)
@@ -151,6 +172,21 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="explicitly reveal session and route identifiers",
     )
+
+    participant_update = participant_commands.add_parser(
+        "update-metadata",
+        help="update descriptive metadata without changing participant identity",
+    )
+    participant_update.add_argument("--participant", required=True)
+    participant_update.add_argument("--expected-revision", type=int, required=True)
+    participant_update.add_argument("--display-name")
+    role_update = participant_update.add_mutually_exclusive_group()
+    role_update.add_argument("--role")
+    role_update.add_argument("--clear-role", action="store_true")
+    executable_update = participant_update.add_mutually_exclusive_group()
+    executable_update.add_argument("--product-bin")
+    executable_update.add_argument("--clear-product-bin", action="store_true")
+    participant_update.add_argument("--operator-reference", required=True)
 
     for command, help_text in (
         ("invalidate", "mark a participant binding and route stale"),
@@ -168,6 +204,9 @@ def _parser() -> argparse.ArgumentParser:
     state_commands.add_parser(
         "rebuild", help="rebuild disposable state projections from the journal"
     )
+
+    compatibility_cli.register_parser(domains)
+    onboarding_cli.add_parser(domains)
 
     message_parser = domains.add_parser("message")
     message_commands = message_parser.add_subparsers(
@@ -206,6 +245,16 @@ def _parser() -> argparse.ArgumentParser:
 def _validate_arguments(
     parser: argparse.ArgumentParser, args: argparse.Namespace
 ) -> None:
+    if (
+        args.domain == "participant"
+        and args.participant_command == "update-metadata"
+        and args.display_name is None
+        and args.role is None
+        and not args.clear_role
+        and args.product_bin is None
+        and not args.clear_product_bin
+    ):
+        parser.error("update-metadata requires at least one metadata change")
     if args.domain != "message" or args.message_command != "ingest":
         return
     if args.stdin:
@@ -248,27 +297,7 @@ def _resolve(args: argparse.Namespace) -> project.ProjectBinding:
 
 
 def _record_summary(record: dict[str, Any]) -> dict[str, Any]:
-    message = record["message"]
-    return {
-        "sequence": record["sequence"],
-        "record_id": record["record_id"],
-        "project_id": record["project_id"],
-        "recorded_at": record["recorded_at"],
-        "event_type": record["event_type"],
-        "previous_record_sha256": record["previous_record_sha256"],
-        "record_sha256": record["record_sha256"],
-        "message": (
-            None
-            if message is None
-            else {
-                "encoding": message["encoding"],
-                "byte_length": message["byte_length"],
-                "sha256": message["sha256"],
-                "content": "<redacted>",
-            }
-        ),
-        "attributes": "<redacted>",
-    }
+    return inbound.record_summary(record)
 
 
 def _record_with_content(record: dict[str, Any]) -> dict[str, Any]:
@@ -302,538 +331,18 @@ def _state_summary(snapshot: state.StateSnapshot) -> dict[str, Any]:
         "journal_sequence": snapshot.journal_sequence,
         "journal_record_sha256": snapshot.journal_record_sha256,
         "participant_count": len(snapshot.roster.participants),
+        "enrollment_proposal_count": len(snapshot.enrollment.proposals),
+        "pending_enrollment_count": sum(
+            proposal.status.value == "pending"
+            for proposal in snapshot.enrollment.proposals.values()
+        ),
         "lifecycle_count": len(snapshot.lifecycle.entries),
         "lifecycle_states": dict(sorted(lifecycle_states.items())),
     }
 
 
-def _rejection_codes(
-    error: CamUsageError | CamValidationError | state.StateError,
-) -> tuple[str, list[str]]:
-    if isinstance(error, CamValidationError):
-        problem_codes = list(
-            dict.fromkeys(problem.code[:80] for problem in error.problems)
-        )
-        return "validation.failed", problem_codes[:16]
-    code = error.code[:80]
-    return code, [code]
-
-
-def _uuid_values_equal(left: Any, right: Any) -> bool:
-    if not isinstance(left, str) or not isinstance(right, str):
-        return False
-    try:
-        return uuid.UUID(left) == uuid.UUID(right)
-    except (ValueError, AttributeError):
-        return False
-
-
-def _require_inbound_roster_endpoints(
-    store: StateStore,
-    transaction: project.ProjectTransaction,
-    raw: bytes,
-    *,
-    local_selector: str,
-) -> tuple[state.Participant, state.Participant]:
-    envelope = parse_exact_bytes(raw)
-    snapshot = store.snapshot(transaction=transaction)
-    local = snapshot.roster.select(local_selector)
-    if local.status != participants.ParticipantStatus.BOUND or local.binding is None:
-        raise CamUsageError(
-            "roster.recipient_unavailable",
-            "local receiving participant must have an active roster binding",
-        )
-    recipient = envelope.get("recipient")
-    if not isinstance(recipient, dict) or (
-        recipient.get("vendor") != local.vendor
-        or recipient.get("agent_name") != local.common_name
-        or not _uuid_values_equal(recipient.get("session_id"), local.binding.session_id)
-    ):
-        raise CamUsageError(
-            "roster.recipient_mismatch",
-            "envelope recipient does not match the selected local participant",
-        )
-
-    claimed_sender = envelope.get("claimed_sender")
-    sender_matches = [
-        candidate
-        for candidate in snapshot.roster.participants.values()
-        if candidate.status == participants.ParticipantStatus.BOUND
-        and candidate.binding is not None
-        and isinstance(claimed_sender, dict)
-        and claimed_sender.get("vendor") == candidate.vendor
-        and claimed_sender.get("agent_name") == candidate.common_name
-        and _uuid_values_equal(
-            claimed_sender.get("session_id"), candidate.binding.session_id
-        )
-    ]
-    if len(sender_matches) != 1:
-        raise CamUsageError(
-            "roster.sender_unknown",
-            "envelope claimed_sender must match one active project participant",
-        )
-    return local, sender_matches[0]
-
-
-def _prior_inbound_validation(
-    binding: project.ProjectBinding,
-    *,
-    message_id: str,
-    recipient_participant_id: str,
-) -> dict[str, Any] | None:
-    """Return the prior recipient-specific validation for one exact message."""
-
-    for record in reversed(journal.replay_records(binding)):
-        if record["event_type"] != "message.inbound.validated":
-            continue
-        attributes = record.get("attributes")
-        if (
-            isinstance(attributes, dict)
-            and _uuid_values_equal(attributes.get("message_id"), message_id)
-            and attributes.get("recipient_participant_id") == recipient_participant_id
-        ):
-            return record
-    return None
-
-
-def _record_inbound_duplicate(
-    binding: project.ProjectBinding,
-    transaction: project.ProjectTransaction,
-    *,
-    observed_record: dict[str, Any],
-    message_id: str,
-    prior_validation: dict[str, Any],
-    local_participant: state.Participant,
-    sender_participant: state.Participant,
-    lifecycle_entry: lifecycle.LifecycleEntry,
-    validation_profile: dict[str, Any],
-) -> tuple[int, dict[str, Any]]:
-    """Journal and describe one recipient-specific exact retransmission."""
-
-    duplicate_now, duplicate_at = _utc_now()
-    duplicate_record = journal.append_record(
-        binding,
-        event_type="message.inbound.duplicate",
-        attributes={
-            "observed_record_id": observed_record["record_id"],
-            "message_id": message_id,
-            "prior_validated_record_id": prior_validation["record_id"],
-            "sender_participant_id": sender_participant.participant_id,
-            "recipient_participant_id": local_participant.participant_id,
-            "authorization_evaluated": False,
-            "action_authorized": False,
-            "validation_profile": validation_profile,
-            "observed_at": duplicate_at,
-        },
-        now=duplicate_now,
-        transaction=transaction,
-    )
-    return 0, {
-        "ok": True,
-        "status": "duplicate",
-        "duplicate": True,
-        "authorization_evaluated": False,
-        "action_authorized": False,
-        "validation_profile": validation_profile,
-        "observed_record": _record_summary(observed_record),
-        "duplicate_record": _record_summary(duplicate_record),
-        "as_participant": {
-            "participant_id": local_participant.participant_id,
-            "common_name": local_participant.common_name,
-        },
-        "lifecycle": lifecycle_entry.as_dict(),
-    }
-
-
-def _record_inbound_rejection(
-    binding: project.ProjectBinding,
-    transaction: project.ProjectTransaction,
-    *,
-    observed_record: dict[str, Any],
-    error: CamUsageError | CamValidationError | state.StateError,
-    validation_profile: dict[str, Any],
-) -> tuple[int, dict[str, Any]]:
-    """Append one bounded rejection correlated to the preserved observation."""
-
-    error_code, problem_codes = _rejection_codes(error)
-    rejected_now, _ = _utc_now()
-    rejected_record = journal.append_record(
-        binding,
-        event_type="message.inbound.rejected",
-        attributes={
-            "error_code": error_code,
-            "problem_codes": problem_codes,
-            "observed_record_id": observed_record["record_id"],
-            "validation_profile": validation_profile,
-        },
-        now=rejected_now,
-        transaction=transaction,
-    )
-    return 2, {
-        "ok": False,
-        "status": "rejected",
-        "error": {
-            "code": error_code,
-            "problem_codes": problem_codes,
-        },
-        "observed_record": _record_summary(observed_record),
-        "rejected_record": _record_summary(rejected_record),
-        "validation_profile": validation_profile,
-    }
-
-
-def _exact_ingest_source(
-    *, message_path: str | None, exact_message: bytes | None
-) -> bytes:
-    if exact_message is None:
-        if message_path is None:
-            raise project.ProjectError(
-                "message.source", "inbound message source is missing"
-            )
-        return project.read_private_bytes(
-            Path(message_path), max_bytes=journal.MAX_EXACT_MESSAGE_BYTES
-        )
-    if message_path is not None:
-        raise project.ProjectError(
-            "message.source", "inbound message sources are mutually exclusive"
-        )
-    return exact_message
-
-
-def _observe_inbound(
-    binding: project.ProjectBinding,
-    transaction: project.ProjectTransaction,
-    raw: bytes,
-    *,
-    source: str,
-) -> dict[str, Any]:
-    observed_now, observed_at = _utc_now()
-    return journal.append_record(
-        binding,
-        event_type="message.inbound.observed",
-        exact_message=raw,
-        attributes={"source": source, "observed_at": observed_at},
-        now=observed_now,
-        transaction=transaction,
-    )
-
-
-def _candidate_message_id(envelope: dict[str, Any]) -> str | None:
-    candidate = envelope.get("message_id")
-    if not isinstance(candidate, str):
-        return None
-    try:
-        return str(uuid.UUID(candidate))
-    except ValueError:
-        return None
-
-
-def _duplicate_lifecycle_entry(
-    store: StateStore,
-    transaction: project.ProjectTransaction,
-    envelope: dict[str, Any],
-    message_id: str,
-) -> lifecycle.LifecycleEntry:
-    root_value = (
-        message_id
-        if envelope.get("type") in lifecycle.ROOT_TYPES
-        else envelope.get("in_reply_to")
-    )
-    root_id = str(uuid.UUID(root_value)) if isinstance(root_value, str) else ""
-    entry = store.snapshot(transaction=transaction).lifecycle.entries.get(root_id)
-    if entry is None:
-        raise CamUsageError(
-            "state.duplicate_missing",
-            "validated duplicate has no lifecycle root",
-        )
-    return entry
-
-
-def _early_exact_duplicate(
-    binding: project.ProjectBinding,
-    transaction: project.ProjectTransaction,
-    store: StateStore,
-    *,
-    raw: bytes,
-    as_participant: str,
-    observed_record: dict[str, Any],
-    validation_profile: dict[str, Any],
-) -> tuple[int, dict[str, Any]] | None:
-    envelope = parse_exact_bytes(raw)
-    message_id = _candidate_message_id(envelope)
-    if message_id is None:
-        return None
-    if store.preserved_message(message_id, transaction=transaction) != raw:
-        return None
-    local_participant, sender_participant = _require_inbound_roster_endpoints(
-        store,
-        transaction,
-        raw,
-        local_selector=as_participant,
-    )
-    prior_validation = _prior_inbound_validation(
-        binding,
-        message_id=message_id,
-        recipient_participant_id=local_participant.participant_id,
-    )
-    if prior_validation is None:
-        return None
-    entry = _duplicate_lifecycle_entry(store, transaction, envelope, message_id)
-    return _record_inbound_duplicate(
-        binding,
-        transaction,
-        observed_record=observed_record,
-        message_id=message_id,
-        prior_validation=prior_validation,
-        local_participant=local_participant,
-        sender_participant=sender_participant,
-        lifecycle_entry=entry,
-        validation_profile=validation_profile,
-    )
-
-
-def _prepare_initial_inbound(
-    store: StateStore,
-    transaction: project.ProjectTransaction,
-    *,
-    raw: bytes,
-    renewal_of: str | None,
-    as_participant: str,
-) -> tuple[state.LifecyclePlan, state.Participant, state.Participant]:
-    validation_now, _ = _utc_now()
-    plan = store.prepare_inbound_lifecycle(
-        raw,
-        renewal_of=renewal_of,
-        now=validation_now,
-        transaction=transaction,
-    )
-    local_participant, sender_participant = _require_inbound_roster_endpoints(
-        store,
-        transaction,
-        raw,
-        local_selector=as_participant,
-    )
-    if plan.preview.state == lifecycle.LifecycleState.EXPIRED_UNCONFIRMED:
-        expired_commit_now, _ = _utc_now()
-        store.commit_lifecycle(
-            plan,
-            transaction=transaction,
-            now=expired_commit_now,
-        )
-        raise CamUsageError(
-            "state.root_expired",
-            "root expired before application handling and was not accepted",
-        )
-    return plan, local_participant, sender_participant
-
-
-def _refresh_inbound_plan(
-    store: StateStore,
-    transaction: project.ProjectTransaction,
-    *,
-    raw: bytes,
-    renewal_of: str | None,
-) -> state.LifecyclePlan:
-    commit_check_now, _ = _utc_now()
-    plan = store.prepare_inbound_lifecycle(
-        raw,
-        renewal_of=renewal_of,
-        now=commit_check_now,
-        transaction=transaction,
-    )
-    if plan.preview.state == lifecycle.LifecycleState.EXPIRED_UNCONFIRMED:
-        store.commit_lifecycle(
-            plan,
-            transaction=transaction,
-            now=commit_check_now,
-        )
-        raise CamUsageError(
-            "state.root_expired",
-            "root expired before application handling and was not accepted",
-        )
-    final_check_now, _ = _utc_now()
-    state.require_plan_freshness(plan, now=final_check_now)
-    return plan
-
-
-def _commit_inbound_plan(
-    store: StateStore,
-    transaction: project.ProjectTransaction,
-    plan: state.LifecyclePlan,
-) -> tuple[lifecycle.LifecycleEntry, state.ProjectionRefreshError | None]:
-    try:
-        return store.commit_lifecycle(plan, transaction=transaction), None
-    except state.ProjectionRefreshError as error:
-        # The canonical lifecycle event is already journaled. Continue the
-        # ingest audit and report that only the rebuildable cache is stale.
-        return plan.preview, error
-
-
-def _record_validated_inbound(
-    binding: project.ProjectBinding,
-    transaction: project.ProjectTransaction,
-    *,
-    observed_record: dict[str, Any],
-    plan: state.LifecyclePlan,
-    local_participant: state.Participant,
-    sender_participant: state.Participant,
-    entry: lifecycle.LifecycleEntry,
-    projection_error: state.ProjectionRefreshError | None,
-    validation_profile: dict[str, Any],
-) -> tuple[int, dict[str, Any]]:
-    validated_now, validated_at = _utc_now()
-    validated_record = journal.append_record(
-        binding,
-        event_type="message.inbound.validated",
-        attributes={
-            "observed_record_id": observed_record["record_id"],
-            "message_id": plan.attributes.get(
-                "message_id", plan.attributes["root_message_id"]
-            ),
-            "sender_participant_id": sender_participant.participant_id,
-            "recipient_participant_id": local_participant.participant_id,
-            "authorization_evaluated": False,
-            "action_authorized": False,
-            "state_projection_current": projection_error is None,
-            "validation_profile": validation_profile,
-            "observed_at": validated_at,
-        },
-        now=validated_now,
-        transaction=transaction,
-    )
-    last_committed_record = None
-    if projection_error is not None:
-        last_committed_record = {
-            "record_id": projection_error.record_id,
-            "sequence": projection_error.sequence,
-        }
-    return 0, {
-        "ok": True,
-        "status": "validated",
-        "duplicate": False,
-        "authorization_evaluated": False,
-        "action_authorized": False,
-        "validation_profile": validation_profile,
-        "state_projection": {
-            "current": projection_error is None,
-            "rebuild_required": projection_error is not None,
-            "last_committed_record": last_committed_record,
-        },
-        "observed_record": _record_summary(observed_record),
-        "validated_record": _record_summary(validated_record),
-        "as_participant": {
-            "participant_id": local_participant.participant_id,
-            "common_name": local_participant.common_name,
-        },
-        "lifecycle": entry.as_dict(),
-    }
-
-
-def _ingest_message(
-    binding: project.ProjectBinding,
-    *,
-    message_path: str | None,
-    as_participant: str,
-    renewal_of: str | None,
-    exact_message: bytes | None = None,
-    observed_source: str = "owner_only_file",
-) -> tuple[int, dict[str, Any]]:
-    validation_profile = profile.validation_profile_report()
-    raw = _exact_ingest_source(
-        message_path=message_path,
-        exact_message=exact_message,
-    )
-    store = StateStore(binding)
-    with project.project_transaction(binding) as transaction:
-        observed_record = _observe_inbound(
-            binding,
-            transaction,
-            raw,
-            source=observed_source,
-        )
-        try:
-            duplicate_result = _early_exact_duplicate(
-                binding,
-                transaction,
-                store,
-                raw=raw,
-                as_participant=as_participant,
-                observed_record=observed_record,
-                validation_profile=validation_profile,
-            )
-            if duplicate_result is not None:
-                return duplicate_result
-            plan, local_participant, sender_participant = _prepare_initial_inbound(
-                store,
-                transaction,
-                raw=raw,
-                renewal_of=renewal_of,
-                as_participant=as_participant,
-            )
-        except (CamUsageError, CamValidationError, state.StateError) as error:
-            return _record_inbound_rejection(
-                binding,
-                transaction,
-                observed_record=observed_record,
-                error=error,
-                validation_profile=validation_profile,
-            )
-        message_id = plan.attributes.get(
-            "message_id", plan.attributes["root_message_id"]
-        )
-        prior_validation = _prior_inbound_validation(
-            binding,
-            message_id=message_id,
-            recipient_participant_id=local_participant.participant_id,
-        )
-        if prior_validation is not None:
-            return _record_inbound_duplicate(
-                binding,
-                transaction,
-                observed_record=observed_record,
-                message_id=message_id,
-                prior_validation=prior_validation,
-                local_participant=local_participant,
-                sender_participant=sender_participant,
-                lifecycle_entry=plan.preview,
-                validation_profile=validation_profile,
-            )
-        try:
-            plan = _refresh_inbound_plan(
-                store,
-                transaction,
-                raw=raw,
-                renewal_of=renewal_of,
-            )
-        except (CamUsageError, CamValidationError, state.StateError) as error:
-            return _record_inbound_rejection(
-                binding,
-                transaction,
-                observed_record=observed_record,
-                error=error,
-                validation_profile=validation_profile,
-            )
-        try:
-            entry, projection_error = _commit_inbound_plan(store, transaction, plan)
-        except (CamUsageError, CamValidationError, state.StateError) as error:
-            return _record_inbound_rejection(
-                binding,
-                transaction,
-                observed_record=observed_record,
-                error=error,
-                validation_profile=validation_profile,
-            )
-        return _record_validated_inbound(
-            binding,
-            transaction,
-            observed_record=observed_record,
-            plan=plan,
-            local_participant=local_participant,
-            sender_participant=sender_participant,
-            entry=entry,
-            projection_error=projection_error,
-            validation_profile=validation_profile,
-        )
+_prior_inbound_validation = inbound.prior_inbound_validation
+_ingest_message = inbound.ingest_message
 
 
 def _handle_project(args: argparse.Namespace) -> int:
@@ -860,12 +369,14 @@ def _handle_project(args: argparse.Namespace) -> int:
 
 def _handle_journal(args: argparse.Namespace, binding: project.ProjectBinding) -> int:
     if args.journal_command == "append":
-        if args.event_type.startswith(("state.", "message.", "transport.", "journal.")):
+        if args.event_type.startswith(
+            ("state.", "message.", "transport.", "journal.", "compatibility.")
+        ):
             raise project.ProjectError(
                 "journal.event_reserved",
-                "state.*, message.*, transport.*, and journal.* event names are "
-                "reserved for validated internal operations; use note.* for "
-                "operator notes",
+                "state.*, message.*, transport.*, journal.*, and compatibility.* "
+                "event names are reserved for validated internal operations; use "
+                "note.* for operator notes",
             )
         exact_message = (
             project.read_private_bytes(
@@ -950,6 +461,14 @@ def _bind_participant(
 ) -> state.Participant:
     event_now, bound_at = _utc_now()
     with project.project_transaction(binding) as transaction:
+        existing = store.snapshot(transaction=transaction).roster.select(
+            args.participant
+        )
+        if existing.vendor == "claude-code" and args.session_kind is None:
+            raise CamUsageError(
+                "roster.session_kind_required",
+                "Claude bindings require the session kind shown by /status",
+            )
         participant = store.participant_bind(
             args.participant,
             session_id=args.session_id,
@@ -993,11 +512,17 @@ def _handle_participant(
 ) -> int:
     if args.participant_command == "add":
         event_now, _ = _utc_now()
+        product_executable = (
+            onboarding.resolve_product_executable(args.product_bin, vendor=args.vendor)
+            if args.product_bin is not None
+            else None
+        )
         participant = store.participant_add(
             common_name=args.common_name,
             display_name=args.display_name,
             role=args.role,
             vendor=args.vendor,
+            approved_product_executable=product_executable,
             participant_id=args.participant_id,
             now=event_now,
         )
@@ -1025,6 +550,39 @@ def _handle_participant(
             }
         )
         return 0
+    elif args.participant_command == "update-metadata":
+        event_now, updated_at = _utc_now()
+        existing = store.snapshot().roster.select(args.participant)
+        display_name = args.display_name or existing.display_name
+        role = (
+            None
+            if args.clear_role
+            else args.role
+            if args.role is not None
+            else existing.role
+        )
+        product_executable = (
+            None
+            if args.clear_product_bin
+            else (
+                onboarding.resolve_product_executable(
+                    args.product_bin, vendor=existing.vendor
+                )
+                if args.product_bin is not None
+                else existing.approved_product_executable
+            )
+        )
+        participant = store.participant_update_metadata(
+            args.participant,
+            display_name=display_name,
+            role=role,
+            approved_product_executable=product_executable,
+            expected_revision=args.expected_revision,
+            operator_reference=args.operator_reference,
+            updated_at=updated_at,
+            now=event_now,
+        )
+        status = "metadata_updated"
     else:
         event_now, _ = _utc_now()
         operation = (
@@ -1084,13 +642,24 @@ def _handle_message(args: argparse.Namespace, binding: project.ProjectBinding) -
 
 
 def main(argv: list[str] | None = None) -> int:
+    product_approvals.begin_operation()
     parser = _parser()
     args = parser.parse_args(argv)
     _validate_arguments(parser, args)
     try:
         if args.domain == "project":
             return _handle_project(args)
-        binding = _resolve(args)
+        if args.domain == "onboarding" and args.onboarding_command != "status":
+            onboarding.require_trusted_source()
+        binding = (
+            project.initialize_project(
+                args.project_root,
+                state_root=args.state_root,
+                git_bin=args.git_bin,
+            )
+            if args.domain == "onboarding" and args.onboarding_command == "prepare"
+            else _resolve(args)
+        )
         if args.domain == "journal":
             return _handle_journal(args, binding)
         store = StateStore(binding)
@@ -1098,8 +667,29 @@ def main(argv: list[str] | None = None) -> int:
             return _handle_participant(args, binding, store)
         if args.domain == "state":
             return _handle_state(args, store)
+        if args.domain == "compatibility":
+            return_code, payload = compatibility_cli.handle(args, binding, store)
+            _emit(payload, stream=sys.stderr if return_code else sys.stdout)
+            return return_code
+        if args.domain == "onboarding":
+            _emit(onboarding_cli.handle(args, binding, store))
+            return 0
         if args.domain == "message":
             return _handle_message(args, binding)
+    except state.CompatibilityUpgradeRequired as error:
+        _emit(
+            {
+                "ok": False,
+                "status": "upgrade_required",
+                "error": error.as_dict(),
+                "recovery": {
+                    "command": "compatibility status",
+                    "detail": "run with the same global project and state-root options",
+                },
+            },
+            stream=sys.stderr,
+        )
+        return 2
     except (project.ProjectError, CamUsageError) as error:
         _emit(
             {"ok": False, "error": {"code": error.code, "detail": error.detail}},

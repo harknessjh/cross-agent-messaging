@@ -37,6 +37,7 @@ class ParticipantStatus(StrEnum):
 class RouteStatus(StrEnum):
     NOT_DISCOVERED = "not_discovered"
     CANDIDATE = "candidate"
+    TOOL_CORRELATED = "tool_correlated"
     OPERATOR_CORRELATED = "operator_correlated"
     STALE = "stale"
 
@@ -45,7 +46,7 @@ class RouteStatus(StrEnum):
 class SessionBinding:
     generation: int
     session_id: str
-    session_label: str
+    session_label: str | None
     session_kind: str | None
     operator_reference: str
     bound_at: str
@@ -106,8 +107,10 @@ class Participant:
     participant_id: str
     common_name: str
     display_name: str
-    role: str
+    role: str | None
     vendor: str
+    approved_product_executable: str | None = None
+    metadata_revision: int = 1
     status: ParticipantStatus = ParticipantStatus.UNBOUND
     binding: SessionBinding | None = None
     route: RouteObservation | None = None
@@ -118,11 +121,16 @@ class Participant:
         route = self.route.as_dict() if self.route is not None else None
         if redact and binding is not None:
             binding["session_id"] = "redacted"
-            binding["session_label"] = "redacted"
+            binding["session_label"] = (
+                "redacted" if binding["session_label"] is not None else None
+            )
             binding["session_kind"] = (
                 "redacted" if binding["session_kind"] is not None else None
             )
             binding["operator_reference"] = "redacted"
+        approved_product_executable = self.approved_product_executable
+        if redact and approved_product_executable is not None:
+            approved_product_executable = "redacted"
         if redact and route is not None:
             for field_name in (
                 "address",
@@ -146,6 +154,8 @@ class Participant:
             "display_name": self.display_name,
             "role": self.role,
             "vendor": self.vendor,
+            "approved_product_executable": approved_product_executable,
+            "metadata_revision": self.metadata_revision,
             "status": self.status.value,
             "binding": binding,
             "route": route,
@@ -199,6 +209,16 @@ def _optional_nonnegative_int(value: Any, *, field_name: str) -> int | None:
             f"{field_name} must be a bounded non-negative integer or null",
         )
     return value
+
+
+def _absolute_path(value: Any, *, field_name: str) -> str:
+    text = _bounded_text(value, field_name=field_name, maximum=4_096)
+    if not PurePath(text).is_absolute():
+        raise CamUsageError(
+            "roster.path",
+            f"{field_name} must be an absolute path",
+        )
+    return text
 
 
 def _timestamp(value: Any, *, field_name: str) -> str:
@@ -307,8 +327,9 @@ class ParticipantRoster:
         *,
         common_name: str,
         display_name: str,
-        role: str,
+        role: str | None,
         vendor: str,
+        approved_product_executable: str | None = None,
         participant_id: str | None = None,
     ) -> Participant:
         name = _participant_name(common_name)
@@ -345,18 +366,87 @@ class ParticipantRoster:
             display_name=_bounded_text(
                 display_name, field_name="display_name", maximum=128
             ),
-            role=_bounded_text(role, field_name="role", maximum=512),
+            role=_optional_text(role, field_name="role", maximum=512),
             vendor=vendor,
+            approved_product_executable=(
+                _absolute_path(
+                    approved_product_executable,
+                    field_name="approved_product_executable",
+                )
+                if approved_product_executable is not None
+                else None
+            ),
         )
         self.participants[identifier] = participant
         return participant
+
+    def update_metadata(
+        self,
+        selector: str,
+        *,
+        display_name: str,
+        role: str | None,
+        approved_product_executable: str | None,
+        expected_revision: int,
+    ) -> Participant:
+        """Replace descriptive/runtime metadata without changing identity."""
+
+        current = self._select(selector)
+        if current.status == ParticipantStatus.RETIRED:
+            raise CamUsageError(
+                "roster.participant_retired",
+                "retired participant metadata cannot be updated",
+            )
+        normalized_display_name = _bounded_text(
+            display_name, field_name="display_name", maximum=128
+        )
+        normalized_role = _optional_text(role, field_name="role", maximum=512)
+        normalized_executable = (
+            _absolute_path(
+                approved_product_executable,
+                field_name="approved_product_executable",
+            )
+            if approved_product_executable is not None
+            else None
+        )
+        desired = (
+            normalized_display_name,
+            normalized_role,
+            normalized_executable,
+        )
+        existing = (
+            current.display_name,
+            current.role,
+            current.approved_product_executable,
+        )
+        if desired == existing:
+            return current
+        if type(expected_revision) is not int or expected_revision < 1:
+            raise CamUsageError(
+                "roster.metadata_revision",
+                "expected metadata revision must be a positive integer",
+            )
+        if expected_revision != current.metadata_revision:
+            raise CamUsageError(
+                "roster.metadata_conflict",
+                "participant metadata changed after it was inspected",
+            )
+        updated = replace(
+            current,
+            display_name=normalized_display_name,
+            role=normalized_role,
+            approved_product_executable=normalized_executable,
+            metadata_revision=current.metadata_revision + 1,
+        )
+        self.participants[current.participant_id] = updated
+        return updated
 
     def bind(
         self,
         selector: str,
         *,
         session_id: str,
-        session_label: str,
+        session_label: str | None,
         session_kind: str | None,
         operator_reference: str,
         bound_at: str,
@@ -369,13 +459,19 @@ class ParticipantRoster:
             )
         opaque_session = _canonical_identifier(session_id, field_name="session_id")
         self._ensure_session_available(current, opaque_session)
+        normalized_label = _optional_text(
+            session_label, field_name="session_label", maximum=256
+        )
+        if current.vendor == "claude-code" and normalized_label is None:
+            raise CamUsageError(
+                "roster.session_label_required",
+                "Claude bindings require the operator-visible session label",
+            )
         generation = 1 if current.binding is None else current.binding.generation + 1
         binding = SessionBinding(
             generation=generation,
             session_id=opaque_session,
-            session_label=_bounded_text(
-                session_label, field_name="session_label", maximum=256
-            ),
+            session_label=normalized_label,
             session_kind=_optional_text(
                 session_kind,
                 field_name="session_kind",
@@ -414,12 +510,18 @@ class ParticipantRoster:
         agent_view_started_at_ms: int | None = None,
         session_git_top_level: str | None = None,
         session_git_common_dir: str | None = None,
+        tool_correlated: bool = False,
     ) -> Participant:
         current = self._select(selector)
         if current.binding is None or current.status == ParticipantStatus.RETIRED:
             raise CamUsageError(
                 "roster.participant_unbound",
                 "participant must have an active session binding",
+            )
+        if current.status != ParticipantStatus.BOUND:
+            raise CamUsageError(
+                "roster.participant_stale",
+                "stale participant must be explicitly rebound before route discovery",
             )
         if transport not in SUPPORTED_ROUTE_TRANSPORTS:
             raise CamUsageError(
@@ -453,17 +555,22 @@ class ParticipantRoster:
                     "Claude route must be a qualified ListAgents name and ref",
                 )
             if (
-                agent_view_id is None
-                or AGENT_VIEW_ID_PATTERN.fullmatch(agent_view_id) is None
-                or agent_view_id.lower() != current.binding.session_id.split("-", 1)[0]
+                (
+                    agent_view_id is not None
+                    and (
+                        AGENT_VIEW_ID_PATTERN.fullmatch(agent_view_id) is None
+                        or agent_view_id.lower()
+                        != current.binding.session_id.split("-", 1)[0]
+                    )
+                )
                 or list_agents_name != matched.group("name")
                 or list_agents_ref is None
                 or list_agents_ref.lower() != matched.group("ref").lower()
             ):
                 raise CamUsageError(
                     "roster.route_identity",
-                    "Claude route must correlate the bound session, Agent View, "
-                    "and ListAgents identifiers",
+                    "Claude route must correlate the bound session and ListAgents "
+                    "identifiers; an observed Agent View id must match the session",
                 )
         top_level = _optional_text(
             session_git_top_level,
@@ -503,6 +610,7 @@ class ParticipantRoster:
             transport=transport,
             address=route_address,
         )
+        normalized_source = _bounded_text(source, field_name="source", maximum=128)
         preserve_correlation = (
             current.status == ParticipantStatus.BOUND
             and current.route is not None
@@ -518,10 +626,27 @@ class ParticipantRoster:
             and current.route.session_git_top_level == top_level
             and current.route.session_git_common_dir == common_dir
         )
+        if not isinstance(tool_correlated, bool):
+            raise CamUsageError(
+                "roster.route_evidence", "tool_correlated must be a boolean"
+            )
+        if tool_correlated and (
+            current.vendor != "claude-code"
+            or normalized_source != "claude_agent_view_and_list_agents"
+            or product_state is None
+            or agent_view_kind is None
+            or agent_view_started_at_ms is None
+            or top_level is None
+            or common_dir is None
+        ):
+            raise CamUsageError(
+                "roster.route_evidence",
+                "tool-correlated Claude routes require complete discovery evidence",
+            )
         route = RouteObservation(
             transport=transport,
             address=route_address,
-            source=_bounded_text(source, field_name="source", maximum=128),
+            source=normalized_source,
             observed_at=observed,
             binding_generation=current.binding.generation,
             agent_view_id=_optional_text(
@@ -558,7 +683,11 @@ class ParticipantRoster:
             status=(
                 RouteStatus.OPERATOR_CORRELATED
                 if preserve_correlation
-                else RouteStatus.CANDIDATE
+                else (
+                    RouteStatus.TOOL_CORRELATED
+                    if tool_correlated
+                    else RouteStatus.CANDIDATE
+                )
             ),
             operator_reference=(
                 current.route.operator_reference if preserve_correlation else None
@@ -593,12 +722,13 @@ class ParticipantRoster:
                 "roster.route_missing",
                 "participant has no observed route to confirm",
             )
-        if current.status != ParticipantStatus.BOUND or (
-            current.route.status != RouteStatus.CANDIDATE
-        ):
+        if current.status != ParticipantStatus.BOUND or current.route.status not in {
+            RouteStatus.CANDIDATE,
+            RouteStatus.TOOL_CORRELATED,
+        }:
             raise CamUsageError(
                 "roster.route_not_candidate",
-                "only the current candidate route may be confirmed",
+                "only the current candidate or tool-correlated route may be confirmed",
             )
         if current.route.address != expected_address:
             raise CamUsageError(
@@ -666,7 +796,11 @@ class ParticipantRoster:
             current.status != ParticipantStatus.BOUND
             or current.binding is None
             or current.route is None
-            or current.route.status != RouteStatus.OPERATOR_CORRELATED
+            or current.route.status
+            not in {
+                RouteStatus.TOOL_CORRELATED,
+                RouteStatus.OPERATOR_CORRELATED,
+            }
             or current.route.binding_generation != current.binding.generation
         ):
             raise CamUsageError(

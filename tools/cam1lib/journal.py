@@ -693,15 +693,29 @@ def inspect_partial_tail(project: ProjectBinding) -> PartialTailReport:
 
 
 def replay_records(
-    project: ProjectBinding, *, event_types: Collection[str] | None = None
+    project: ProjectBinding,
+    *,
+    event_types: Collection[str] | None = None,
+    record_ids: Collection[str] | None = None,
 ) -> tuple[dict[str, Any], ...]:
-    """Return verified journal records, optionally filtered by exact event type."""
+    """Return verified journal records selected before caller-owned copies are made."""
 
     requested = set(event_types) if event_types is not None else None
     if requested is not None and any(
         not _EVENT_TYPE.fullmatch(item) for item in requested
     ):
         raise JournalError("journal.event_type", "event type filter is invalid")
+    requested_ids = set(record_ids) if record_ids is not None else None
+    if requested_ids is not None:
+        for record_id in requested_ids:
+            try:
+                canonical = str(uuid.UUID(record_id))
+            except (AttributeError, TypeError, ValueError) as error:
+                raise JournalError(
+                    "journal.record_id", "record ID filter is invalid"
+                ) from error
+            if canonical != record_id:
+                raise JournalError("journal.record_id", "record ID filter is invalid")
     transaction = current_project_transaction(project)
     if transaction is not None:
         records = _verified_records_for_transaction(project, transaction)
@@ -713,10 +727,12 @@ def replay_records(
             handle.close()
             fcntl.flock(descriptor, fcntl.LOCK_UN)
             os.close(descriptor)
-    if requested is None:
-        selected = records
-    else:
-        selected = [record for record in records if record["event_type"] in requested]
+    selected = [
+        record
+        for record in records
+        if (requested is None or record["event_type"] in requested)
+        and (requested_ids is None or record["record_id"] in requested_ids)
+    ]
     return tuple(copy.deepcopy(record) for record in selected)
 
 

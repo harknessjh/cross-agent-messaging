@@ -17,12 +17,18 @@ from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
-from tools import cam1, cam1_transport, cam1_transport_native
-from tools.cam1lib import project, routing
+from tools import (
+    cam1,
+    cam1_transport,
+    cam1_transport_native,
+    cam1_transport_products,
+)
+from tools.cam1lib import project, routing, transport_audit
 
 ROOT = Path(__file__).resolve().parents[1]
 TRANSPORT_CLI = ROOT / "tools" / "cam1_transport.py"
 PROJECT_CLI = ROOT / "tools" / "cam1_project.py"
+CLI_TEST_HARNESS = ROOT / "tests" / "_cam1_cli_test_harness.py"
 CODEX_THREAD = "00000000-0000-4000-8000-000000000101"
 CLAUDE_SESSION = "00000000-0000-4000-8000-000000000102"
 CODEX_PARTICIPANT = "00000000-0000-4000-8000-000000000201"
@@ -82,23 +88,25 @@ def with_agent_view(
     kind: str = "interactive",
     state: str = "idle",
     cwd: str = "/example/project",
+    shape: str = "process",
 ) -> str:
     """Add the real CLI's ``agents --json`` mode to a fake Claude executable."""
     shebang, body = source.split("\n", 1)
-    listing = json.dumps(
-        [
-            {
-                "id": CLAUDE_SESSION.split("-", 1)[0],
-                "cwd": cwd,
-                "kind": kind,
-                "startedAt": 1_784_241_375_111,
-                "sessionId": CLAUDE_SESSION,
-                "name": name,
-                "state": state,
-                "peerAddress": "uds:/tmp/cam1-test-peer.sock",
-            }
-        ]
-    )
+    row = {
+        "cwd": cwd,
+        "kind": kind,
+        "startedAt": 1_784_241_375_111,
+        "sessionId": CLAUDE_SESSION,
+        "name": name,
+        "peerAddress": "uds:/tmp/cam1-test-peer.sock",
+    }
+    if shape == "process":
+        row.update({"pid": 4242, "status": state})
+    elif shape == "legacy":
+        row.update({"id": CLAUDE_SESSION.split("-", 1)[0], "state": state})
+    else:
+        raise ValueError("Agent View fixture shape must be process or legacy")
+    listing = json.dumps([row])
     prelude = textwrap.dedent(
         f"""\
         import sys as _agent_view_sys
@@ -108,6 +116,27 @@ def with_agent_view(
         """
     )
     return f"{shebang}\n{prelude}{body}"
+
+
+class TransportFacadeCompatibilityTests(unittest.TestCase):
+    def test_extracted_services_retain_facade_aliases(self) -> None:
+        self.assertIs(
+            cam1_transport.resolve_product_binary,
+            cam1_transport_products.resolve_product_binary,
+        )
+        self.assertIs(
+            cam1_transport._require_current_product_approval,
+            cam1_transport_products._require_current_product_approval,
+        )
+        self.assertIs(cam1_transport._SendAttempt, transport_audit._SendAttempt)
+        self.assertIs(
+            cam1_transport._prepare_and_journal_intent,
+            transport_audit._prepare_and_journal_intent,
+        )
+        self.assertIs(
+            cam1_transport._finalize_accepted_attempt,
+            transport_audit._finalize_accepted_attempt,
+        )
 
 
 class PeerParsingTests(unittest.TestCase):
@@ -120,6 +149,7 @@ class PeerParsingTests(unittest.TestCase):
             kind="interactive",
             state="idle",
             started_at_ms=1_784_241_375_111,
+            process_id=4242,
         )
         changes = {
             "session_id": "00000000-0000-4000-8000-000000000103",
@@ -128,6 +158,7 @@ class PeerParsingTests(unittest.TestCase):
             "cwd": "/different/project",
             "kind": "background",
             "started_at_ms": selected.started_at_ms + 1,
+            "process_id": selected.process_id + 1,
         }
         for field_name, changed_value in changes.items():
             with self.subTest(field_name=field_name):
@@ -136,7 +167,7 @@ class PeerParsingTests(unittest.TestCase):
                     mock.patch.object(
                         cam1_transport_native,
                         "_discover_agent_view_sessions",
-                        return_value={CLAUDE_SESSION: refreshed},
+                        return_value={CLAUDE_SESSION: (refreshed,)},
                     ),
                     self.assertRaises(cam1_transport.TransportError) as context,
                 ):
@@ -237,8 +268,11 @@ class PeerParsingTests(unittest.TestCase):
         successful_probe = {"ok": True, "exit_code": 0, "output": "test"}
         with (
             mock.patch.object(
-                cam1_transport, "_resolve_binary", return_value="/bin/test"
+                cam1_transport_native,
+                "_approved_binary",
+                return_value=("/bin/test", {"record_id": "test"}),
             ),
+            mock.patch.object(cam1_transport_native, "_require_product_metadata"),
             mock.patch.object(
                 cam1_transport, "_run_probe_before", return_value=successful_probe
             ),
@@ -256,6 +290,7 @@ class PeerParsingTests(unittest.TestCase):
             )
         self.assertFalse(result["ok"])
         self.assertEqual(result["checks"]["mcp_sdk"]["version"], "2.0.9")
+        self.assertTrue(result["live_path_configuration"]["account_approval_verified"])
 
     def test_live_binary_resolution_requires_an_absolute_path(self) -> None:
         for supplied in ("claude", "./claude"):
@@ -266,14 +301,20 @@ class PeerParsingTests(unittest.TestCase):
                     context.exception.code, "claude.absolute_path_required"
                 )
 
-    def test_doctor_requires_and_reports_explicit_live_binary_paths(self) -> None:
+    def test_doctor_requires_account_approved_paths_before_product_io(self) -> None:
         successful_probe = {"ok": True, "exit_code": 0, "output": "test"}
+
+        def approved_path(_value: str, *, label: str) -> tuple[str, dict[str, str]]:
+            path = f"/opt/example/{label}"
+            return path, {"record_id": f"approved-{label}"}
+
         with (
             mock.patch.object(
-                cam1_transport,
-                "_resolve_binary",
-                side_effect=("/opt/example/claude", "/opt/example/codex") * 2,
-            ),
+                cam1_transport_native,
+                "_approved_binary",
+                side_effect=approved_path,
+            ) as resolve_approved,
+            mock.patch.object(cam1_transport_native, "_require_product_metadata"),
             mock.patch.object(
                 cam1_transport, "_run_probe_before", return_value=successful_probe
             ),
@@ -286,23 +327,21 @@ class PeerParsingTests(unittest.TestCase):
                 cam1_transport, "_mcp_sdk_check", return_value=(True, "2.1.0")
             ),
         ):
-            discovered = cam1_transport.doctor(
-                claude_bin="claude", codex_bin="codex", timeout_seconds=1
-            )
-            explicit = cam1_transport.doctor(
+            result = cam1_transport.doctor(
                 claude_bin="/opt/example/claude",
                 codex_bin="/opt/example/codex",
                 timeout_seconds=1,
             )
 
-        self.assertTrue(discovered["prerequisites_ok"])
-        self.assertFalse(discovered["ok"])
-        self.assertEqual(discovered["status"], "operator_path_confirmation_required")
-        self.assertFalse(
-            discovered["live_path_configuration"]["explicit_absolute_paths_supplied"]
+        self.assertEqual(resolve_approved.call_count, 2)
+        self.assertTrue(result["prerequisites_ok"])
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "ready")
+        self.assertTrue(
+            result["live_path_configuration"]["explicit_absolute_paths_supplied"]
         )
         self.assertEqual(
-            discovered["live_path_configuration"]["required_global_arguments"],
+            result["live_path_configuration"]["required_global_arguments"],
             [
                 "--claude-bin",
                 "/opt/example/claude",
@@ -311,12 +350,10 @@ class PeerParsingTests(unittest.TestCase):
             ],
         )
         self.assertEqual(
-            discovered["live_path_configuration"]["copy_paste_flags"],
+            result["live_path_configuration"]["copy_paste_flags"],
             "--claude-bin /opt/example/claude --codex-bin /opt/example/codex",
         )
-        self.assertTrue(explicit["ok"])
-        self.assertEqual(explicit["status"], "ready")
-        self.assertTrue(explicit["live_path_configuration"]["ready"])
+        self.assertTrue(result["live_path_configuration"]["ready"])
 
     def test_doctor_reports_dirty_validation_source_as_send_blocked(self) -> None:
         result = {
@@ -415,10 +452,17 @@ class PeerParsingTests(unittest.TestCase):
   exited-worker [456789]  ·  interactive  ·  exited  ·  started earlier
 """
         peers = cam1_transport.parse_peers(listing)
-        self.assertEqual([peer.name for peer in peers if peer.local], ["local-worker"])
+        self.assertEqual(
+            [peer.name for peer in peers if peer.local],
+            ["local-worker", "exited-worker"],
+        )
+        self.assertEqual(
+            [peer.name for peer in peers if peer.local and peer.addressable],
+            ["local-worker"],
+        )
         self.assertEqual(
             [peer.name for peer in peers if not peer.local],
-            ["web-worker", "desktop-worker", "future-worker", "exited-worker"],
+            ["web-worker", "desktop-worker", "future-worker"],
         )
 
     def test_target_requires_fresh_qualified_address(self) -> None:
@@ -430,6 +474,7 @@ class PeerParsingTests(unittest.TestCase):
                 state="idle",
                 details=(),
                 local=True,
+                addressable=True,
             ),
             cam1_transport.Peer(
                 name="worker",
@@ -438,6 +483,7 @@ class PeerParsingTests(unittest.TestCase):
                 state="idle",
                 details=(),
                 local=True,
+                addressable=True,
             ),
         )
         with self.assertRaises(cam1_transport.TransportError) as context:
@@ -462,7 +508,9 @@ class PeerParsingTests(unittest.TestCase):
             ]
         ).encode()
         sessions = cam1_transport.routing.parse_agent_view_sessions(raw)
-        session = sessions[CLAUDE_SESSION]
+        session = cam1_transport.routing.select_agent_view_session(
+            sessions, CLAUDE_SESSION
+        )
         self.assertEqual(session.session_id, CLAUDE_SESSION)
         self.assertEqual(session.agent_view_id, "00000000")
         self.assertEqual(session.product_name, "local-worker")
@@ -476,6 +524,7 @@ class PeerParsingTests(unittest.TestCase):
             state="idle",
             details=(),
             local=True,
+            addressable=True,
         )
         route = cam1_transport.routing.correlate_route(session, (peer,))
         self.assertEqual(route.session.agent_view_id, "00000000")
@@ -553,6 +602,7 @@ class PeerParsingTests(unittest.TestCase):
             state="idle",
             details=(),
             local=True,
+            addressable=True,
         )
         with self.assertRaises(cam1_transport.routing.RoutingError) as context:
             cam1_transport.routing.correlate_route(
@@ -641,6 +691,12 @@ class ProjectBoundTransportTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.base = Path(self.temporary.name).resolve()
+        self.codex_home = self.base / "codex-home"
+        self.codex_home.mkdir(mode=0o700)
+        write_private(
+            self.codex_home / cam1_transport_native.CODEX_STATE_DB_NAME,
+            b"",
+        )
         self.repo = self.base / "project"
         self.repo.mkdir(mode=0o700)
         subprocess.run(
@@ -658,6 +714,11 @@ class ProjectBoundTransportTestCase(unittest.TestCase):
             git_bin=project.DEFAULT_GIT_BIN,
         )
         self.fake_index = 0
+        self.approved_claude_bin = self.base / "approved-claude"
+        self.approved_codex_bin = self.base / "approved-codex"
+        for executable in (self.approved_claude_bin, self.approved_codex_bin):
+            executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            executable.chmod(0o700)
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -694,7 +755,8 @@ class ProjectBoundTransportTestCase(unittest.TestCase):
     ) -> list[str]:
         command = [
             sys.executable,
-            str(TRANSPORT_CLI),
+            str(CLI_TEST_HARNESS),
+            "transport",
             *live_validation_cli_arguments(),
         ]
         if claude_bin is not None:
@@ -720,6 +782,7 @@ class ProjectBoundTransportTestCase(unittest.TestCase):
         claude_bin: Path | None = None,
         codex_bin: Path | None = None,
         project_root: Path | None = None,
+        codex_home: Path | None = None,
     ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             self.transport_command(
@@ -729,11 +792,21 @@ class ProjectBoundTransportTestCase(unittest.TestCase):
                 project_root=project_root,
             ),
             cwd=project_root or self.repo,
+            env=self.transport_environment(codex_home=codex_home),
             check=False,
             capture_output=True,
             text=True,
             timeout=20,
         )
+
+    def transport_environment(
+        self,
+        *,
+        codex_home: Path | None = None,
+    ) -> dict[str, str]:
+        environment = os.environ.copy()
+        environment["CODEX_HOME"] = str(codex_home or self.codex_home)
+        return environment
 
     def add_claude_participant(self) -> None:
         added = self.run_project(
@@ -747,6 +820,8 @@ class ProjectBoundTransportTestCase(unittest.TestCase):
             "reviewer",
             "--vendor",
             "claude-code",
+            "--product-bin",
+            str(self.approved_claude_bin),
             "--participant-id",
             CLAUDE_PARTICIPANT,
         )
@@ -758,7 +833,7 @@ class ProjectBoundTransportTestCase(unittest.TestCase):
             "--session-id",
             CLAUDE_SESSION,
             "--session-label",
-            "Local Claude worker",
+            "local-worker",
             "--session-kind",
             "interactive",
             "--operator-reference",
@@ -779,6 +854,8 @@ class ProjectBoundTransportTestCase(unittest.TestCase):
             "coordinator",
             "--vendor",
             "codex",
+            "--product-bin",
+            str(self.approved_codex_bin),
             "--participant-id",
             CODEX_PARTICIPANT,
         )
@@ -809,16 +886,24 @@ class ProjectBoundTransportTestCase(unittest.TestCase):
         cwd: Path | None = None,
         peer_name: str = "local-worker",
         peer_ref: str = "abcdef",
+        peer_kind: str = "interactive",
+        peer_state: str = "idle",
+        peer_listing: str | None = None,
+        agent_view_shape: str = "process",
         expected_message: bytes | None = None,
         marker: Path | None = None,
         during_send_command: list[str] | None = None,
     ) -> Path:
         self.fake_index += 1
-        executable = self.base / f"fake-claude-{self.fake_index}"
+        executable = self.approved_claude_bin
         expected_digest = (
             hashlib.sha256(expected_message).hexdigest()
             if expected_message is not None
             else None
+        )
+        listing = peer_listing or (
+            f"Peer sessions (1):\n  {peer_name} [{peer_ref}]  ·  {peer_kind}  ·  "
+            f"{peer_state}  ·  started now"
         )
         source = textwrap.dedent(
             f"""\
@@ -835,7 +920,7 @@ class ProjectBoundTransportTestCase(unittest.TestCase):
 
             @server.tool()
             def ListAgents():
-                return {{"listing": "Peer sessions (1):\\n  {peer_name} [{peer_ref}]  ·  interactive  ·  idle  ·  started now"}}
+                return {{"listing": {listing!r}}}
 
             @server.tool()
             def SendMessage(
@@ -881,14 +966,17 @@ class ProjectBoundTransportTestCase(unittest.TestCase):
             with_agent_view(
                 source,
                 name=peer_name,
+                kind=peer_kind,
+                state=peer_state,
                 cwd=str(cwd or self.repo),
+                shape=agent_view_shape,
             ),
             encoding="utf-8",
         )
         executable.chmod(0o700)
         return executable
 
-    def preflight_and_confirm(self, claude_bin: Path) -> None:
+    def preflight_tool_correlated_route(self, claude_bin: Path) -> None:
         preflight = self.run_transport(
             "claude-preflight",
             "--participant",
@@ -900,18 +988,12 @@ class ProjectBoundTransportTestCase(unittest.TestCase):
             claude_bin=claude_bin,
         )
         self.assertEqual(preflight.returncode, 0, preflight.stderr)
-        self.assertTrue(json.loads(preflight.stdout)["operator_correlation_required"])
-        confirmed = self.run_project(
-            "participant",
-            "confirm-route",
-            "--participant",
-            "local-worker",
-            "--expected-address",
-            "local-worker [abcdef]",
-            "--operator-reference",
-            "test operator correlated Agent View with ListAgents",
-        )
-        self.assertEqual(confirmed.returncode, 0, confirmed.stderr)
+        payload = json.loads(preflight.stdout)
+        self.assertFalse(payload["operator_correlation_required"])
+        self.assertIsNone(payload["operator_correlation_subject"])
+        self.assertFalse(payload["operator_identity_confirmation_required"])
+        self.assertFalse(payload["transient_route_confirmation_required"])
+        self.assertEqual(payload["participant"]["route_status"], "tool_correlated")
 
     def _post_attempt_lock_failure_transaction(self):
         real_transaction = project.project_transaction

@@ -1,5 +1,9 @@
 # Project binding, roster, and journal
 
+> **Audience:** operators auditing CAM history and administrators managing
+> roster or recovery state. This is optional reference material; new users
+> should begin with [START HERE](../START_HERE.md).
+
 The supported CAM/1 profile keeps one required local journal for each Git
 project. The journal gives the operator a readable, chronological record of
 messages and protocol events without turning that record into a delivery
@@ -7,18 +11,29 @@ service or a source of authority.
 
 ## Where project state lives
 
-Run the project commands from the CAM/1 checkout and identify any worktree of
-the target Git project explicitly:
+The normal interactive path starts the agent inside the target Git worktree and
+uses the current-directory default:
 
 ```bash
-.venv/bin/python tools/cam1_project.py \
-  --project-root /absolute/path/to/target/project \
-  project init
+"/CONFIRMED/CAM/REPO/.venv/bin/python" \
+  "/CONFIRMED/CAM/REPO/tools/cam1_project.py" project init
+"/CONFIRMED/CAM/REPO/.venv/bin/python" \
+  "/CONFIRMED/CAM/REPO/tools/cam1_project.py" project status
+```
 
-.venv/bin/python tools/cam1_project.py \
+From a different working directory or in automation, select the worktree
+explicitly:
+
+```bash
+"/CONFIRMED/CAM/REPO/.venv/bin/python" \
+  "/CONFIRMED/CAM/REPO/tools/cam1_project.py" \
   --project-root /absolute/path/to/target/project \
   project status
 ```
+
+The target directory must have been initialized with `git init`, but it does
+not need an initial commit. The normal `onboarding prepare` command performs
+project initialization idempotently when no CAM binding exists.
 
 Initialization creates two private bindings:
 
@@ -44,6 +59,11 @@ projection files with mode `0600`. They resolve the account home from the
 operating-system account record rather than trusting the `HOME` environment
 variable.
 
+Executable approvals live separately in the account-scoped, owner-private
+`~/CAM/Approvals/product-executables-v1.jsonl` ledger. That ledger is reused by
+projects under the same operating-system account. It is not part of this
+project journal, participant roster, or Git worktree.
+
 Do not copy the binding into the tracked worktree, commit the journal, or move
 the journal into a temporary directory. A state-root override is intended for
 tests and explicitly managed local installations; it must be an absolute,
@@ -51,6 +71,12 @@ owner-controlled private directory and must be supplied consistently to every
 later command. The pointer and identity bind its canonical path. Copying the
 project directory or choosing a different override fails rather than selecting
 or forking another history.
+
+Project initialization and onboarding create no files in the application
+worktree. The project pointer stays under `<git-common-dir>/cam1/`, each
+worktree identifier stays under its private `<git-dir>/cam1/`, and journal
+state stays under `~/CAM/Journals/`. Appending a CAM journal event is not a Git
+commit and does not stage, commit, or otherwise change application files.
 
 ## What the journal records
 
@@ -81,6 +107,26 @@ that transaction, and advances the verified chain only from the exact record
 bytes it appends. A new transaction performs a new complete verification. The
 implementation fails closed on malformed, partial, substituted, or altered
 history.
+
+Self-enrollment uses these journal event types:
+
+- `state.participant.enrollment_proposed` records a pending, non-routable
+  proposal and its exact digest. If the same session prepares changed values,
+  the new event's `supersedes` field identifies every earlier pending proposal;
+  there is no separate supersession event and no earlier record is rewritten.
+- `state.participant.enrollment_confirmed` correlates direct operator
+  confirmation to the exact proposal digest and atomically creates its roster
+  participant and full-session binding. For a Codex participant, that same
+  state transition creates and operator-correlates the matching `codex_queue`
+  route. A Claude participant remains without a route until fresh Agent View
+  and `ListAgents` discovery correlate one.
+- `state.participant.metadata_updated` records an operator-confirmed change to
+  descriptive display name, nullable role, or associated product executable.
+  It does not change stable participant identity or the session binding.
+
+These state events contain no CAM envelope bytes and grant no message or task
+authority. The confirmation code is a short correlation value derived from the
+proposal digest, not authentication or a signature.
 
 If a crash or storage failure leaves exactly one incomplete EOF record after a
 fully verified prefix, the operator can inspect the bounded recovery evidence:
@@ -135,9 +181,11 @@ contains a content digest for the reference tools, schemas, and runtime
 requirements plus separate CAM source-control and runtime metadata. Outbound
 intent also records `dirty_validator_override`.
 
-Ordinary live sends require a clean CAM checkout. A development-only override
-must repeat the exact current profile digest; recording it does not make the
-checkout clean or turn uncommitted source into a reproducible release. Older
+Self-enrollment and ordinary live sends require a clean CAM checkout.
+Self-enrollment has no dirty-source override. A development-only override for
+other supported product operations must repeat the exact current profile
+digest; recording it does not make the checkout clean or turn uncommitted
+source into a reproducible release. Older
 journal records without validation-profile attributes remain valid history.
 Live source evidence also requires a concrete HEAD, matching regular profile
 path sets, exact byte comparison, and unconcealed index state. The override may
@@ -153,9 +201,12 @@ hooks and filesystem monitors disabled, and submodules ignored for status.
 This keeps project discovery and provenance read-only without treating the Git
 repository or same-user executable path as a security boundary.
 
-`state-current.json` is a disposable atomic projection of the participant
-roster and lifecycle state. It can be rebuilt from `journal.jsonl`; it must
-never override or repair journal history.
+`state-current.json` is a disposable atomic projection of pending and confirmed
+enrollment proposals, the participant roster, lifecycle state, and active
+compatibility-gate state. It can be rebuilt from `journal.jsonl`; it must never
+override or repair journal history. See
+[Compatibility upgrades](COMPATIBILITY.md) for the staged plan, readiness, and
+activation workflow.
 
 `state status` is a non-mutating replay view. It does not append the aging
 events that a later state mutation records, so a pending or held item whose
@@ -184,85 +235,175 @@ these concepts separate:
 - **common name**: the stable project-local name humans and agents use, such as
   `reviewer`;
 - **display name**: the human-readable project label for the participant;
-- **role**: the participant's stated project responsibility;
+- **role**: optional, mutable descriptive project responsibility; it is not
+  identity or authority;
 - **vendor**: `codex` or `claude-code`;
 - **full session ID**: the stable product session UUID correlated by the
   operator;
 - **session label**: the current human-readable product conversation or
-  session name, which may change; and
-- **route observation**: a fresh, transient transport address and the evidence
-  used to observe it. Claude observations include the Agent View session kind
-  and start time plus the resolved Git worktree/common-directory context; raw
-  peer sockets are excluded.
+  session name, which may change;
+- **associated product executable**: the absolute path associated with this
+  participant after operator review; it is runtime metadata, not participant
+  identity. A separate active account approval for the same unchanged path and
+  fingerprint is still required before product I/O; and
+- **route observation**: a fresh, tool-derived transient transport address and
+  the evidence used to observe it. Claude observations include the Agent View
+  session kind and start time, the optional validated Agent View ID (null when
+  absent), and the resolved Git worktree/common-directory context. They contain
+  only the selected representation's evidence: a process ID and companion-row
+  fields are never persisted. Raw peer sockets are also excluded.
 
 Never use a display name, session label, short reference, working directory,
 or Unix-domain socket as stable identity. Never store the Claude peer UDS in
 the roster.
 
-For Claude Code, the operator supplies the full session UUID shown by the
-target session's `/status`. Before every send, the helper performs both forms
-of current discovery:
+A pending enrollment proposal is not a participant-roster entry. It cannot be
+used for routing, sending, callbacks, or authority. The identity card shows the
+stable session and project evidence needed for human review, but deliberately
+omits transient MCP refs, process IDs, and Unix-domain sockets.
 
-1. `claude agents --json` locates that exact full `sessionId` and obtains its
-   current product name and eight-character Agent View ID.
-2. MCP `ListAgents` supplies the current addressable `name [ref]` route.
-3. The helper requires a unique name correlation between those fresh results
+A pending proposal is also not a common-name reservation. Multiple unconfirmed
+sessions may propose the same name. Confirmation checks uniqueness against the
+roster atomically; the first confirmed participant wins, and a conflicting
+confirmation appends nothing and leaves that proposal pending. The losing
+session must prepare, display, and receive direct confirmation for a fresh card;
+the implementation must not silently rename a previously confirmed proposal.
+
+For normal first contact, each product session inspects and proposes itself.
+Before doing so, it runs the non-executing `product-discover` command. If the
+exact canonical path and fingerprint lack an active account approval, the
+session shows the returned candidate card and waits for direct operator
+approval before running its guarded `product-approve` command. Only
+`product-discover` may consult `PATH`; onboarding receives the approved absolute
+path explicitly.
+
+Codex uses trusted `CODEX_THREAD_ID` session metadata when available. Claude
+Code uses trusted `CLAUDE_CODE_SESSION_ID` metadata when available and
+correlates that full UUID to Agent View. If either full UUID is unavailable to
+the running agent, the agent asks the operator for the full current session
+UUID and passes it through `--session-id`; it never guesses from a product
+name, cwd, short reference, or socket. Claude uses Agent View cwd to prove
+project membership, but the exact cwd is not persisted as stable identity.
+
+After enrollment, before every Claude send, the helper independently checks
+the live cwd and performs both forms of current discovery:
+
+1. `claude agents --json` groups representations by exact full `sessionId`.
+   The same UUID can have a background `id`/`state` row and an interactive
+   `pid`/`status` row. When a process-backed row exists, the helper requires
+   one eligible such row; only when none exists may one eligible legacy
+   `id`/`state` row be selected. It never merges companion fields.
+2. A selected Agent View `id` is validated against the UUID when present and
+   remains null when absent. A PID is transient selection and refresh evidence
+   and is never serialized or recorded.
+3. MCP `ListAgents` supplies the current addressable `name [ref]` route.
+   Locality is independent of activity: local `busy` peers remain addressable;
+   local terminal or unknown states are unavailable; cloud and Remote Control
+   rows remain excluded as nonlocal.
+4. The helper requires a unique name correlation between those fresh results
    and verifies that Agent View cwd resolves inside the bound Git project,
    including an initialized linked worktree sharing its Git common directory.
 
 The full session UUID remains the identity and the envelope callback address.
-The `name [ref]` value is only the route for that send. If discovery is missing,
-ambiguous, nonlocal, stale, or inconsistent, stop and obtain operator
-correlation; do not guess or silently retarget.
+The `name [ref]` value is only the route for that send. The short ref is not
+normally visible in Claude `/status`, so it is not a value the operator must
+recognize or approve. If the already bound UUID and project context map
+uniquely through both discovery surfaces, CAM automatically records the exact
+route observation in the journal and may use it. A changed ref alone does not
+require another operator confirmation.
+
+If discovery is missing, has multiple process-backed or eligible fallback
+representations, is ambiguous, nonlocal, stale, or inconsistent, stop; do not
+guess or silently retarget. Request operator help when the ambiguity concerns
+the stable mapping, the UUID or project mismatches, the binding generation
+changed, or evidence conflicts, including unexpected product session-label or
+session-kind drift. Do not substitute a request to approve an unobservable
+short ref.
 
 For Codex, the full thread UUID is both the stable session identity and the
-`codex queue` address. A Codex session should receive that literal UUID from the
-operator or its trusted session metadata, not from a shell variable that is
-expected to expand in another session.
+`codex queue` address. A Codex session should obtain that UUID from trusted
+session metadata or direct operator input in that session, never from a shell
+variable expected to expand in another session.
 
-Create and bind participants from the CAM/1 checkout. For example:
+Prepare one self-enrollment card from each actual product session:
 
 ```bash
 .venv/bin/python tools/cam1_project.py \
   --project-root /absolute/path/to/target/project \
-  participant add \
-  --common-name coordinator \
-  --display-name "Project coordinator" \
-  --role "coordination" \
-  --vendor codex
+  onboarding prepare \
+  --vendor codex \
+  --product-bin /account/approved/absolute/path/to/codex
 
 .venv/bin/python tools/cam1_project.py \
   --project-root /absolute/path/to/target/project \
-  participant bind \
-  --participant coordinator \
-  --session-id "FULL CODEX THREAD UUID" \
-  --session-label "CURRENT CODEX SESSION LABEL" \
-  --session-kind interactive \
-  --operator-reference "HOW THE OPERATOR CONFIRMED THIS SESSION"
-
-.venv/bin/python tools/cam1_project.py \
-  --project-root /absolute/path/to/target/project \
-  participant add \
-  --common-name reviewer \
-  --display-name "Example reviewer" \
-  --role "code review" \
-  --vendor claude-code
-
-.venv/bin/python tools/cam1_project.py \
-  --project-root /absolute/path/to/target/project \
-  participant bind \
-  --participant reviewer \
-  --session-id "FULL CLAUDE SESSION UUID" \
-  --session-label "CURRENT CLAUDE SESSION NAME" \
-  --session-kind interactive \
-  --operator-reference "HOW THE OPERATOR CONFIRMED /status"
+  onboarding prepare \
+  --vendor claude-code \
+  --product-bin /account/approved/absolute/path/to/claude
 ```
 
-Binding a Codex participant also records its UUID as the operator-correlated
-`codex_queue` route. A Claude binding deliberately does not guess a live route.
-Run project-aware `claude-preflight --participant reviewer`, inspect its
-fresh Agent View and `ListAgents` correlation, then explicitly record the exact
-returned route:
+For an already initialized project, replace `prepare` with `inspect-self` to
+perform the same local inspection without appending a proposal. Inspection does
+not enroll or authorize the session.
+
+`prepare` initializes the CAM project if needed, inspects the current session
+through the explicitly supplied approved product executable, appends a new
+`state.participant.enrollment_proposed` event or reuses the identical pending
+proposal without another append, and returns one identity card. It does not
+send a message or create a routable participant. Optional overrides are
+`--common-name`, `--display-name`, `--role`, `--session-id`,
+`--session-label`, `--session-kind`, and `--product-bin`. Use `--session-id`
+only for the current full UUID when trusted session metadata is unavailable;
+the command rejects a value that conflicts with available session metadata.
+
+After reviewing the complete card, the operator returns its exact confirmation
+response directly in that same session. The session then supplies the card's
+exact values to:
+
+```bash
+.venv/bin/python tools/cam1_project.py \
+  --project-root /absolute/path/to/target/project \
+  onboarding confirm \
+  --proposal-id PROPOSAL_UUID_FROM_CARD \
+  --confirmation-code CONFIRMATION_CODE_FROM_CARD \
+  --operator-reference "Direct confirmation of this exact card in this session"
+```
+
+The command rechecks the current session, project, executable, and CAM source
+against the proposal before it appends
+`state.participant.enrollment_confirmed`. A mismatch fails as stale rather than
+silently changing the card. Repeating confirmation of the same exact proposal
+is idempotent. The tool cannot authenticate the surrounding conversation; the
+same-session direct-confirmation requirement remains an operator and agent
+policy boundary.
+
+Inspect proposals and the roster with:
+
+```bash
+.venv/bin/python tools/cam1_project.py \
+  --project-root /absolute/path/to/target/project \
+  onboarding status
+
+.venv/bin/python tools/cam1_project.py \
+  --project-root /absolute/path/to/target/project \
+  onboarding status --show-identifiers
+```
+
+The default output redacts capability-like identifiers. Use
+`--show-identifiers` only for an explicit local review. A confirmed Codex
+enrollment records its UUID as the operator-correlated `codex_queue` route. A
+confirmed Claude enrollment deliberately does not guess a live route. Run
+project-aware `claude-preflight --participant COMMON_NAME_FROM_ROSTER`. When
+its fresh Agent View and `ListAgents` evidence uniquely correlate the bound
+UUID and CAM project to one eligible same-host peer, including a fresh live-cwd
+project check, the project-aware path records the tool-derived route
+observation automatically. No human confirmation of the MCP short ref is
+required.
+
+The following command is retained only for compatibility with older
+project-state snapshots and explicit migration or diagnostic procedures. It is
+not a normal onboarding step, and its operator reference must cite the stable
+identity decision separately from the tool-derived route observation; it must
+not claim that the operator recognized an MCP ref that `/status` did not show:
 
 ```bash
 .venv/bin/python tools/cam1_project.py \
@@ -270,7 +411,7 @@ returned route:
   participant confirm-route \
   --participant reviewer \
   --expected-address "EXACT FRESH NAME [REF]" \
-  --operator-reference "HOW THE OPERATOR CORRELATED THIS ROUTE"
+  --operator-reference "STABLE IDENTITY CONFIRMATION PLUS PREFLIGHT EVIDENCE"
 ```
 
 Routine roster output redacts identifiers. Reveal them only for an explicit
@@ -286,9 +427,43 @@ local operator check:
   participant list --show-identifiers
 ```
 
+Update mutable display, role, or associated-executable metadata only after direct
+operator confirmation and with the currently displayed metadata revision:
+
+```bash
+.venv/bin/python tools/cam1_project.py \
+  --project-root /absolute/path/to/target/project \
+  participant update-metadata \
+  --participant COMMON_NAME \
+  --expected-revision CURRENT_REVISION \
+  --display-name "Updated display name" \
+  --role "Optional descriptive role" \
+  --product-bin /operator/reviewed/absolute/product/path \
+  --operator-reference "How the operator confirmed these exact changes"
+```
+
+At least one metadata change is required. `--clear-role` removes the role, and
+`--clear-product-bin` removes the stored executable; each is mutually exclusive
+with its corresponding value option. A successful change appends
+`state.participant.metadata_updated`, increments `metadata_revision`, and
+preserves participant identity, session binding, and route. A stale
+`--expected-revision` fails instead of overwriting concurrent changes.
+
+Historical participants may replay with
+`approved_product_executable: null`. Such an entry is retained for audit but is
+not live-ready. First obtain or verify the account approval for one absolute
+candidate, then record that same path with the `participant update-metadata
+--product-bin` command above. Do not re-add or rebind the participant and do not
+rewrite prior journal events. Project-aware Claude preflight/send and Codex send
+require both the unchanged account approval and an exact match to this recorded
+path before product I/O. Clearing the roster path intentionally disables live
+transport for that participant without revoking the separate account approval.
+
 Use `participant invalidate` when a binding or route becomes questionable and
 `participant retire` when its project role ends. Both append history; neither
-deletes prior records or permits reuse of a retired common name.
+deletes prior records or permits reuse of a retired common name. Fresh route
+discovery cannot reactivate a stale participant; direct operator review and an
+explicit `participant bind` event are required before live transport resumes.
 
 Every audited live send resolves two roster entries: the selected recipient
 and the envelope's claimed sender. Each must be active and bound, and its
@@ -390,6 +565,14 @@ A successful ingest reports `status: validated`, lifecycle state,
 `authorization_evaluated: false`, and `action_authorized: false`. Validation is
 not a recipient acceptance decision and never authorizes the message body.
 
+When the optional `causal.ordering/1` compatibility gate is active, the
+project-aware sender derives non-wire `CAM-CAUSAL/1` context from this same
+journal. Ingest holds a post-activation request or cancel that omits potentially
+dispatched recipient work, records `held_for_clarification`, returns exit status
+`4`, and leaves lifecycle state uncommitted. The record shows shared-journal
+ordering only; it does not prove that an agent read or understood a message and
+does not constrain unrelated work. See [causal ordering](CAUSAL_ORDERING.md).
+
 ## Privacy, retention, and moderation
 
 The journal contains message bodies and capability-like routing metadata. Keep
@@ -398,6 +581,10 @@ apply the operator's retention and backup policy. Ordinary filesystem deletion
 is not guaranteed secure erasure, and product transcripts or queues may retain
 additional copies. The tools do not automatically delete envelope working
 files or journal records.
+
+The separate account approval ledger contains local executable paths,
+fingerprints, and operator references. Protect and retain it as local policy
+state, but do not confuse it with the per-project conversation history.
 
 A future read-only moderator may watch journal appends and alert the operator.
 That facility is deliberately deferred. It must not become a daemon required

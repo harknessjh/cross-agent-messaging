@@ -24,15 +24,19 @@ if __name__ == "__main__":
         )
         raise SystemExit(2) from None
 
-import hashlib
 from collections.abc import Sequence
-from dataclasses import dataclass
 from typing import Any
 
 from tools import cam1
 from tools import cam1_transport_native as _native
-from tools import cam1_transport_retry as _retry
-from tools.cam1lib import journal, lifecycle, participants, project, routing, state
+from tools import cam1_transport_products as _products
+from tools.cam1lib import (
+    participants,
+    project,
+    routing,
+    state,
+)
+from tools.cam1lib import transport_audit as _audit
 from tools.cam1lib import transport_cli as _transport_cli
 
 TransportError = _native.TransportError
@@ -50,11 +54,16 @@ _send_to_claude = _native._send_to_claude
 _send_to_codex_queue = _native._send_to_codex_queue
 _utc_now = _native._utc_now
 _uuid_values_equal = _native._uuid_values_equal
-_transport_outcomes = _retry._transport_outcomes
+
+LEGACY_PRODUCT_APPROVAL_PROFILES = _products.LEGACY_PRODUCT_APPROVAL_PROFILES
 
 
 def doctor(
-    *, claude_bin: str, codex_bin: str, timeout_seconds: float
+    *,
+    claude_bin: str,
+    codex_bin: str,
+    timeout_seconds: float,
+    prevalidated: bool = False,
 ) -> dict[str, Any]:
     """Run native diagnostics through this module's patchable helper seams."""
 
@@ -62,6 +71,7 @@ def doctor(
         claude_bin=claude_bin,
         codex_bin=codex_bin,
         timeout_seconds=timeout_seconds,
+        prevalidated=prevalidated,
         _facade=sys.modules[__name__],
     )
 
@@ -72,19 +82,7 @@ def __getattr__(name: str) -> Any:
     return getattr(_native, name)
 
 
-@dataclass(slots=True)
-class _SendAttempt:
-    """Mutable audit context shared with an immediately-before-send hook."""
-
-    participant_id: str
-    transport: str
-    route_address: str
-    message_id: str | None = None
-    intent_record: dict[str, Any] | None = None
-    lifecycle_plan: state.LifecyclePlan | None = None
-    lifecycle_committed: bool = False
-    projection_error: state.ProjectionRefreshError | None = None
-    dispatch_started: bool = False
+_SendAttempt = _audit._SendAttempt
 
 
 def _require_bound_participant(
@@ -110,594 +108,99 @@ def _require_bound_participant(
             "roster.participant_retired",
             "retired participant cannot be used for live transport",
         )
+    if participant.status != participants.ParticipantStatus.BOUND:
+        raise TransportError(
+            "roster.participant_stale",
+            "stale participant must be explicitly rebound before live transport",
+        )
     return participant
 
 
-def _require_safe_retry(
-    binding: project.ProjectBinding,
-    validated: ValidatedEnvelope,
-    *,
-    retry_after_intent: str | None,
-    known_renewal_roots: frozenset[str],
-) -> str | None:
-    """Apply journal-backed retry policy through the stable facade seam."""
+def _require_complete_claude_binding(
+    participant: participants.Participant,
+) -> participants.SessionBinding:
+    """Require the operator-visible Claude metadata used by live discovery."""
 
-    return _retry.require_safe_retry(
-        binding,
-        validated,
-        retry_after_intent=retry_after_intent,
-        known_renewal_roots=known_renewal_roots,
+    binding = participant.binding
+    assert binding is not None
+    if binding.session_label is None or binding.session_kind is None:
+        raise TransportError(
+            "claude.binding_incomplete",
+            "Claude binding lacks an operator-confirmed session label or kind; "
+            "rebind the participant before discovery or sending",
+        )
+    return binding
+
+
+_require_approved_product_executable = _products._require_approved_product_executable
+resolve_product_binary = _products.resolve_product_binary
+_legacy_product_confirmation = _products._legacy_product_confirmation
+discover_product_executable = _products.discover_product_executable
+approve_product_executable = _products.approve_product_executable
+product_executable_status = _products.product_executable_status
+product_recovery_status = _products.product_recovery_status
+recover_product_partial_tail = _products.recover_product_partial_tail
+revoke_product_executable = _products.revoke_product_executable
+_require_current_product_approval = _products._require_current_product_approval
+
+# Compatibility import surfaces retained for callers that used the facade.
+product_approvals = _products.product_approvals
+product_executables = _products.product_executables
+
+
+async def list_local_peers(*, claude_bin: str, timeout_seconds: float) -> Any:
+    """Run native discovery with an account-approval recheck at product I/O."""
+
+    return await _native.list_local_peers(
+        claude_bin=claude_bin,
+        timeout_seconds=timeout_seconds,
     )
 
 
-def _intent_attributes(
-    validated: ValidatedEnvelope,
-    attempt: _SendAttempt,
-    *,
-    sender_participant_id: str,
-    recipient_session_id: str,
-    renewal_of: str | None,
-    retry_after_intent: str | None,
-    validation_profile: dict[str, Any],
-    dirty_validator_override: bool,
-    observed_at: str,
-) -> dict[str, Any]:
-    action = validated.envelope["action"]
-    return {
-        "participant_id": attempt.participant_id,
-        "sender_participant_id": sender_participant_id,
-        "message_id": validated.envelope["message_id"],
-        "message_type": validated.envelope["type"],
-        "idempotency_key": _canonical_uuid(
-            action["idempotency_key"], label="idempotency_key"
-        ),
-        "semantic_operation_sha256": lifecycle.semantic_operation_digest(
-            validated.envelope
-        ),
-        "transport": attempt.transport,
-        "route_address": attempt.route_address,
-        "recipient_session_id": recipient_session_id,
-        "renewal_of": renewal_of,
-        "retry_after_intent": retry_after_intent,
-        "against_sha256": (
-            hashlib.sha256(validated.original_raw).hexdigest()
-            if validated.original_raw is not None
-            else None
-        ),
-        "validation_profile": validation_profile,
-        "dirty_validator_override": dirty_validator_override,
-        "observed_at": observed_at,
-    }
-
-
-def _require_roster_endpoints(
-    store: state.StateStore,
-    transaction: project.ProjectTransaction,
-    validated: ValidatedEnvelope,
-    recipient_participant: participants.Participant,
-) -> participants.Participant:
-    """Bind claimed wire endpoints to active project-roster identities."""
-
-    recipient_binding = recipient_participant.binding
-    if recipient_binding is None:
-        raise cam1.CamUsageError(
-            "roster.participant_unbound",
-            "recipient participant has no active session binding",
-        )
-    wire_recipient = validated.envelope.get("recipient")
-    if not isinstance(wire_recipient, dict) or (
-        wire_recipient.get("vendor") != recipient_participant.vendor
-        or wire_recipient.get("agent_name") != recipient_participant.common_name
-        or not _uuid_values_equal(
-            wire_recipient.get("session_id"), recipient_binding.session_id
-        )
-    ):
-        raise cam1.CamUsageError(
-            "roster.recipient_mismatch",
-            "envelope recipient does not match the selected project participant",
-        )
-
-    wire_sender = validated.envelope.get("claimed_sender")
-    if not isinstance(wire_sender, dict):
-        raise cam1.CamUsageError(
-            "roster.sender_unknown",
-            "envelope claimed_sender does not identify a project participant",
-        )
-    snapshot = store.snapshot(transaction=transaction)
-    matches = [
-        candidate
-        for candidate in snapshot.roster.participants.values()
-        if candidate.binding is not None
-        and candidate.status == participants.ParticipantStatus.BOUND
-        and candidate.vendor == wire_sender.get("vendor")
-        and candidate.common_name == wire_sender.get("agent_name")
-        and _uuid_values_equal(
-            candidate.binding.session_id,
-            wire_sender.get("session_id"),
-        )
-    ]
-    if len(matches) != 1:
-        raise cam1.CamUsageError(
-            "roster.sender_unknown",
-            "envelope claimed_sender must match one active project participant",
-        )
-    sender = matches[0]
-    assert sender.binding is not None
-    reply_to = validated.envelope.get("reply_to")
-    expected_transport = participants.VENDOR_ROUTE_TRANSPORT[sender.vendor]
-    if not isinstance(reply_to, dict) or (
-        reply_to.get("transport") != expected_transport
-        or not _uuid_values_equal(reply_to.get("address"), sender.binding.session_id)
-    ):
-        raise cam1.CamUsageError(
-            "roster.callback_unusable",
-            "live messages require the bound sender's supported return transport",
-        )
-    return sender
-
-
-def _require_reply_slot_available(
-    binding: project.ProjectBinding,
-    validated: ValidatedEnvelope,
+def _require_bound_claude_metadata(
+    participant: participants.Participant,
+    session: routing.AgentViewSession,
 ) -> None:
-    """Reserve one reply transition until its prior transport outcome is known."""
+    """Keep mutable product metadata inside the operator-confirmed binding."""
 
-    envelope = validated.envelope
-    if envelope.get("type") not in cam1.REPLY_TYPES:
-        return
-    root_id = _canonical_uuid(envelope.get("in_reply_to"), label="in_reply_to")
-    records = journal.replay_records(binding)
-    outcomes = _transport_outcomes(records)
-    for record in records:
-        if record["event_type"] != "message.outbound.intent":
-            continue
-        prior_raw = journal.decode_exact_message(record)
-        if prior_raw is None:
-            raise TransportError(
-                "transport.intent_invalid",
-                "a prior outbound reply intent has no preserved envelope",
-            )
-        try:
-            prior_envelope = cam1.parse_exact_bytes(prior_raw)
-        except (cam1.CamUsageError, cam1.CamValidationError) as error:
-            raise TransportError(
-                "transport.intent_invalid",
-                "a prior outbound reply intent cannot be safely interpreted",
-            ) from error
-        if prior_envelope.get("type") not in cam1.REPLY_TYPES or not _uuid_values_equal(
-            prior_envelope.get("in_reply_to"), root_id
-        ):
-            continue
-        linked = [
-            outcome
-            for outcome in outcomes.get(record["record_id"], [])
-            if outcome["sequence"] > record["sequence"]
-        ]
-        if len(linked) == 1:
-            outcome = linked[0]
-            attributes = outcome.get("attributes")
-            if (
-                outcome["event_type"] == "transport.accepted"
-                and isinstance(attributes, dict)
-                and attributes.get("lifecycle_state_committed") is True
-            ):
-                continue
-            if (
-                outcome["event_type"] == "transport.not_accepted"
-                and isinstance(attributes, dict)
-                and attributes.get("delivery_state") == "not_attempted"
-            ):
-                continue
+    binding = _require_complete_claude_binding(participant)
+    if (
+        binding.session_label is not None
+        and session.product_name != binding.session_label
+    ):
         raise TransportError(
-            "transport.reply_transition_reserved",
-            "an earlier reply for this lifecycle root has unresolved delivery; "
-            "do not dispatch a competing reply",
+            "claude.session_label_mismatch",
+            "fresh Claude product name does not match the operator-confirmed "
+            "session label; update the stable binding before sending",
         )
-
-
-def _prepare_and_journal_intent(
-    binding: project.ProjectBinding,
-    store: state.StateStore,
-    transaction: project.ProjectTransaction,
-    validated: ValidatedEnvelope,
-    attempt: _SendAttempt,
-    *,
-    recipient_participant: participants.Participant,
-    renewal_of: str | None,
-    retry_after_intent: str | None,
-    validation_profile: dict[str, Any],
-    dirty_validator_override: bool,
-) -> None:
-    event_now, observed_at = _utc_now()
-    try:
-        sender_participant = _require_roster_endpoints(
-            store,
-            transaction,
-            validated,
-            recipient_participant,
-        )
-        assert recipient_participant.binding is not None
-        plan = store.prepare_lifecycle(
-            validated.raw,
-            renewal_of=renewal_of,
-            preserved_against=validated.original_raw,
-            require_preserved_against=True,
-            now=event_now,
-            transaction=transaction,
-        )
-        _require_reply_slot_available(binding, validated)
-        known_renewal_roots: frozenset[str] = frozenset()
-        if plan.preview.renewal_of is not None:
-            snapshot = store.snapshot(transaction=transaction)
-            known_renewal_roots = frozenset(
-                entry.root_message_id
-                for entry in snapshot.lifecycle.entries.values()
-                if entry.idempotency_key == plan.preview.idempotency_key
-                and entry.semantic_request_sha256
-                == plan.preview.semantic_request_sha256
-            )
-        retry_intent_id = _require_safe_retry(
-            binding,
-            validated,
-            retry_after_intent=retry_after_intent,
-            known_renewal_roots=known_renewal_roots,
-        )
-        if validated.envelope["type"] in lifecycle.ROOT_TYPES and (
-            plan.preview.state != lifecycle.LifecycleState.PENDING
-        ):
-            raise cam1.CamUsageError(
-                "state.root_not_sendable",
-                "outbound root is expired or already present in lifecycle state",
-            )
-        intent_record = journal.append_record(
-            binding,
-            event_type="message.outbound.intent",
-            exact_message=validated.raw,
-            attributes=_intent_attributes(
-                validated,
-                attempt,
-                sender_participant_id=sender_participant.participant_id,
-                recipient_session_id=recipient_participant.binding.session_id,
-                renewal_of=renewal_of,
-                retry_after_intent=retry_intent_id,
-                validation_profile=validation_profile,
-                dirty_validator_override=dirty_validator_override,
-                observed_at=observed_at,
-            ),
-            now=event_now,
-            transaction=transaction,
-        )
-        attempt.lifecycle_plan = plan
-        attempt.message_id = validated.envelope["message_id"]
-        attempt.intent_record = intent_record
-        if validated.envelope["type"] in lifecycle.ROOT_TYPES:
-            if plan.duplicate:
-                attempt.lifecycle_committed = True
-            else:
-                try:
-                    store.commit_lifecycle(
-                        plan,
-                        transaction=transaction,
-                        now=event_now,
-                    )
-                    attempt.lifecycle_committed = True
-                except state.ProjectionRefreshError as error:
-                    # The canonical root event is present. A later rebuild can
-                    # refresh the disposable projection without resending.
-                    attempt.lifecycle_committed = True
-                    attempt.projection_error = error
-        dispatch_now, _ = _utc_now()
-        attempt.lifecycle_plan = store.prepare_lifecycle(
-            validated.raw,
-            renewal_of=renewal_of,
-            preserved_against=validated.original_raw,
-            require_preserved_against=True,
-            now=dispatch_now,
-            transaction=transaction,
-        )
-        final_dispatch_now, _ = _utc_now()
-        state.require_plan_freshness(attempt.lifecycle_plan, now=final_dispatch_now)
-    except (cam1.CamUsageError, cam1.CamValidationError, project.ProjectError) as error:
-        raise _domain_transport_error(error) from error
-
-
-def _journal_failed_attempt(
-    binding: project.ProjectBinding,
-    transaction: project.ProjectTransaction,
-    attempt: _SendAttempt,
-    error: TransportError,
-) -> TransportError:
-    if attempt.intent_record is None:
-        return error
-    event_now, observed_at = _utc_now()
-    delivery_state = _delivery_state(error, attempt)
-    try:
-        outcome = journal.append_record(
-            binding,
-            event_type="transport.not_accepted",
-            attributes={
-                "intent_record_id": attempt.intent_record["record_id"],
-                "participant_id": attempt.participant_id,
-                "message_id": attempt.message_id,
-                "transport": attempt.transport,
-                "route_address": attempt.route_address,
-                "delivery_state": delivery_state,
-                "error_code": error.code,
-                "observed_at": observed_at,
-            },
-            now=event_now,
-            transaction=transaction,
-        )
-    except project.ProjectError as journal_error:
+    if session.kind.casefold() != binding.session_kind.casefold():
         raise TransportError(
-            "transport.outcome_unjournaled",
-            "a send was attempted but its outcome could not be journaled; inspect "
-            "the project journal and do not retry automatically",
-            audit={"intent_record": _record_summary(attempt.intent_record)},
-        ) from journal_error
-    error.audit = {
-        "delivery_state": delivery_state,
-        "intent_record": _record_summary(attempt.intent_record),
-        "outcome_record": _record_summary(outcome),
-    }
-    return error
-
-
-def _post_attempt_lock_failure(
-    attempt: _SendAttempt,
-    *,
-    accepted: bool,
-    result: dict[str, Any] | None = None,
-    original_error: TransportError | None = None,
-) -> TransportError:
-    """Preserve a bounded do-not-retry verdict when outcome journaling is blocked."""
-
-    audit: dict[str, Any] = {
-        "delivery_state": "accepted" if accepted else "unknown",
-        "intent_record": (
-            _record_summary(attempt.intent_record)
-            if attempt.intent_record is not None
-            else None
-        ),
-    }
-    if result is not None:
-        audit["transport_receipt_id"] = _transport_receipt_identifier(result)
-    if original_error is not None:
-        audit["transport_error_code"] = original_error.code
-    if accepted:
-        return TransportError(
-            "transport.acceptance_unjournaled",
-            "transport acceptance is known but the project outcome could not be "
-            "journaled; inspect the intent and do not retry automatically",
-            audit=audit,
+            "claude.session_kind_mismatch",
+            "fresh Claude session kind does not match the operator-confirmed binding",
         )
-    return TransportError(
-        "transport.outcome_unjournaled",
-        "a send was attempted but its outcome could not be journaled; inspect the "
-        "intent and do not retry automatically",
-        audit=audit,
-    )
 
 
-def _transport_receipt_identifier(result: dict[str, Any]) -> Any:
-    receipt_identifier = result.get("transport_message_id")
-    receipt = result.get("transport_receipt")
-    if receipt_identifier is None and isinstance(receipt, dict):
-        return receipt.get("queue_id")
-    return receipt_identifier
+_require_safe_retry = _audit._require_safe_retry
+_intent_attributes = _audit._intent_attributes
+_require_roster_endpoints = _audit._require_roster_endpoints
+_require_reply_slot_available = _audit._require_reply_slot_available
+_prepare_and_journal_intent = _audit._prepare_and_journal_intent
+_journal_failed_attempt = _audit._journal_failed_attempt
+_post_attempt_lock_failure = _audit._post_attempt_lock_failure
+_transport_receipt_identifier = _audit._transport_receipt_identifier
+_require_complete_attempt = _audit._require_complete_attempt
+_settle_accepted_lifecycle = _audit._settle_accepted_lifecycle
+_acceptance_attributes = _audit._acceptance_attributes
+_accepted_state_incomplete_error = _audit._accepted_state_incomplete_error
+_journal_committed_acceptance = _audit._journal_committed_acceptance
+_accepted_result = _audit._accepted_result
+_finalize_accepted_attempt = _audit._finalize_accepted_attempt
+_transport_outcomes = _audit._transport_outcomes
 
-
-def _require_complete_attempt(
-    attempt: _SendAttempt,
-) -> tuple[dict[str, Any], state.LifecyclePlan]:
-    if attempt.intent_record is None or attempt.lifecycle_plan is None:
-        raise TransportError(
-            "transport.audit_incomplete",
-            "transport accepted a message without a complete outbound audit plan; "
-            "do not retry automatically",
-        )
-    return attempt.intent_record, attempt.lifecycle_plan
-
-
-def _settle_accepted_lifecycle(
-    store: state.StateStore,
-    transaction: project.ProjectTransaction,
-    attempt: _SendAttempt,
-    plan: state.LifecyclePlan,
-) -> tuple[lifecycle.LifecycleEntry, state.ProjectionRefreshError | None]:
-    projection_error = attempt.projection_error
-    try:
-        if attempt.lifecycle_committed:
-            snapshot = store.snapshot(transaction=transaction)
-            lifecycle_entry = snapshot.lifecycle.entries.get(
-                plan.preview.root_message_id
-            )
-            if lifecycle_entry is None:
-                raise cam1.CamUsageError(
-                    "state.committed_root_missing",
-                    "journaled outbound root is missing from lifecycle state",
-                )
-        else:
-            lifecycle_entry = store.commit_lifecycle(
-                plan,
-                transaction=transaction,
-                preserve_prepared_observation=True,
-            )
-    except state.ProjectionRefreshError as error:
-        # The canonical event exists; only its disposable projection is stale.
-        return plan.preview, error
-    return lifecycle_entry, projection_error
-
-
-def _acceptance_attributes(
-    attempt: _SendAttempt,
-    intent_record: dict[str, Any],
-    result: dict[str, Any],
-    receipt_identifier: Any,
-    *,
-    lifecycle_state_committed: bool,
-    observed_at: str,
-) -> dict[str, Any]:
-    return {
-        "intent_record_id": intent_record["record_id"],
-        "participant_id": attempt.participant_id,
-        "message_id": result["message_id"],
-        "transport": attempt.transport,
-        "route_address": attempt.route_address,
-        "transport_receipt_id": receipt_identifier,
-        "lifecycle_state_committed": lifecycle_state_committed,
-        "observed_at": observed_at,
-    }
-
-
-def _accepted_state_incomplete_error(
-    binding: project.ProjectBinding,
-    transaction: project.ProjectTransaction,
-    attempt: _SendAttempt,
-    intent_record: dict[str, Any],
-    plan: state.LifecyclePlan,
-    result: dict[str, Any],
-    receipt_identifier: Any,
-) -> TransportError:
-    event_now, observed_at = _utc_now()
-    try:
-        accepted_record = journal.append_record(
-            binding,
-            event_type="transport.accepted",
-            exact_message=plan.exact_message,
-            attributes=_acceptance_attributes(
-                attempt,
-                intent_record,
-                result,
-                receipt_identifier,
-                lifecycle_state_committed=False,
-                observed_at=observed_at,
-            ),
-            now=event_now,
-            transaction=transaction,
-        )
-    except project.ProjectError:
-        accepted_record = None
-    return TransportError(
-        "transport.accepted_state_incomplete",
-        "transport accepted the message but canonical lifecycle state could not "
-        "be committed; inspect the journal and do not retry automatically",
-        audit={
-            "intent_record": _record_summary(intent_record),
-            "transport_receipt_id": receipt_identifier,
-            "accepted_record": (
-                _record_summary(accepted_record)
-                if accepted_record is not None
-                else None
-            ),
-        },
-    )
-
-
-def _journal_committed_acceptance(
-    binding: project.ProjectBinding,
-    transaction: project.ProjectTransaction,
-    attempt: _SendAttempt,
-    intent_record: dict[str, Any],
-    result: dict[str, Any],
-    receipt_identifier: Any,
-    projection_error: state.ProjectionRefreshError | None,
-) -> dict[str, Any]:
-    event_now, observed_at = _utc_now()
-    try:
-        return journal.append_record(
-            binding,
-            event_type="transport.accepted",
-            attributes=_acceptance_attributes(
-                attempt,
-                intent_record,
-                result,
-                receipt_identifier,
-                lifecycle_state_committed=True,
-                observed_at=observed_at,
-            ),
-            now=event_now,
-            transaction=transaction,
-        )
-    except project.ProjectError as error:
-        audit: dict[str, Any] = {
-            "intent_record": _record_summary(intent_record),
-            "lifecycle_state_committed": True,
-        }
-        if projection_error is not None:
-            audit["lifecycle_record"] = {
-                "record_id": projection_error.record_id,
-                "sequence": projection_error.sequence,
-            }
-        raise TransportError(
-            "transport.acceptance_unjournaled",
-            "transport and lifecycle acceptance were recorded, but the separate "
-            "transport receipt record failed; do not retry automatically",
-            audit=audit,
-        ) from error
-
-
-def _accepted_result(
-    result: dict[str, Any],
-    intent_record: dict[str, Any],
-    accepted_record: dict[str, Any],
-    lifecycle_entry: lifecycle.LifecycleEntry,
-    projection_error: state.ProjectionRefreshError | None,
-) -> dict[str, Any]:
-    result["journal"] = {
-        "intent_record": _record_summary(intent_record),
-        "accepted_record": _record_summary(accepted_record),
-    }
-    result["lifecycle"] = lifecycle_entry.as_dict()
-    if projection_error is not None:
-        result["state_projection"] = {
-            "current": False,
-            "journal_record_id": projection_error.record_id,
-            "journal_sequence": projection_error.sequence,
-            "action": "run cam1_project.py state rebuild; do not resend",
-        }
-    return result
-
-
-def _finalize_accepted_attempt(
-    binding: project.ProjectBinding,
-    store: state.StateStore,
-    transaction: project.ProjectTransaction,
-    attempt: _SendAttempt,
-    result: dict[str, Any],
-) -> dict[str, Any]:
-    intent_record, plan = _require_complete_attempt(attempt)
-    receipt_identifier = _transport_receipt_identifier(result)
-    try:
-        lifecycle_entry, projection_error = _settle_accepted_lifecycle(
-            store, transaction, attempt, plan
-        )
-    except (cam1.CamUsageError, cam1.CamValidationError, project.ProjectError) as error:
-        raise _accepted_state_incomplete_error(
-            binding,
-            transaction,
-            attempt,
-            intent_record,
-            plan,
-            result,
-            receipt_identifier,
-        ) from error
-    accepted_record = _journal_committed_acceptance(
-        binding,
-        transaction,
-        attempt,
-        intent_record,
-        result,
-        receipt_identifier,
-        projection_error,
-    )
-    return _accepted_result(
-        result,
-        intent_record,
-        accepted_record,
-        lifecycle_entry,
-        projection_error,
-    )
+# Compatibility import surfaces retained for callers that used the facade.
+causal = _audit.causal
+journal = _audit.journal
+lifecycle = _audit.lifecycle
 
 
 async def preflight_project_claude(
@@ -726,6 +229,9 @@ async def preflight_project_claude(
             label="session_id",
         )
         bound_session_id = participant.binding.session_id
+        bound_generation = participant.binding.generation
+        _require_complete_claude_binding(participant)
+        _require_approved_product_executable(participant, claude_bin)
 
     result = await _preflight_claude_session(
         claude_bin=claude_bin,
@@ -752,6 +258,7 @@ async def preflight_project_claude(
             state=route_data["state"],
             details=(),
             local=True,
+            addressable=True,
         ),
     )
     session_context = _require_project_session_cwd(binding, route.session)
@@ -763,11 +270,16 @@ async def preflight_project_claude(
             transaction=transaction,
         )
         assert participant.binding is not None
-        if participant.binding.session_id != bound_session_id:
+        if (
+            participant.binding.session_id != bound_session_id
+            or participant.binding.generation != bound_generation
+        ):
             raise TransportError(
-                "claude.session_changed",
+                "claude.binding_changed",
                 "participant binding changed during Claude route discovery",
             )
+        _require_approved_product_executable(participant, claude_bin)
+        _require_bound_claude_metadata(participant, route.session)
         event_now, observed_at = _utc_now()
         try:
             observed = store.participant_observe_route(
@@ -784,6 +296,7 @@ async def preflight_project_claude(
                 agent_view_started_at_ms=route.session.started_at_ms,
                 session_git_top_level=str(session_context.top_level),
                 session_git_common_dir=str(session_context.common_dir),
+                tool_correlated=True,
                 now=event_now,
                 transaction=transaction,
             )
@@ -796,9 +309,10 @@ async def preflight_project_claude(
             "display_name": observed.display_name,
             "route_status": observed.route.status.value,
         }
-        result["operator_correlation_required"] = (
-            observed.route.status != participants.RouteStatus.OPERATOR_CORRELATED
-        )
+        result["operator_correlation_required"] = False
+        result["operator_correlation_subject"] = None
+        result["operator_identity_confirmation_required"] = False
+        result["transient_route_confirmation_required"] = False
         return result
 
 
@@ -840,6 +354,9 @@ async def send_project_claude(
         )
         participant_id = participant.participant_id
         bound_session_id = participant.binding.session_id
+        bound_generation = participant.binding.generation
+        _require_complete_claude_binding(participant)
+        _require_approved_product_executable(participant, claude_bin)
 
     attempt = _SendAttempt(
         participant_id=participant_id,
@@ -862,12 +379,15 @@ async def send_project_claude(
             assert current.binding is not None
             if (
                 current.binding.session_id != bound_session_id
+                or current.binding.generation != bound_generation
                 or route.session.session_id != bound_session_id
             ):
                 raise TransportError(
-                    "claude.session_changed",
+                    "claude.binding_changed",
                     "fresh Claude discovery no longer matches the participant binding",
                 )
+            _require_approved_product_executable(current, claude_bin)
+            _require_bound_claude_metadata(current, route.session)
             event_now, observed_at = _utc_now()
             try:
                 observed = store.participant_observe_route(
@@ -884,17 +404,18 @@ async def send_project_claude(
                     agent_view_started_at_ms=route.session.started_at_ms,
                     session_git_top_level=str(session_context.top_level),
                     session_git_common_dir=str(session_context.common_dir),
+                    tool_correlated=True,
                     now=event_now,
                     transaction=transaction,
                 )
-                if (
-                    observed.route is None
-                    or observed.route.status
-                    != participants.RouteStatus.OPERATOR_CORRELATED
-                ):
+                if observed.route is None or observed.route.status not in {
+                    participants.RouteStatus.TOOL_CORRELATED,
+                    participants.RouteStatus.OPERATOR_CORRELATED,
+                }:
                     raise cam1.CamUsageError(
                         "roster.route_not_ready",
-                        "fresh Claude route requires explicit operator correlation",
+                        "fresh Claude route was not uniquely correlated to the bound "
+                        "session identity",
                     )
                 attempt.route_address = route.peer.qualified_address
                 _prepare_and_journal_intent(
@@ -915,7 +436,9 @@ async def send_project_claude(
                 project.ProjectError,
             ) as error:
                 raise _domain_transport_error(error) from error
-            attempt.dispatch_started = True
+
+    def before_dispatch() -> None:
+        attempt.dispatch_started = True
 
     try:
         result = await _send_to_claude(
@@ -927,6 +450,7 @@ async def send_project_claude(
             summary=summary,
             timeout_seconds=timeout_seconds,
             before_send=before_send,
+            before_dispatch=before_dispatch,
         )
     except TransportError as error:
         if attempt.intent_record is not None:
@@ -996,6 +520,7 @@ def send_project_codex(
             participant.binding.session_id,
             label="thread",
         )
+        _require_approved_product_executable(participant, codex_bin)
         try:
             route = store.snapshot(
                 transaction=transaction
@@ -1026,6 +551,8 @@ def send_project_codex(
                     "codex.session_changed",
                     "participant binding changed before Codex queue dispatch",
                 )
+            _require_approved_product_executable(current, codex_bin)
+            _require_current_product_approval("codex", codex_bin)
             try:
                 current_route = store.snapshot(
                     transaction=transaction
@@ -1049,7 +576,9 @@ def send_project_codex(
                 validation_profile=validation_profile,
                 dirty_validator_override=dirty_validator_override,
             )
-            attempt.dispatch_started = True
+
+    def before_dispatch() -> None:
+        attempt.dispatch_started = True
 
     try:
         result = _send_to_codex_queue(
@@ -1059,6 +588,7 @@ def send_project_codex(
             against_path=against_path,
             timeout_seconds=timeout_seconds,
             before_send=before_send,
+            before_dispatch=before_dispatch,
         )
     except TransportError as error:
         if attempt.intent_record is not None:
@@ -1107,6 +637,13 @@ def _cli_api() -> _transport_cli.TransportCliApi:
         doctor=module.doctor,
         require_live_validation_profile=module._require_live_validation_profile,
         resolve_binary=module._resolve_binary,
+        resolve_product_binary=module.resolve_product_binary,
+        discover_product_executable=module.discover_product_executable,
+        approve_product_executable=module.approve_product_executable,
+        product_executable_status=module.product_executable_status,
+        product_recovery_status=module.product_recovery_status,
+        recover_product_partial_tail=module.recover_product_partial_tail,
+        revoke_product_executable=module.revoke_product_executable,
         resolve_project=module._resolve_project,
         list_local_peers=module.list_local_peers,
         preflight_project_claude=module.preflight_project_claude,
@@ -1122,6 +659,7 @@ def _parser() -> Any:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    _products.begin_operation()
     return _transport_cli.main(argv, api=_cli_api())
 
 

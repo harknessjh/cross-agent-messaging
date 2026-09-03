@@ -1,5 +1,9 @@
 # Public release checklist
 
+> **Audience:** CAM/1 maintainers preparing a release. This checklist is not
+> part of user onboarding; new users should begin with
+> [START HERE](../START_HERE.md).
+
 Use this checklist against the exact commit proposed for publication. A green source review does not prove that a remote was created correctly or that a published release contains the reviewed files.
 
 ## Owner decisions
@@ -19,9 +23,14 @@ Use this checklist against the exact commit proposed for publication. A green so
   never delivery or authority.
 - Ensure the supported path requires one host and the same operating-system account and rejects Remote Control, cloud, cross-account, raw-socket, and externally exposed local-interface adaptations.
 - Keep one canonical Codex sender prompt and one canonical Claude receiver
-  prompt in [the first-contact runbook](FIRST_CONTACT.md); other documents
+  prompt in [the first-contact runbook](../START_HERE.md); other documents
   should link to them rather than copy variants. Confirm that a new clone can
   follow them without undocumented project state or routing knowledge.
+- Confirm START HERE requires no manual `CAM_CHECKOUT` or `PROJECT_ROOT`
+  substitution. Each prompt must use the session cwd as the project and perform
+  a bounded, non-executing CAM-checkout candidate search, display path/remote/
+  HEAD/status, stop for exact human selection, re-probe, and only then invoke
+  the selected checkout's trusted-source validation.
 - Confirm that each prompt authorizes only its explicit harmless local send or
   callback and owner-private working files outside tracked worktrees, without
   broadly authorizing side effects.
@@ -34,9 +43,22 @@ Use this checklist against the exact commit proposed for publication. A green so
   append-before-validation, hash-chain limits, correction rules, projections,
   retention, and human audit path.
 - Confirm the roster distinguishes project display name, participant common
-  name, product label, role, stable full session UUID, Agent View ID, and fresh
-  route. Confirm it never stores or uses a Claude UDS.
+  name, product label, optional descriptive role, stable full session UUID,
+  operator-reviewed executable, optional Agent View ID, and fresh route.
+  Confirm role is mutable and non-authoritative, a missing Agent View ID remains
+  null, and the roster never stores a Claude process ID or UDS.
+- Confirm each session's normal first-contact path prepares one non-routable
+  self-enrollment proposal and shows one concise card. The operator approves
+  the stable UUID, project, project-local name, product metadata, and absolute
+  executable directly in that session—not the transient MCP `name [ref]`,
+  which is normally absent from `/status`. Keep the exact discovered ref in the
+  journal as tool-derived audit evidence without presenting it as a human
+  authentication factor. State explicitly that the card's digest-derived code
+  is correlation, not authentication or work authority.
 - Use synthetic identifiers, paths, receipts, messages, and timestamps in every public artifact.
+- Describe field incidents through sanitized shapes and timelines. Do not
+  publish private journal artifacts, real session UUIDs, transient refs, local
+  paths, or message bodies as fixtures or documentation evidence.
 - Scan tracked content and Git history for credentials, personal paths, callback/session IDs, queue IDs, peer listings, email addresses, and transcripts.
 - Confirm that examples do not imply authentication, authorization, guaranteed
   delivery, remote support, journal-backed delivery, tamper-proof history, or
@@ -45,7 +67,8 @@ Use this checklist against the exact commit proposed for publication. A green so
   held roots expire unconfirmed, while a request recorded as received,
   accepted, or started before expiry may later advance legally. Receipt alone
   never authorizes execution.
-- Render the Markdown and validate every local and external link.
+- Render the Markdown, run the automated local-file and anchor-link test, and
+  validate external links.
 
 ## Technical validation
 
@@ -53,12 +76,17 @@ Use this checklist against the exact commit proposed for publication. A green so
 - Run the full offline test suite.
 - Compare every documented `tools/cam1.py`, `tools/cam1_project.py`, and
   `tools/cam1_transport.py` invocation with the live `--help` output.
-- Confirm that the canonical `cam1_transport.py` operations are `doctor`,
-  `claude-list`, `claude-preflight`, `claude-send`, and `codex-send`. A
-  compatibility alias must not introduce another behavior, and no command may
-  provide receive, polling, an automatic retry service, daemon, database,
-  board, raw-socket, or remote behavior. The explicit journal-gated retry must
-  remain the only retry path.
+- Confirm that the canonical `cam1_transport.py` command surface contains these
+  12 operations, grouped by purpose:
+  - capability and routing: `doctor`, `claude-list`, `claude-preflight`;
+  - executable approval and guarded recovery: `product-discover`,
+    `product-approve`, `product-status`, `product-recovery-status`,
+    `product-recover-partial-tail`, `product-revoke`; and
+  - live transport: `claude-send`, `codex-send`, and the behavior-identical
+    `codex-reply` compatibility alias.
+  No command may provide receive, polling, an automatic retry service, daemon,
+  database, board, raw-socket, or remote behavior. The explicit journal-gated
+  retry must remain the only retry path.
 - Confirm `cam1.py validation-profile` reports an available deterministic
   digest covering every Python source below `tools/` and non-cache importable
   modules, a concrete HEAD, matching regular profile path sets and bytes,
@@ -73,13 +101,40 @@ Use this checklist against the exact commit proposed for publication. A green so
   `dirty_validator_override`; it is not release evidence and cannot override a
   changed executable Python source, a missing HEAD, a changed profile path set,
   or concealed/sparse index state.
-- Confirm that every live list, preflight, send, and reply requires an
-  operator-approved absolute product executable path; every project preflight,
-  send, and reply must also resolve the bound project. Doctor may discover and
-  report candidate paths but does not approve them.
+- Confirm that `product-discover` is the only operation permitted to consult
+  `PATH`, and that it only resolves and fingerprints a candidate without
+  executing or approving it. Every live doctor, list, preflight, send, and
+  reply requires the applicable operator-approved absolute product executable
+  path; every project preflight, send, and reply must also resolve the bound
+  project.
+- Confirm approval-ledger shared and exclusive locks use a bounded monotonic
+  wait and fail closed on timeout. Exercise status and mutation contention
+  without deleting a lock target or weakening transaction semantics.
+- Confirm approval-ledger recovery is never automatic: status must precede a
+  directly confirmed mutation with exact identity/full-ledger/prefix/tail
+  guards. Verify the exact owner-private content-addressed archive bytes and
+  immutable occurrence manifest, including its device/inode/`ctime_ns`/`mtime_ns`
+  binding. Recover byte-identical damage with changed filesystem guards as two
+  occurrences: require one shared verified archive, distinct deterministic
+  recovery IDs and manifests, and a reconciliation count of two. Verify that an
+  exact unchanged crash retry reuses every matching artifact already published,
+  including the archive-only window, while reuse of an old occurrence identity
+  against changed filesystem guards fails without mutation. Also verify
+  legacy-reader replay of
+  the repaired approve/revoke-only ledger, unchanged active approvals,
+  stale-guard refusal, complete/interior corruption refusal, symlink and
+  permission refusal, concurrent recovery, capacity accounting for shared
+  archives versus new occurrence manifests, lock-loss publication races, and
+  truthful interrupted recovery mutation states. Exercise artifact mutation
+  immediately after publication and at the final pre-truncate check, post-commit
+  live-path substitution, cleanup failure, canonical manifest parsing, and
+  bounded reconciliation of hard-crash, empty-prefix, and later-append states.
 - Confirm that project initialization writes only to private Git administrative
   state and the external journal root, linked worktrees share the project UUID,
-  and no journal is tracked by Git.
+  and no journal is tracked by Git. Confirm enrollment works after `git init`
+  without an initial commit and leaves both the application filesystem snapshot
+  and `git status --porcelain=v2 --untracked-files=all` unchanged outside
+  private Git administrative state. A CAM journal append is not a Git commit.
 - Confirm that each journal mutation transaction verifies the full chain on
   first read, revalidates the locked file identity before every later
   operation, advances only from exact appended bytes, serializes complete
@@ -113,7 +168,32 @@ Use this checklist against the exact commit proposed for publication. A green so
   authorization/action fields rather than using lifecycle `accepted`
   terminology.
 - Confirm that atomic `state-current.json` rebuilds exclusively from the
-  journal and cannot authorize a message or repair history.
+  journal, includes enrollment, participant, and lifecycle projections, and
+  cannot authorize a message or repair history.
+- Exercise compatibility `plan`, `ready`, and `activate` as one staged,
+  clean-profile workflow. Confirm the plan freezes every non-retired binding
+  and required reader capability; activation refuses incomplete readiness,
+  expiry, profile or roster drift, unsupported capability, and conflicting
+  replay; and no compatibility event grants authority or performs product I/O.
+- Confirm an unsupported active gate fails with
+  `compatibility.upgrade_required` before stateful replay. If activation commits
+  but projection refresh fails, require `activated_projection_stale`, do not
+  retry activation, and rebuild the disposable projection from the canonical
+  journal.
+- With `causal.ordering/1` active, confirm the project-aware adapter derives
+  `CAM-CAUSAL/1` context only from the canonical project journal and never adds
+  it to the wire envelope. Exercise a post-activation stale request or cancel:
+  record one hold with `lifecycle_committed: false`, apply no lifecycle or
+  action state, and keep an exact redelivery held. Confirm pre-activation
+  conversations remain grandfathered and that only an exact
+  `transport.not_accepted` outcome with `delivery_state: not_attempted` is
+  excluded from the potentially dispatched frontier.
+- Exercise enrollment proposal replay, exact-digest confirmation, current
+  session/project/profile recheck, supersession, duplicate prepare/confirm
+  idempotency, common-name and session collisions, and atomic participant plus
+  binding creation. Prove that pending or superseded proposals cannot be used
+  as endpoints. Prove that metadata updates preserve identity, binding, and
+  route while advancing their own revision.
 - Confirm that both transport send commands require `--against` for reply envelopes and never report transport acceptance as receiver handling.
 - Confirm a project-aware Claude-originated root can be queued to Codex and a
   correlated Codex reply can return through `claude-send --against` after fresh
@@ -126,8 +206,29 @@ Use this checklist against the exact commit proposed for publication. A green so
   a live Claude send selects a full session UUID through fresh Agent View plus
   `ListAgents` route correlation and requires its cwd inside the bound project;
   optional `--to` only guards that fresh route.
+  Confirm ref-only churn is freshly tool-correlated without another operator
+  prompt, while UUID, product-name, configured-kind, project, binding-generation,
+  duplicate-name, and same-attempt evidence drift fail before journal intent or
+  product dispatch.
   Confirm live transport refuses stdin, FIFO inputs fail before waiting for a
   writer, and offline stdin validation remains available.
+- Exercise heterogeneous Agent View fixtures in which background `id`/`state`
+  and interactive `pid`/`status` rows share a full UUID. Verify sole eligible
+  process-row preference, the no-process legacy fallback, no companion-field
+  merging, optional-ID validation/null retention, and PID exclusion from all
+  serialized, journal, and projected state.
+- Exercise `ListAgents` locality independently from activity: local `idle` and
+  `busy` peers are addressable, local terminal or unknown peers are reported
+  unavailable, and cloud or Remote Control peers remain excluded. Before
+  claiming background-session support, exercise the observed Agent View
+  `background` versus `ListAgents` `bg` spelling, retain both raw values for
+  audit, reject unknown abbreviations, and prove that cloud and Remote Control
+  markers still remain nonlocal.
+- Exercise a sanitized background/resume/rename sequence that changes the UUID,
+  kind, label, and ref while preserving correct route invalidation and explicit
+  rebinding. Present the observed restored-interactive 2.1.251 exchange as live
+  evidence, but do not claim delivery while backgrounded until separately
+  tested.
 - Confirm that Claude acceptance requires `success:true` plus a canonical transport `msg_id`, Codex acceptance requires the exact documented stdout receipt for the requested thread, both send paths enforce the documented 65,536-byte live limit, and transport failures cannot contaminate the machine-readable JSON channel.
 - Validate every checked-in hello, request, acknowledgment, and result fixture;
   recompute every documented body digest; exercise each typed builder and every
@@ -142,7 +243,12 @@ Use this checklist against the exact commit proposed for publication. A green so
 - Exercise the single-nonce rule: received advances through nonce-null status,
   held advances through a later ACK, and a cancel accepted after a received ACK
   uses nonce-null `status: accepted`.
-- Run the public-release audit with warnings treated as failures.
+- Run the public-release audit and require no unreviewed `WARN` findings. The
+  two explicitly reviewed runtime-size deferrals in this revision are
+  `tools/cam1_transport_native.py` at 1,299 lines and
+  `tools/cam1lib/state_projection.py` at 1,206 lines. Keep both visible in the
+  release evidence, reassess them after any material change, and treat every
+  other or new `WARN` as a release failure.
 - Review dependency licenses and vulnerability status.
 - Obtain an independent technical and security review of the exact staged tree.
 

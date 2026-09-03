@@ -1,0 +1,65 @@
+[
+  {
+    "cwd": "/example/project-a",
+    "id": "aaaaaaaa",
+    "kind": "background",
+    "name": "project-a-job",
+    "sessionId": "aaaaaaaa-0000-4000-8000-000000000001",
+    "startedAt": 1000,
+    "state": "blocked"
+  },
+  {
+    "cwd": "/example/project-b",
+    "id": "bbbbbbbb",
+    "kind": "background",
+    "name": "project-b-worker",
+    "sessionId": "bbbbbbbb-0000-4000-8000-000000000002",
+    "startedAt": 2000,
+    "state": "idle"
+  },
+  {
+    "cwd": "/example/project-c",
+    "id": "cccccccc",
+    "kind": "background",
+    "name": "project-c-job",
+    "sessionId": "cccccccc-0000-4000-8000-000000000003",
+    "startedAt": 3000,
+    "state": "waiting"
+  },
+  {
+    "cwd": "/example/project-d",
+    "id": "dddddddd",
+    "kind": "background",
+    "name": "project-d-worker",
+    "sessionId": "dddddddd-0000-4000-8000-000000000004",
+    "startedAt": 4000,
+    "state": "running"
+  },
+  {
+    "cwd": "/example/project-a",
+    "kind": "interactive",
+    "name": "project-a-worker",
+    "pid": 4101,
+    "sessionId": "aaaaaaaa-0000-4000-8000-000000000001",
+    "startedAt": 1100,
+    "status": "busy"
+  },
+  {
+    "cwd": "/example/project-c",
+    "kind": "interactive",
+    "name": "project-c-worker",
+    "pid": 4103,
+    "sessionId": "cccccccc-0000-4000-8000-000000000003",
+    "startedAt": 3100,
+    "status": "idle"
+  },
+  {
+    "cwd": "/example/project-d",
+    "kind": "interactive",
+    "name": "project-d-worker",
+    "pid": 4104,
+    "sessionId": "dddddddd-0000-4000-8000-000000000004",
+    "startedAt": 4100,
+    "status": "busy"
+  }
+]

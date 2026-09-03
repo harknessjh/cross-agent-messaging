@@ -209,6 +209,77 @@ class ParticipantRosterTests(unittest.TestCase):
         route = roster.require_correlated_route("reviewer")
         self.assertEqual(route.address, "example-review-session [abcdef]")
 
+    def test_complete_internal_discovery_is_tool_correlated(self) -> None:
+        roster = roster_with_reviewer()
+        bind_reviewer(roster)
+
+        observed = roster.observe_route(
+            "reviewer",
+            transport="claude_send_message",
+            address="example-review-session [abcdef]",
+            source="claude_agent_view_and_list_agents",
+            observed_at=OBSERVED_AT,
+            agent_view_id=None,
+            list_agents_name="example-review-session",
+            list_agents_ref="abcdef",
+            product_state="busy",
+            agent_view_kind="interactive",
+            agent_view_started_at_ms=1_784_241_375_111,
+            session_git_top_level="/example/project",
+            session_git_common_dir="/example/project/.git",
+            tool_correlated=True,
+        )
+
+        self.assertEqual(observed.route.status, RouteStatus.TOOL_CORRELATED)
+        self.assertIsNone(observed.route.operator_reference)
+        self.assertIsNone(observed.route.confirmed_at)
+        self.assertEqual(
+            roster.require_correlated_route("reviewer").address,
+            "example-review-session [abcdef]",
+        )
+
+    def test_claimed_internal_source_without_complete_evidence_is_candidate(
+        self,
+    ) -> None:
+        roster = roster_with_reviewer()
+        bind_reviewer(roster)
+
+        observed = roster.observe_route(
+            "reviewer",
+            transport="claude_send_message",
+            address="example-review-session [abcdef]",
+            source="claude_agent_view_and_list_agents",
+            observed_at=OBSERVED_AT,
+            agent_view_id=None,
+            list_agents_name="example-review-session",
+            list_agents_ref="abcdef",
+            product_state="idle",
+        )
+
+        self.assertEqual(observed.route.status, RouteStatus.CANDIDATE)
+        with self.assertRaises(CamUsageError) as context:
+            roster.require_correlated_route("reviewer")
+        self.assertEqual(context.exception.code, "roster.route_not_ready")
+
+    def test_interactive_route_does_not_invent_missing_agent_view_id(self) -> None:
+        roster = roster_with_reviewer()
+        bind_reviewer(roster)
+
+        observed = roster.observe_route(
+            "reviewer",
+            transport="claude_send_message",
+            address="example-review-session [abcdef]",
+            source="Agent View plus ListAgents",
+            observed_at=OBSERVED_AT,
+            agent_view_id=None,
+            list_agents_name="example-review-session",
+            list_agents_ref="abcdef",
+            product_state="busy",
+        )
+
+        self.assertIsNone(observed.route.agent_view_id)
+        self.assertIsNone(observed.as_dict()["route"]["agent_view_id"])
+
     def test_route_cannot_be_shared_by_two_participants(self) -> None:
         roster = roster_with_reviewer()
         roster.add(
@@ -313,12 +384,37 @@ class ParticipantRosterTests(unittest.TestCase):
             "roster.route_not_candidate",
         )
 
+        with self.assertRaises(CamUsageError) as stale_observation:
+            roster.observe_route(
+                "reviewer",
+                transport="claude_send_message",
+                address="worker-renamed [fedcba]",
+                source="Agent View plus ListAgents",
+                observed_at="2026-08-27T17:01:00Z",
+                agent_view_id="00000000",
+                list_agents_name="worker-renamed",
+                list_agents_ref="fedcba",
+                product_state="idle",
+            )
+        self.assertEqual(
+            stale_observation.exception.code,
+            "roster.participant_stale",
+        )
+
+        roster.bind(
+            "reviewer",
+            session_id=REVIEWER_SESSION,
+            session_label="replacement session",
+            session_kind="interactive",
+            operator_reference="operator reconfirmed the session",
+            bound_at="2026-08-27T17:01:00Z",
+        )
         observed = roster.observe_route(
             "reviewer",
             transport="claude_send_message",
             address="worker-renamed [fedcba]",
             source="Agent View plus ListAgents",
-            observed_at="2026-08-27T17:01:00Z",
+            observed_at="2026-08-27T17:01:01Z",
             agent_view_id="00000000",
             list_agents_name="worker-renamed",
             list_agents_ref="fedcba",
@@ -329,14 +425,14 @@ class ParticipantRosterTests(unittest.TestCase):
             "reviewer",
             expected_address="worker-renamed [fedcba]",
             operator_reference="operator reconfirmed the restarted route",
-            confirmed_at="2026-08-27T17:01:01Z",
+            confirmed_at="2026-08-27T17:01:02Z",
         )
         self.assertEqual(
             reconfirmed.route.status,
             RouteStatus.OPERATOR_CORRELATED,
         )
 
-    def test_fresh_route_churn_requires_operator_reconfirmation(self) -> None:
+    def test_untrusted_route_churn_requires_operator_reconfirmation(self) -> None:
         roster = roster_with_reviewer()
         bind_reviewer(roster)
         roster.observe_route(

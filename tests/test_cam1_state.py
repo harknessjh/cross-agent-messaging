@@ -161,6 +161,81 @@ class JournalBackedStateTests(unittest.TestCase):
         self.assertEqual(projection["format"], "CAM-STATE/1")
         self.assertEqual(projection["journal_position"]["sequence"], 4)
         self.assertEqual(projection["participants"][0]["common_name"], "reviewer")
+        self.assertEqual(projection["compatibility"]["reader"]["epoch"], 1)
+        self.assertEqual(projection["compatibility"]["active_gates"], [])
+
+    def test_tool_correlated_route_rebuilds_without_operator_route_approval(
+        self,
+    ) -> None:
+        self.add_reviewer()
+        self.bind_reviewer()
+        self.store.participant_observe_route(
+            "reviewer",
+            transport="claude_send_message",
+            address="example-review-session [abcdef]",
+            source="claude_agent_view_and_list_agents",
+            observed_at="2026-08-27T18:00:02Z",
+            agent_view_id=None,
+            list_agents_name="example-review-session",
+            list_agents_ref="abcdef",
+            product_state="busy",
+            agent_view_kind="interactive",
+            agent_view_started_at_ms=1_784_241_375_111,
+            session_git_top_level="/example/project",
+            session_git_common_dir="/example/project/.git",
+            tool_correlated=True,
+            now=NOW + dt.timedelta(seconds=2),
+        )
+
+        restored = self.store.rebuild().roster.select("reviewer")
+        self.assertEqual(restored.route.status, RouteStatus.TOOL_CORRELATED)
+        self.assertIsNone(restored.route.operator_reference)
+        self.assertIsNone(restored.route.confirmed_at)
+        observed_record = journal.replay_records(self.binding)[-1]
+        self.assertIs(observed_record["attributes"]["tool_correlated"], True)
+
+    def test_legacy_route_observation_without_correlation_flag_still_replays(
+        self,
+    ) -> None:
+        self.add_reviewer()
+        self.bind_reviewer()
+        participant_id = self.store.snapshot().roster.select("reviewer").participant_id
+        journal.append_record(
+            self.binding,
+            event_type=state.PARTICIPANT_ROUTE_OBSERVED,
+            exact_message=None,
+            attributes={
+                "participant_id": participant_id,
+                "transport": "claude_send_message",
+                "address": "example-review-session [abcdef]",
+                "source": "claude_agent_view_and_list_agents",
+                "observed_at": "2026-08-27T18:00:02Z",
+                "agent_view_id": None,
+                "list_agents_name": "example-review-session",
+                "list_agents_ref": "abcdef",
+                "product_state": "idle",
+                "agent_view_kind": "interactive",
+                "agent_view_started_at_ms": 1_784_241_375_111,
+                "session_git_top_level": "/example/project",
+                "session_git_common_dir": "/example/project/.git",
+            },
+            now=NOW + dt.timedelta(seconds=2),
+        )
+        journal.append_record(
+            self.binding,
+            event_type=state.PARTICIPANT_ROUTE_CONFIRMED,
+            exact_message=None,
+            attributes={
+                "participant_id": participant_id,
+                "expected_address": "example-review-session [abcdef]",
+                "operator_reference": "historical operator confirmation",
+                "confirmed_at": "2026-08-27T18:00:03Z",
+            },
+            now=NOW + dt.timedelta(seconds=3),
+        )
+
+        restored = self.store.rebuild().roster.select("reviewer")
+        self.assertEqual(restored.route.status, RouteStatus.OPERATOR_CORRELATED)
 
     def test_invalidate_and_retire_are_journaled_domain_events(self) -> None:
         self.add_reviewer()

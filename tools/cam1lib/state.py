@@ -19,6 +19,24 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
+from .compatibility import (
+    COMPATIBILITY_FORMAT,
+    COMPATIBILITY_GATE_ACTIVATED_EVENT,
+    COMPATIBILITY_KERNEL_CAPABILITY,
+    COMPATIBILITY_KERNEL_FEATURE_ID,
+    COMPATIBILITY_KERNEL_FEATURE_VERSION,
+    COMPATIBILITY_PLAN_EVENT,
+    COMPATIBILITY_READINESS_EVENT,
+    CURRENT_READER_EPOCH,
+    SUPPORTED_READER_CAPABILITIES,
+    CompatibilityEventError,
+    CompatibilityGate,
+    CompatibilityInspection,
+    CompatibilityPlan,
+    CompatibilityProjection,
+    CompatibilityReadiness,
+    CompatibilityUpgradeRequired,
+)
 from .journal import append_record, decode_exact_message
 from .lifecycle import ROOT_TYPES, LifecycleEntry, LifecycleProjection, LifecycleState
 from .participants import Participant, ParticipantRoster
@@ -43,7 +61,10 @@ from .state_projection import (
     LIFECYCLE_ROOT_REGISTERED,
     PARTICIPANT_ADDED,
     PARTICIPANT_BOUND,
+    PARTICIPANT_ENROLLMENT_CONFIRMED,
+    PARTICIPANT_ENROLLMENT_PROPOSED,
     PARTICIPANT_INVALIDATED,
+    PARTICIPANT_METADATA_UPDATED,
     PARTICIPANT_RETIRED,
     PARTICIPANT_ROUTE_CONFIRMED,
     PARTICIPANT_ROUTE_OBSERVED,
@@ -53,6 +74,7 @@ from .state_projection import (
     ProjectionRefreshError,
     StateError,
     StateSnapshot,
+    inspect_compatibility,
     require_plan_freshness,
     state_projection_path,
 )
@@ -60,12 +82,23 @@ from .state_store import StateStore, rebuild_state, validate_cancel_exact_bytes
 from .validation import validate_exact_bytes
 
 __all__ = [
+    "COMPATIBILITY_FORMAT",
+    "COMPATIBILITY_GATE_ACTIVATED_EVENT",
+    "COMPATIBILITY_KERNEL_CAPABILITY",
+    "COMPATIBILITY_KERNEL_FEATURE_ID",
+    "COMPATIBILITY_KERNEL_FEATURE_VERSION",
+    "COMPATIBILITY_PLAN_EVENT",
+    "COMPATIBILITY_READINESS_EVENT",
+    "CURRENT_READER_EPOCH",
     "LIFECYCLE_EXPIRED_UNCONFIRMED",
     "LIFECYCLE_REPLY_APPLIED",
     "LIFECYCLE_ROOT_REGISTERED",
     "PARTICIPANT_ADDED",
     "PARTICIPANT_BOUND",
+    "PARTICIPANT_ENROLLMENT_CONFIRMED",
+    "PARTICIPANT_ENROLLMENT_PROPOSED",
     "PARTICIPANT_INVALIDATED",
+    "PARTICIPANT_METADATA_UPDATED",
     "PARTICIPANT_RETIRED",
     "PARTICIPANT_ROUTE_CONFIRMED",
     "PARTICIPANT_ROUTE_OBSERVED",
@@ -73,9 +106,17 @@ __all__ = [
     "ROOT_TYPES",
     "STATE_EVENT_TYPES",
     "STATE_PROJECTION_NAME",
+    "SUPPORTED_READER_CAPABILITIES",
     "Any",
     "CamUsageError",
     "CamValidationError",
+    "CompatibilityEventError",
+    "CompatibilityGate",
+    "CompatibilityInspection",
+    "CompatibilityPlan",
+    "CompatibilityProjection",
+    "CompatibilityReadiness",
+    "CompatibilityUpgradeRequired",
     "Iterator",
     "LifecycleEntry",
     "LifecyclePlan",
@@ -101,6 +142,7 @@ __all__ = [
     "deepcopy",
     "dt",
     "field",
+    "inspect_compatibility",
     "parse_exact_bytes",
     "project_transaction",
     "rebuild_state",

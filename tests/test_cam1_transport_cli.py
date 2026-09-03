@@ -16,6 +16,7 @@ from pathlib import Path
 from unittest import mock
 
 from tools import cam1, cam1_transport, cam1_transport_native
+from tools.cam1lib import product_approvals
 
 if __package__:
     from .test_cam1_transport import (
@@ -40,6 +41,21 @@ else:
 
 
 class TransportCliRoundTripTests(unittest.TestCase):
+    def setUp(self) -> None:
+        resolve = mock.patch.object(
+            cam1_transport_native,
+            "_resolve_binary",
+            side_effect=lambda value, *, label: value,
+        )
+        metadata = mock.patch.object(
+            cam1_transport_native,
+            "_require_product_metadata",
+        )
+        resolve.start()
+        metadata.start()
+        self.addCleanup(resolve.stop)
+        self.addCleanup(metadata.stop)
+
     def test_argument_errors_use_the_json_error_channel(self) -> None:
         completed = subprocess.run(
             [sys.executable, str(TRANSPORT_CLI), "not-a-command"],
@@ -143,9 +159,14 @@ class TransportCliRoundTripTests(unittest.TestCase):
             reply_path = temp / "ack.cam1.json"
             write_private(original_path, original)
             write_private(reply_path, reply)
-            with mock.patch.object(
-                cam1_transport.subprocess, "run", return_value=receipt
-            ) as run:
+            with (
+                mock.patch.object(
+                    cam1_transport_native, "_require_codex_state_write_access"
+                ),
+                mock.patch.object(
+                    cam1_transport.subprocess, "run", return_value=receipt
+                ) as run,
+            ):
                 result = cam1_transport._send_to_codex_queue(
                     codex_bin="/fake/codex",
                     thread=uppercase_thread,
@@ -153,6 +174,7 @@ class TransportCliRoundTripTests(unittest.TestCase):
                     against_path=str(original_path),
                     timeout_seconds=1,
                     before_send=lambda _validated: None,
+                    before_dispatch=lambda: None,
                 )
 
         self.assertTrue(result["ok"])
@@ -191,6 +213,7 @@ class TransportCliRoundTripTests(unittest.TestCase):
                     against_path=str(original_path),
                     timeout_seconds=1,
                     before_send=lambda _validated: None,
+                    before_dispatch=lambda: None,
                 )
         self.assertEqual(context.exception.code, "envelope.callback_unavailable")
         run.assert_not_called()
@@ -261,6 +284,7 @@ class TransportCliRoundTripTests(unittest.TestCase):
                         summary=None,
                         timeout_seconds=5,
                         before_send=lambda _validated, _route: None,
+                        before_dispatch=lambda: None,
                     )
                 )
                 preflight = asyncio.run(
@@ -275,6 +299,11 @@ class TransportCliRoundTripTests(unittest.TestCase):
         self.assertEqual(result["target_session_id"], CLAUDE_SESSION)
         self.assertEqual(result["target"], "local-worker [abcdef]")
         self.assertEqual(preflight["identity"]["session_id"], CLAUDE_SESSION)
+        self.assertTrue(preflight["operator_identity_confirmation_required"])
+        self.assertEqual(
+            preflight["operator_correlation_subject"], "stable_session_identity"
+        )
+        self.assertFalse(preflight["transient_route_confirmation_required"])
 
     def test_live_transport_rejects_schema_valid_oversized_envelope(self) -> None:
         raw = cam1.build_request(
@@ -319,6 +348,9 @@ class TransportCliRoundTripTests(unittest.TestCase):
             write_private(reply_path, reply)
             with (
                 mock.patch.object(
+                    cam1_transport_native, "_require_codex_state_write_access"
+                ),
+                mock.patch.object(
                     cam1_transport.subprocess,
                     "run",
                     side_effect=OSError(errno.E2BIG, "argument list too long"),
@@ -332,8 +364,102 @@ class TransportCliRoundTripTests(unittest.TestCase):
                     against_path=str(original_path),
                     timeout_seconds=1,
                     before_send=lambda _validated: None,
+                    before_dispatch=lambda: None,
                 )
         self.assertEqual(context.exception.code, "transport.payload_too_large")
+
+    def test_codex_read_only_state_fails_before_journal_or_dispatch(self) -> None:
+        original = build_first_contact()
+        reply = cam1.build_ack(
+            original,
+            sender_vendor="claude-code",
+            sender_name="local-worker",
+            sender_session=CLAUDE_SESSION,
+            reply_transport="claude_send_message",
+            reply_address=CLAUDE_SESSION,
+            status_value="received",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            temp = Path(directory)
+            original_path = temp / "hello.cam1.json"
+            reply_path = temp / "ack.cam1.json"
+            write_private(original_path, original)
+            write_private(reply_path, reply)
+            fake_bin = temp / "bin" / "codex"
+            fake_bin.parent.mkdir()
+            fake_bin.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
+            fake_bin.chmod(0o700)
+            state_home = temp / "state"
+            state_home.mkdir(mode=0o700)
+            state_db = state_home / cam1_transport_native.CODEX_STATE_DB_NAME
+            state_db.write_bytes(b"not opened by sqlite")
+            state_db.chmod(0o600)
+            before_send = mock.Mock()
+
+            original_open = os.open
+
+            def deny_state_write(path, flags, *args, **kwargs):
+                if (
+                    path == cam1_transport_native.CODEX_STATE_DB_NAME
+                    and flags & os.O_RDWR
+                ):
+                    raise PermissionError("simulated read-only Codex state")
+                return original_open(path, flags, *args, **kwargs)
+
+            with (
+                mock.patch.dict(os.environ, {"CODEX_HOME": str(state_home)}),
+                mock.patch.object(os, "open", side_effect=deny_state_write),
+                mock.patch.object(cam1_transport.subprocess, "run") as run,
+                self.assertRaises(cam1_transport.TransportError) as context,
+            ):
+                cam1_transport._send_to_codex_queue(
+                    codex_bin=str(fake_bin),
+                    thread=CODEX_THREAD,
+                    envelope_path=str(reply_path),
+                    against_path=str(original_path),
+                    timeout_seconds=1,
+                    before_send=before_send,
+                    before_dispatch=lambda: None,
+                )
+
+        self.assertEqual(context.exception.code, "codex.state_write_access")
+        before_send.assert_not_called()
+        run.assert_not_called()
+
+    def test_codex_state_probe_rejects_unsafe_shapes_and_preserves_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            temp = Path(directory)
+            missing = temp / "missing"
+            missing.mkdir(mode=0o700)
+
+            symlinked = temp / "symlinked"
+            symlinked.mkdir(mode=0o700)
+            target = temp / "target.sqlite"
+            target.write_bytes(b"target")
+            (symlinked / cam1_transport_native.CODEX_STATE_DB_NAME).symlink_to(target)
+
+            nonregular = temp / "nonregular"
+            nonregular.mkdir(mode=0o700)
+            (nonregular / cam1_transport_native.CODEX_STATE_DB_NAME).mkdir()
+
+            for state_home in (missing, symlinked, nonregular):
+                with self.subTest(state_home=state_home):
+                    with (
+                        mock.patch.dict(os.environ, {"CODEX_HOME": str(state_home)}),
+                        self.assertRaises(cam1_transport.TransportError) as context,
+                    ):
+                        cam1_transport_native._require_codex_state_write_access()
+                    self.assertEqual(context.exception.code, "codex.state_write_access")
+
+            writable = temp / "writable"
+            writable.mkdir(mode=0o700)
+            state_db = writable / cam1_transport_native.CODEX_STATE_DB_NAME
+            before = b"byte-stable state probe"
+            state_db.write_bytes(before)
+            state_db.chmod(0o600)
+            with mock.patch.dict(os.environ, {"CODEX_HOME": str(writable)}):
+                cam1_transport_native._require_codex_state_write_access()
+            self.assertEqual(state_db.read_bytes(), before)
 
     def test_codex_nonzero_and_timeout_are_failures(self) -> None:
         original = build_first_contact()
@@ -363,6 +489,10 @@ class TransportCliRoundTripTests(unittest.TestCase):
                 with self.subTest(expected_code=expected_code):
                     with (
                         mock.patch.object(
+                            cam1_transport_native,
+                            "_require_codex_state_write_access",
+                        ),
+                        mock.patch.object(
                             cam1_transport.subprocess,
                             "run",
                             side_effect=outcome
@@ -381,6 +511,7 @@ class TransportCliRoundTripTests(unittest.TestCase):
                             against_path=str(original_path),
                             timeout_seconds=1,
                             before_send=lambda _validated: None,
+                            before_dispatch=lambda: None,
                         )
                     self.assertEqual(context.exception.code, expected_code)
 
@@ -423,6 +554,10 @@ class TransportCliRoundTripTests(unittest.TestCase):
                 with self.subTest(completed=completed):
                     with (
                         mock.patch.object(
+                            cam1_transport_native,
+                            "_require_codex_state_write_access",
+                        ),
+                        mock.patch.object(
                             cam1_transport.subprocess, "run", return_value=completed
                         ),
                         self.assertRaises(cam1_transport.TransportError) as context,
@@ -434,10 +569,79 @@ class TransportCliRoundTripTests(unittest.TestCase):
                             against_path=str(original_path),
                             timeout_seconds=1,
                             before_send=lambda _validated: None,
+                            before_dispatch=lambda: None,
                         )
                     self.assertEqual(
                         context.exception.code, "codex.receipt_unrecognized"
                     )
+
+
+class NativeProductApprovalBoundaryTests(unittest.TestCase):
+    def test_unapproved_native_product_primitives_fail_before_product_io(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            account_home = base / "account"
+            account_home.mkdir(mode=0o700)
+            product = base / "product"
+            marker = base / "executed"
+            product.write_text(
+                f"#!/bin/sh\n/usr/bin/touch {marker}\n",
+                encoding="utf-8",
+            )
+            product.chmod(0o700)
+            envelope = base / "hello.cam1.json"
+            write_private(envelope, build_first_contact())
+            operations = (
+                lambda: asyncio.run(
+                    cam1_transport_native.list_local_peers(
+                        claude_bin=str(product),
+                        timeout_seconds=1,
+                    )
+                ),
+                lambda: asyncio.run(
+                    cam1_transport._preflight_claude_session(
+                        claude_bin=str(product),
+                        session_id=CLAUDE_SESSION,
+                        target=None,
+                        timeout_seconds=1,
+                    )
+                ),
+                lambda: asyncio.run(
+                    cam1_transport._send_to_claude(
+                        claude_bin=str(product),
+                        target=None,
+                        session_id=CLAUDE_SESSION,
+                        envelope_path=str(envelope),
+                        against_path=None,
+                        summary=None,
+                        timeout_seconds=1,
+                        before_send=lambda _validated, _route: None,
+                        before_dispatch=lambda: None,
+                    )
+                ),
+                lambda: cam1_transport._send_to_codex_queue(
+                    codex_bin=str(product),
+                    thread=CODEX_THREAD,
+                    envelope_path="/not/read/envelope.json",
+                    against_path=None,
+                    timeout_seconds=1,
+                    before_send=lambda _validated: None,
+                    before_dispatch=lambda: None,
+                ),
+            )
+            with mock.patch.object(
+                product_approvals,
+                "account_home",
+                return_value=account_home,
+            ):
+                for operation in operations:
+                    with (
+                        self.subTest(operation=operation),
+                        self.assertRaises(cam1_transport.TransportError) as error,
+                    ):
+                        operation()
+                    self.assertEqual(error.exception.code, "product_approval.required")
+            self.assertFalse(marker.exists())
 
 
 if __name__ == "__main__":

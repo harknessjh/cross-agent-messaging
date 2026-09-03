@@ -1,5 +1,8 @@
 # Contributing
 
+> **Audience:** people proposing changes to CAM/1. This is not an onboarding
+> guide; new users should begin with [START HERE](START_HERE.md).
+
 CAM/1 is an experimental interoperability draft. Issues and suggestions are welcome. External code and documentation contributions are not accepted yet while contributor terms are being established; please do not open a pull request.
 
 This temporary boundary preserves clear ownership and the copyright holder's ability to grant separate permissions later. It does not affect noncommercial reuse and modification allowed by [LICENSE](LICENSE). If contribution terms are introduced later, they will be documented before outside code or documentation is accepted.
@@ -11,7 +14,7 @@ This temporary boundary preserves clear ownership and the copyright holder's abi
 - Use synthetic identifiers, paths, receipts, and message bodies in every public artifact.
 - Update the schema, examples, reference tools, and tests together when the wire contract changes.
 - Keep the canonical Codex sender and Claude receiver prompts only in
-  [the first-contact runbook](docs/FIRST_CONTACT.md); link to them instead of
+  [the first-contact runbook](START_HERE.md); link to them instead of
   copying variants into other documents.
 - Keep `tools/cam1_transport.py` narrowly local and send-only. Do not add
   receive, polling, an automatic retry loop, daemon, database, legacy-board,
@@ -60,6 +63,11 @@ canonical first-contact prompts, and follow the
 [public release checklist](docs/PUBLIC_RELEASE_CHECKLIST.md) before a release.
 Do not run a live transport test unless the operator separately authorizes its
 exact same-host recipient, callback, project, and harmless scope.
+
+The optional [authority-neutrality behavioral evaluation](docs/AUTHORITY_NEUTRALITY_EVALUATION.md)
+is a separately authorized maintainer experiment, not a validation command or
+onboarding step. Never run it automatically, in CI, against active project
+agents, or without the operator's explicit model-usage budget.
 
 ## Commit messages
 
