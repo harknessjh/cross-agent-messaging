@@ -1246,13 +1246,18 @@ have changed.
 
 Before removing an eligible fragment, the implementation MUST obtain a bounded
 exclusive lock, re-open and revalidate the same registry object, require a
-non-placeholder direct operator reference, and fsync an exact owner-private
-archive of the complete damaged bytes under `~/CAM/Approvals/`. It MUST preserve
-the registry inode while locked and publish an immutable, owner-private,
-no-follow/no-replace recovery manifest that binds the archive, damaged-ledger,
-verified-prefix, and partial-tail digests and byte counts, reason, and direct
-operator reference. Only after both artifacts are fsynced may it truncate and
-fsync the primary registry to the verified prefix. Both artifacts MUST be
+non-placeholder direct operator reference, and fsync an exact owner-private,
+content-addressed archive of the complete damaged bytes under
+`~/CAM/Approvals/`. Byte-identical recovery occurrences MAY share that archive
+only after its owner-private regular-file safety, byte count, and digest have
+been verified. The implementation MUST preserve the registry inode while locked
+and publish a separate immutable, owner-private, no-follow/no-replace manifest
+for the exact recovery occurrence. That manifest MUST bind its archive; the
+registry device, inode, change time, and modification time; the damaged-ledger,
+verified-prefix, and partial-tail digests and byte counts; the reason; and the
+direct operator reference. Only after both artifacts are fsynced may the
+implementation truncate and fsync the primary registry to the verified prefix.
+Both artifacts MUST be
 re-opened without following links and verified again immediately before
 truncation. After commit, the implementation MUST verify the repaired bytes and
 that the live registry path still names the locked inode. The existing
@@ -1274,21 +1279,34 @@ MUST NOT claim the registry was unchanged. A post-fsync verification failure
 MUST report committed-but-verification-uncertain with exact artifact paths,
 registry identity, expected prefix guards, and the read-only
 `product-recovery-status` reconciliation step. Old mutation guards MUST NOT be
-reused. Evidence names MUST be deterministic for the damaged-ledger digest;
-an interrupted retry MUST reuse matching evidence or refuse mismatched evidence,
-not create duplicate full archives.
+reused. The archive identity MUST be deterministic from the complete damaged
+bytes. The recovery identity and manifest name MUST instead be deterministic
+from the complete occurrence guards, including device, inode, change time, and
+modification time. An interrupted retry of that exact unchanged guard set MUST
+reuse every matching artifact that was already published or refuse mismatched
+evidence. If only the archive was published, the retry MUST reuse it and publish
+the missing occurrence manifest. A byte-identical occurrence whose observable
+filesystem guards differ MUST receive a distinct recovery identity and manifest
+while safely reusing the verified content-addressed archive. If every observable
+guard is identical, the implementation MUST treat the input as the same
+occurrence and refuse conflicting operator context rather than claim an
+unobservable distinction.
 
 The read-only status operation MUST reconcile prepared evidence even when the
 primary ledger is already complete. It MUST use a bounded no-follow scan,
-validate the manifest's canonical timestamp and safe text, bind its canonical
-recovery UUID to both the archive filename and the damaged-ledger digest, verify
-the complete archive plus its prefix and tail segments, and report whether the
-current valid ledger equals or extends that prefix. Unsafe, malformed,
-mismatched, or over-limit evidence MUST fail closed. Reserved pending artifacts
-left by abrupt termination MUST be reported without being removed automatically.
-Cleanup failure after mutation MUST preserve the truthful `committed` or
-`unknown` state and reconciliation handles; it MUST NOT overwrite that result
-with a generic pre-mutation failure.
+validate each manifest's canonical timestamp and safe text, bind the manifest's
+canonical recovery UUID to its occurrence guards, bind the separate archive
+identity and filename to the damaged-ledger digest, verify the complete archive
+plus its prefix and tail segments, and report whether the current valid ledger
+equals or extends that prefix. Reconciliation counts prepared manifests for
+recorded observable recovery occurrences, not distinct content archives;
+multiple occurrence manifests MAY therefore refer to one verified
+byte-identical archive. Unsafe, malformed, mismatched, or
+over-limit evidence MUST fail closed. Reserved pending artifacts left by abrupt
+termination MUST be reported without being removed automatically. Cleanup
+failure after mutation MUST preserve the truthful `committed` or `unknown` state
+and reconciliation handles; it MUST NOT overwrite that result with a generic
+pre-mutation failure.
 
 ### Project identity and location
 

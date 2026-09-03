@@ -38,7 +38,6 @@ from .secure_fs import (
 
 _COPY_CHUNK_BYTES = 1_048_576
 MAX_RECOVERY_REASON_LENGTH = _evidence.MAX_RECOVERY_REASON_LENGTH
-_RECOVERY_NAMESPACE = _evidence.RECOVERY_NAMESPACE
 parse_recovery_manifest = _evidence.parse_recovery_manifest
 
 VerifyPrefix = Callable[[BinaryIO], tuple[list[dict[str, Any]], int]]

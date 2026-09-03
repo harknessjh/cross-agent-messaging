@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import datetime as dt
 import errno
 import fcntl
 import hashlib
@@ -38,6 +39,39 @@ else:
 
 
 class ProductApprovalRecoveryTests(ProductApprovalRecoveryTestCase):
+    def _assert_manifest_registry_identity(
+        self,
+        manifest: dict[str, object],
+        status: dict[str, object],
+    ) -> None:
+        registry_identity = status["recovery"]["registry_identity"]
+        for field in ("device", "inode", "ctime_ns", "mtime_ns"):
+            self.assertEqual(
+                manifest[f"registry_{field}"],
+                registry_identity[field],
+            )
+
+    @staticmethod
+    def _recovery_identifier(status: dict[str, object]) -> str:
+        recovery = status["recovery"]
+        registry_identity = recovery["registry_identity"]
+        return product_approval_recovery._evidence._recovery_id_from_guards(
+            registry_sha256=recovery["registry_sha256"],
+            registry_bytes=recovery["registry_bytes"],
+            registry_device=registry_identity["device"],
+            registry_inode=registry_identity["inode"],
+            registry_ctime_ns=registry_identity["ctime_ns"],
+            registry_mtime_ns=registry_identity["mtime_ns"],
+            verified_prefix_sha256=recovery["verified_prefix_sha256"],
+            verified_prefix_bytes=recovery["verified_prefix_bytes"],
+            verified_prefix_record_count=recovery["verified_prefix_record_count"],
+            verified_prefix_last_record_sha256=recovery[
+                "verified_prefix_last_record_sha256"
+            ],
+            partial_tail_sha256=recovery["partial_tail_sha256"],
+            partial_tail_bytes=recovery["partial_tail_bytes"],
+        )
+
     def test_status_is_read_only_for_missing_empty_and_complete_ledgers(self) -> None:
         missing = product_approvals.approval_recovery_status()
         self.assertEqual(missing["status"], "registry_missing")
@@ -295,7 +329,7 @@ class ProductApprovalRecoveryTests(ProductApprovalRecoveryTestCase):
     def test_recovery_refuses_archive_symlink_without_registry_mutation(self) -> None:
         _prefix, damaged, status = self.damage_registry()
         token = uuid.uuid5(
-            product_approval_recovery._RECOVERY_NAMESPACE,
+            product_approval_recovery._evidence.ARCHIVE_NAMESPACE,
             status["recovery"]["registry_sha256"],
         )
         archive = self.registry.parent / f"product-executables-v1.damaged-{token}.jsonl"
@@ -314,10 +348,7 @@ class ProductApprovalRecoveryTests(ProductApprovalRecoveryTestCase):
 
     def test_recovery_refuses_manifest_symlink_without_registry_mutation(self) -> None:
         _prefix, damaged, status = self.damage_registry()
-        token = uuid.uuid5(
-            product_approval_recovery._RECOVERY_NAMESPACE,
-            status["recovery"]["registry_sha256"],
-        )
+        token = self._recovery_identifier(status)
         manifest = (
             self.registry.parent / f"product-executables-v1.recovery-{token}.json"
         )
@@ -415,6 +446,7 @@ class ProductApprovalRecoveryTests(ProductApprovalRecoveryTestCase):
     ) -> None:
         prefix, damaged, status = self.damage_registry()
         arguments = self.recovery_kwargs(status)
+        arguments["now"] = dt.datetime(2026, 9, 3, 11, 0, tzinfo=dt.UTC)
         with (
             mock.patch.object(
                 product_approval_recovery,
@@ -436,12 +468,59 @@ class ProductApprovalRecoveryTests(ProductApprovalRecoveryTestCase):
             ],
             "prepared",
         )
+        failed_manifest = failed.exception.audit["recovery_manifest"]
+        failed_manifest_path = failed.exception.audit["manifest_path"]
+        failed_archive_path = failed.exception.audit["archive_path"]
+        conflicting_arguments = dict(arguments)
+        conflicting_arguments["reason"] = "different claim for unchanged guards"
+        conflicting_arguments["operator_reference"] = (
+            "different direct operator recovery confirmation"
+        )
+        with self.assertRaises(
+            product_approval_recovery.RecoveryMutationError
+        ) as conflicting:
+            product_approvals.recover_partial_tail(**conflicting_arguments)
+        self.assertEqual(
+            conflicting.exception.code,
+            "product_approval.recovery_evidence_exists",
+        )
+        self.assertEqual(conflicting.exception.audit["mutation_state"], "not_attempted")
+        self.assertEqual(self.registry.read_bytes(), damaged)
         before = sorted(path.name for path in self.registry.parent.iterdir())
-        result = product_approvals.recover_partial_tail(**arguments)
+        retry_arguments = dict(arguments)
+        retry_arguments["now"] = dt.datetime(2026, 9, 3, 11, 5, tzinfo=dt.UTC)
+        result = product_approvals.recover_partial_tail(**retry_arguments)
         after = sorted(path.name for path in self.registry.parent.iterdir())
         self.assertEqual(before, after)
         self.assertEqual(self.registry.read_bytes(), prefix)
         self.assertEqual(result["mutation_state"], "committed")
+        self.assertEqual(result["manifest_path"], failed_manifest_path)
+        self.assertEqual(result["archive_path"], failed_archive_path)
+        self.assertEqual(
+            result["recovery_manifest"]["recovery_id"],
+            failed_manifest["recovery_id"],
+        )
+        self.assertEqual(
+            result["recovery_manifest"]["prepared_at"],
+            failed_manifest["prepared_at"],
+        )
+        self._assert_manifest_registry_identity(result["recovery_manifest"], status)
+        self.assertEqual(
+            len(
+                list(
+                    self.registry.parent.glob("product-executables-v1.damaged-*.jsonl")
+                )
+            ),
+            1,
+        )
+        self.assertEqual(
+            len(
+                list(
+                    self.registry.parent.glob("product-executables-v1.recovery-*.json")
+                )
+            ),
+            1,
+        )
 
     def test_retry_resyncs_manifest_directory_before_truncate(self) -> None:
         prefix, damaged, status = self.damage_registry()
@@ -541,10 +620,7 @@ class ProductApprovalRecoveryTests(ProductApprovalRecoveryTestCase):
 
     def test_evidence_is_reinspected_immediately_before_truncate(self) -> None:
         _prefix, damaged, status = self.damage_registry()
-        token = uuid.uuid5(
-            product_approval_recovery._RECOVERY_NAMESPACE,
-            status["recovery"]["registry_sha256"],
-        )
+        token = self._recovery_identifier(status)
         manifest = (
             self.registry.parent / f"product-executables-v1.recovery-{token}.json"
         )

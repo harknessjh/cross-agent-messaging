@@ -47,15 +47,60 @@ class ProductApprovalRecoveryEvidenceTests(ProductApprovalRecoveryTestCase):
             )
         self.assertEqual(timestamp.exception.code, "product_approval.timestamp")
 
+        recovery = status["recovery"]
+        registry_identity = recovery["registry_identity"]
+        for field in ("device", "inode", "ctime_ns", "mtime_ns"):
+            self.assertEqual(
+                original[f"registry_{field}"],
+                registry_identity[field],
+            )
+
+        archive_identifier = original["archive_file"][
+            len(product_approval_recovery._evidence.ARCHIVE_PREFIX) : -len(
+                product_approval_recovery._evidence.ARCHIVE_SUFFIX
+            )
+        ]
+        self.assertEqual(
+            archive_identifier,
+            str(
+                uuid.uuid5(
+                    product_approval_recovery._evidence.ARCHIVE_NAMESPACE,
+                    original["damaged_registry_sha256"],
+                )
+            ),
+        )
+        self.assertNotEqual(original["recovery_id"], archive_identifier)
+
         different = str(uuid.uuid4())
         with self.assertRaises(product_approvals.ProductApprovalError) as identity:
             product_approval_recovery.parse_recovery_manifest(
-                encoded(
-                    recovery_id=different,
-                    archive_file=(f"product-executables-v1.damaged-{different}.jsonl"),
-                )
+                encoded(recovery_id=different)
             )
         self.assertEqual(identity.exception.code, "product_approval.recovery_manifest")
+
+        with self.assertRaises(product_approvals.ProductApprovalError) as archive:
+            product_approval_recovery.parse_recovery_manifest(
+                encoded(
+                    archive_file=(f"product-executables-v1.damaged-{different}.jsonl")
+                )
+            )
+        self.assertEqual(archive.exception.code, "product_approval.recovery_manifest")
+
+        for field in (
+            "registry_device",
+            "registry_inode",
+            "registry_ctime_ns",
+            "registry_mtime_ns",
+        ):
+            with self.subTest(field=field):
+                with self.assertRaises(product_approvals.ProductApprovalError) as guard:
+                    product_approval_recovery.parse_recovery_manifest(
+                        encoded(**{field: original[field] + 1})
+                    )
+                self.assertEqual(
+                    guard.exception.code,
+                    "product_approval.recovery_manifest",
+                )
 
     def test_manifest_parser_rejects_integral_json_floats(self) -> None:
         _prefix, _damaged, status = self.damage_registry()
@@ -182,7 +227,7 @@ class ProductApprovalRecoveryEvidenceTests(ProductApprovalRecoveryTestCase):
             "later_valid_ledger_extends_prefix",
         )
 
-    def test_reconciliation_binds_prefix_bytes_to_record_count(self) -> None:
+    def test_recovery_identity_binds_prefix_bytes_to_record_count(self) -> None:
         _prefix, _damaged, status = self.damage_registry()
         result = product_approvals.recover_partial_tail(**self.recovery_kwargs(status))
         manifest_path = Path(result["manifest_path"])
@@ -200,7 +245,7 @@ class ProductApprovalRecoveryEvidenceTests(ProductApprovalRecoveryTestCase):
 
         self.assertEqual(
             mismatch.exception.code,
-            "product_approval.recovery_evidence_mismatch",
+            "product_approval.recovery_manifest",
         )
 
     def test_empty_repaired_prefix_is_reconciled(self) -> None:

@@ -112,15 +112,23 @@ Use this checklist against the exact commit proposed for publication. A green so
   without deleting a lock target or weakening transaction semantics.
 - Confirm approval-ledger recovery is never automatic: status must precede a
   directly confirmed mutation with exact identity/full-ledger/prefix/tail
-  guards. Verify the exact owner-private archive bytes and immutable manifest,
-  legacy-reader replay of the repaired approve/revoke-only ledger, unchanged
-  active approvals, deterministic evidence reuse, stale-guard refusal,
-  complete/interior corruption refusal, symlink and permission refusal,
-  concurrent recovery, lock-loss publication races, and truthful interrupted
-  recovery mutation states. Exercise artifact mutation immediately after
-  publication and at the final pre-truncate check, post-commit live-path
-  substitution, cleanup failure, canonical manifest parsing, and bounded
-  reconciliation of hard-crash, empty-prefix, and later-append states.
+  guards. Verify the exact owner-private content-addressed archive bytes and
+  immutable occurrence manifest, including its device/inode/`ctime_ns`/`mtime_ns`
+  binding. Recover byte-identical damage with changed filesystem guards as two
+  occurrences: require one shared verified archive, distinct deterministic
+  recovery IDs and manifests, and a reconciliation count of two. Verify that an
+  exact unchanged crash retry reuses every matching artifact already published,
+  including the archive-only window, while reuse of an old occurrence identity
+  against changed filesystem guards fails without mutation. Also verify
+  legacy-reader replay of
+  the repaired approve/revoke-only ledger, unchanged active approvals,
+  stale-guard refusal, complete/interior corruption refusal, symlink and
+  permission refusal, concurrent recovery, capacity accounting for shared
+  archives versus new occurrence manifests, lock-loss publication races, and
+  truthful interrupted recovery mutation states. Exercise artifact mutation
+  immediately after publication and at the final pre-truncate check, post-commit
+  live-path substitution, cleanup failure, canonical manifest parsing, and
+  bounded reconciliation of hard-crash, empty-prefix, and later-append states.
 - Confirm that project initialization writes only to private Git administrative
   state and the external journal root, linked worktrees share the project UUID,
   and no journal is tracked by Git. Confirm enrollment works after `git init`

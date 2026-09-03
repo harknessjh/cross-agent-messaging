@@ -250,20 +250,29 @@ address that threat and is outside CAM/1's current same-user boundary.
   mutating command requires its exact full-ledger, inode, prefix, and tail guards
   plus a non-placeholder direct operator reference; it reopens under a bounded
   exclusive lock, revalidates the complete prefix and active projection, and
-  fsyncs an exact owner-only archive and immutable prepared-recovery manifest
-  before re-verifying both artifacts and truncating only the incomplete EOF
-  fragment. After truncate and fsync, it verifies both the repaired bytes and
-  that the live registry path still names the locked inode. The primary `/1` ledger
+  fsyncs an exact owner-only, content-addressed archive and a separate immutable
+  occurrence manifest before re-verifying both artifacts and truncating only the
+  incomplete EOF fragment. The occurrence manifest binds device, inode,
+  `ctime_ns`, `mtime_ns`, all existing byte and digest guards, and the direct
+  operator context. An exact unchanged crash retry reuses every matching
+  artifact already published; an archive-only retry publishes the missing
+  manifest. Byte-identical damage with changed observable filesystem guards
+  receives a distinct occurrence manifest and may reuse only the verified
+  archive bytes; an identical guard set with conflicting context fails closed.
+  After truncate and fsync, recovery verifies both the repaired bytes and that
+  the live registry path still names the locked inode. The primary `/1` ledger
   remains approve/revoke-only and active approvals do not change. Complete
-  malformed, noncanonical, digest-invalid, chain-invalid, oversized, or
-  interior corruption remains investigation-only. A lock timeout is a refusal,
-  not permission to bypass the ledger. Once a registry filename is published,
-  a failed lock attempt never unlinks it.
+  malformed, noncanonical, digest-invalid, chain-invalid, oversized, or interior
+  corruption remains investigation-only. A lock timeout is a refusal, not
+  permission to bypass the ledger. Once a registry filename is published, a
+  failed lock attempt never unlinks it.
 - Treat `mutation_state: unknown`, committed verification uncertainty, and
   committed cleanup uncertainty as reconciliation states, not safe failures.
   `product-recovery-status` verifies a bounded set of owner-private,
   non-symlinked prepared manifests and archives against an exact current prefix
-  or later valid ledger and reports stale reserved pending artifacts. Refuse
+  or later valid ledger and reports stale reserved pending artifacts. Its count
+  is the number of prepared manifests for recorded observable recovery
+  occurrences, not the number of distinct archived byte strings. Refuse
   malformed, mismatched, or over-limit evidence rather than guessing.
 - Do not use an unpacked or otherwise unversioned source tree for live sends.
   Offline validation remains available, but live use requires verifiable Git

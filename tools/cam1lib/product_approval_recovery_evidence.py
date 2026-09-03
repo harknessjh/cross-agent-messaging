@@ -46,12 +46,17 @@ MAX_RECOVERY_DIRECTORY_ENTRIES = 1_024
 MANIFEST_INTEGER_FIELDS = (
     "archive_byte_length",
     "damaged_registry_byte_length",
+    "registry_device",
+    "registry_inode",
+    "registry_ctime_ns",
+    "registry_mtime_ns",
     "verified_prefix_byte_length",
     "verified_prefix_record_count",
     "partial_tail_byte_length",
     "partial_tail_fragment_count",
 )
-RECOVERY_NAMESPACE = uuid.UUID("31a657d3-a589-44a9-9f97-d698ef769342")
+ARCHIVE_NAMESPACE = uuid.UUID("31a657d3-a589-44a9-9f97-d698ef769342")
+RECOVERY_NAMESPACE = uuid.UUID("3bd5afd2-5d29-412b-a90c-ddb70cdab0ad")
 READ_FLAGS = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
 CREATE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
 SCHEMA_PATH = (
@@ -64,6 +69,10 @@ SCHEMA_PATH = (
 class PartialTailReport(Protocol):
     registry_sha256: str
     registry_bytes: int
+    registry_device: int
+    registry_inode: int
+    registry_ctime_ns: int
+    registry_mtime_ns: int
     verified_prefix_sha256: str
     verified_prefix_bytes: int
     verified_prefix_record_count: int
@@ -263,8 +272,61 @@ def _prepared_at(value: Any) -> str:
     return text
 
 
+def archive_id(report: PartialTailReport) -> str:
+    """Return the content address for one exact damaged-ledger byte string."""
+
+    return str(uuid.uuid5(ARCHIVE_NAMESPACE, report.registry_sha256))
+
+
+def _recovery_id_from_guards(
+    *,
+    registry_sha256: str,
+    registry_bytes: int,
+    registry_device: int,
+    registry_inode: int,
+    registry_ctime_ns: int,
+    registry_mtime_ns: int,
+    verified_prefix_sha256: str,
+    verified_prefix_bytes: int,
+    verified_prefix_record_count: int,
+    verified_prefix_last_record_sha256: str | None,
+    partial_tail_sha256: str,
+    partial_tail_bytes: int,
+) -> str:
+    guards = {
+        "registry_sha256": registry_sha256,
+        "registry_bytes": registry_bytes,
+        "registry_device": registry_device,
+        "registry_inode": registry_inode,
+        "registry_ctime_ns": registry_ctime_ns,
+        "registry_mtime_ns": registry_mtime_ns,
+        "verified_prefix_sha256": verified_prefix_sha256,
+        "verified_prefix_bytes": verified_prefix_bytes,
+        "verified_prefix_record_count": verified_prefix_record_count,
+        "verified_prefix_last_record_sha256": verified_prefix_last_record_sha256,
+        "partial_tail_sha256": partial_tail_sha256,
+        "partial_tail_bytes": partial_tail_bytes,
+    }
+    return str(uuid.uuid5(RECOVERY_NAMESPACE, _digest(guards)))
+
+
 def recovery_id(report: PartialTailReport) -> str:
-    return str(uuid.uuid5(RECOVERY_NAMESPACE, report.registry_sha256))
+    """Return the deterministic identity of one observed damage guard set."""
+
+    return _recovery_id_from_guards(
+        registry_sha256=report.registry_sha256,
+        registry_bytes=report.registry_bytes,
+        registry_device=report.registry_device,
+        registry_inode=report.registry_inode,
+        registry_ctime_ns=report.registry_ctime_ns,
+        registry_mtime_ns=report.registry_mtime_ns,
+        verified_prefix_sha256=report.verified_prefix_sha256,
+        verified_prefix_bytes=report.verified_prefix_bytes,
+        verified_prefix_record_count=report.verified_prefix_record_count,
+        verified_prefix_last_record_sha256=(report.verified_prefix_last_record_sha256),
+        partial_tail_sha256=report.partial_tail_sha256,
+        partial_tail_bytes=report.partial_tail_bytes,
+    )
 
 
 def _manifest_name(recovery_id: str) -> str:
@@ -319,8 +381,24 @@ def parse_recovery_manifest(raw: bytes) -> dict[str, Any]:
         canonical_identifier = str(uuid.UUID(claimed_identifier))
     except (AttributeError, ValueError):
         canonical_identifier = ""
-    derived_identifier = str(
-        uuid.uuid5(RECOVERY_NAMESPACE, value["damaged_registry_sha256"])
+    derived_archive_identifier = str(
+        uuid.uuid5(ARCHIVE_NAMESPACE, value["damaged_registry_sha256"])
+    )
+    derived_recovery_identifier = _recovery_id_from_guards(
+        registry_sha256=value["damaged_registry_sha256"],
+        registry_bytes=value["damaged_registry_byte_length"],
+        registry_device=value["registry_device"],
+        registry_inode=value["registry_inode"],
+        registry_ctime_ns=value["registry_ctime_ns"],
+        registry_mtime_ns=value["registry_mtime_ns"],
+        verified_prefix_sha256=value["verified_prefix_sha256"],
+        verified_prefix_bytes=value["verified_prefix_byte_length"],
+        verified_prefix_record_count=value["verified_prefix_record_count"],
+        verified_prefix_last_record_sha256=(
+            value["verified_prefix_last_record_sha256"]
+        ),
+        partial_tail_sha256=value["partial_tail_sha256"],
+        partial_tail_bytes=value["partial_tail_byte_length"],
     )
     _bounded_text(
         value["reason"],
@@ -335,8 +413,8 @@ def parse_recovery_manifest(raw: bytes) -> dict[str, Any]:
     _prepared_at(value["prepared_at"])
     if (
         claimed_identifier != canonical_identifier
-        or claimed_identifier != archive_identifier
-        or claimed_identifier != derived_identifier
+        or claimed_identifier != derived_recovery_identifier
+        or archive_identifier != derived_archive_identifier
         or value["archive_sha256"] != value["damaged_registry_sha256"]
         or value["archive_byte_length"] != value["damaged_registry_byte_length"]
         or value["verified_prefix_byte_length"] + value["partial_tail_byte_length"]
@@ -357,9 +435,10 @@ def inspect_recovery_evidence(
 ) -> dict[str, Any]:
     """Inspect deterministic immutable evidence for this exact damaged ledger."""
 
-    identifier = recovery_id(report)
-    archive_name = f"{ARCHIVE_PREFIX}{identifier}{ARCHIVE_SUFFIX}"
-    manifest_name = _manifest_name(identifier)
+    recovery_identifier = recovery_id(report)
+    archive_identifier = archive_id(report)
+    archive_name = f"{ARCHIVE_PREFIX}{archive_identifier}{ARCHIVE_SUFFIX}"
+    manifest_name = _manifest_name(recovery_identifier)
     directory_descriptor = _open_private_directory(
         approvals_directory, label="approval.directory"
     )
@@ -430,13 +509,17 @@ def inspect_recovery_evidence(
             finally:
                 os.close(manifest_descriptor)
             expected = {
-                "recovery_id": identifier,
+                "recovery_id": recovery_identifier,
                 "registry_file": "product-executables-v1.jsonl",
                 "archive_file": archive_name,
                 "archive_sha256": report.registry_sha256,
                 "archive_byte_length": report.registry_bytes,
                 "damaged_registry_sha256": report.registry_sha256,
                 "damaged_registry_byte_length": report.registry_bytes,
+                "registry_device": report.registry_device,
+                "registry_inode": report.registry_inode,
+                "registry_ctime_ns": report.registry_ctime_ns,
+                "registry_mtime_ns": report.registry_mtime_ns,
                 "verified_prefix_sha256": report.verified_prefix_sha256,
                 "verified_prefix_byte_length": report.verified_prefix_bytes,
                 "verified_prefix_record_count": report.verified_prefix_record_count,
@@ -468,7 +551,8 @@ def inspect_recovery_evidence(
                 if archive_present
                 else "absent"
             ),
-            "recovery_id": identifier,
+            "recovery_id": recovery_identifier,
+            "archive_id": archive_identifier,
             "archive_path": str(approvals_directory / archive_name),
             "manifest_path": str(approvals_directory / manifest_name),
             "manifest": manifest,
@@ -560,6 +644,20 @@ def _verify_recovery_archive_entry(
         os.close(descriptor)
 
 
+def _archive_verification_key(manifest: dict[str, Any]) -> tuple[Any, ...]:
+    """Identify one complete archive-and-segment verification obligation."""
+
+    return (
+        manifest["archive_file"],
+        manifest["archive_sha256"],
+        manifest["archive_byte_length"],
+        manifest["verified_prefix_sha256"],
+        manifest["verified_prefix_byte_length"],
+        manifest["partial_tail_sha256"],
+        manifest["partial_tail_byte_length"],
+    )
+
+
 def _discover_recovery_entries(
     directory_descriptor: int,
 ) -> tuple[list[str], list[str], int]:
@@ -627,6 +725,7 @@ def inspect_reconciled_recovery_evidence(
         )
 
         reconciled: list[dict[str, Any]] = []
+        verified_archives: set[tuple[Any, ...]] = set()
         for manifest_name in manifest_names:
             manifest = _read_recovery_manifest_entry(
                 directory_descriptor,
@@ -639,7 +738,10 @@ def inspect_reconciled_recovery_evidence(
                     f"approval recovery manifest filename is inconsistent: {manifest_name}",
                 )
 
-            _verify_recovery_archive_entry(directory_descriptor, manifest)
+            archive_verification = _archive_verification_key(manifest)
+            if archive_verification not in verified_archives:
+                _verify_recovery_archive_entry(directory_descriptor, manifest)
+                verified_archives.add(archive_verification)
 
             archive_name = manifest["archive_file"]
             prefix_length = manifest["verified_prefix_byte_length"]
@@ -766,7 +868,7 @@ def create_recovery_archive(
     directory_descriptor = _open_private_directory(
         approvals_directory, label="approval.directory"
     )
-    identifier = recovery_id(report)
+    identifier = archive_id(report)
     pending_name = f".product-approval-recovery-{uuid.uuid4().hex}.pending"
     archive_name = f"{ARCHIVE_PREFIX}{identifier}{ARCHIVE_SUFFIX}"
     descriptor: int | None = None
@@ -860,7 +962,7 @@ def create_recovery_manifest(
     """Publish immutable prepared-recovery evidence before ledger mutation."""
 
     archive_name = validate_archive_name(archive_file)
-    identifier = archive_name[len(ARCHIVE_PREFIX) : -len(ARCHIVE_SUFFIX)]
+    identifier = recovery_id(report)
     existing = inspect_recovery_evidence(approvals_directory, report=report)
     if existing["status"] == "prepared":
         manifest = existing["manifest"]
@@ -871,8 +973,9 @@ def create_recovery_manifest(
         ):
             raise ProductApprovalError(
                 "product_approval.recovery_evidence_exists",
-                "immutable recovery evidence already exists for these bytes with "
-                f"different operator context: {existing['manifest_path']}",
+                "immutable recovery evidence already exists for this exact observed "
+                "guard set with different operator context: "
+                f"{existing['manifest_path']}",
             )
         return manifest, existing["manifest_path"]
     unsigned = {
@@ -886,6 +989,10 @@ def create_recovery_manifest(
         "archive_byte_length": report.registry_bytes,
         "damaged_registry_sha256": report.registry_sha256,
         "damaged_registry_byte_length": report.registry_bytes,
+        "registry_device": report.registry_device,
+        "registry_inode": report.registry_inode,
+        "registry_ctime_ns": report.registry_ctime_ns,
+        "registry_mtime_ns": report.registry_mtime_ns,
         "verified_prefix_sha256": report.verified_prefix_sha256,
         "verified_prefix_byte_length": report.verified_prefix_bytes,
         "verified_prefix_record_count": report.verified_prefix_record_count,

@@ -403,11 +403,15 @@ and accepts only one incomplete EOF fragment after a fully verified prefix. The
 mutating command reopens under an exclusive lock, checks the inspected
 device/inode, full-ledger SHA-256 and byte count, prefix SHA-256/count/length,
 and tail SHA-256/length, then archives the exact damaged bytes with mode `0600`
-and fsyncs the archive and directory. A separate canonical
-`CAM-PRODUCT-EXECUTABLE-RECOVERY/1` prepared manifest records the immutable
-archive/full/prefix/tail guards plus the reason and operator reference. The
-standalone parser binds the canonical recovery UUID to both the archive name
-and damaged-file digest and applies runtime safe-text and canonical-time rules.
+and fsyncs the archive and directory. Archive identity is content-addressed from
+the complete damaged-ledger digest, so separately observed byte-identical
+occurrences can reference one exact verified archive. A separate canonical
+`CAM-PRODUCT-EXECUTABLE-RECOVERY/1` prepared manifest represents one recovery
+occurrence. Its deterministic recovery ID includes the complete occurrence
+guards, while the manifest records the archive identity; device, inode,
+`ctime_ns`, and `mtime_ns`; the full/prefix/tail guards; and the reason and
+operator reference. The standalone parser verifies the independent recovery
+and archive identities and applies runtime safe-text and canonical-time rules.
 The mutation re-opens and re-verifies both artifacts immediately before
 preserving the same registry inode with an in-place prefix truncation. It then
 checks that the live path still names that inode. The primary approval `/1`
@@ -421,11 +425,17 @@ and its prefix guards let read-only status distinguish the outcome. Failures
 after truncation starts carry `mutation_state: unknown`; final-verification
 failures after truncate+fsync carry `mutation_state: committed` and an exact
 read-only reconciliation command. Cleanup failures retain the committed or
-unknown mutation state rather than replacing it with a safe-failure claim.
-Matching prior evidence is reused on retry. Read-only status performs a bounded
-no-follow scan after a successful or interrupted repair, verifies each exact
-archive and prepared manifest, accepts an exact prefix or later valid extension,
-and reports stale pending artifacts without deleting them.
+unknown mutation state rather than replacing it with a safe-failure claim. An
+exact retry whose filesystem and content guards have not changed reuses every
+matching artifact already published; an archive-only retry creates the missing
+manifest. A recurrence of the same damaged bytes with changed observable
+filesystem guards gets another manifest but reuses the content-addressed
+archive. An identical guard set with different operator context fails closed.
+Read-only status performs a bounded no-follow scan after a successful or
+interrupted repair, verifies each exact archive and prepared occurrence
+manifest, accepts an exact prefix or later valid extension, counts prepared
+manifests for recorded observable occurrences rather than unique archives, and
+reports stale pending artifacts without deleting them.
 
 Approval is attached to the canonical resolved path. A moved `PATH` result or
 retargeted symlink therefore leaves the former canonical-path record active but

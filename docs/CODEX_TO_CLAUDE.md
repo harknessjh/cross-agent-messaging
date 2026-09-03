@@ -196,15 +196,24 @@ reason and `DIRECT_OPERATOR_REFERENCE` placeholders in the command, and run it
 with every guard otherwise unchanged. The command revalidates every guard under
 a bounded exclusive lock,
 archives and fsyncs the exact damaged bytes under `~/CAM/Approvals/`, preserves
-the ledger inode, publishes an immutable prepared-recovery manifest, and
-truncates the primary `/1` ledger to its verified approve/revoke prefix without
-changing active approvals. If it reports mutation `unknown` or committed but
+the ledger inode, publishes an immutable manifest for that exact recovery
+occurrence, and truncates the primary `/1` ledger to its verified approve/revoke
+prefix without changing active approvals. The archive is content-addressed and
+may be shared by later byte-identical damage only after exact verification. The
+manifest has its own deterministic occurrence identity and binds device, inode,
+change and modification times, all byte and digest guards, and the operator
+context. If it reports mutation `unknown` or committed but
 verification or cleanup uncertainty, do not reuse the old guards; run the
 returned read-only reconciliation command. That status command performs a
 bounded no-follow scan of prepared manifests and exact archives even when the
 primary ledger is already valid, and reports whether the current ledger equals
-or extends each recovered prefix. It reports stale pending artifacts but never
-deletes them automatically.
+or extends each recovered prefix. Its count describes prepared manifests for
+recorded observable recovery occurrences, not unique archives. An exact
+unchanged crash retry reuses every matching artifact already published; if only
+the archive exists, it creates the missing manifest. A byte-identical occurrence
+with changed observable filesystem guards gets a distinct manifest. An
+identical guard set with conflicting operator context is refused. Status reports
+stale pending artifacts but never deletes them automatically.
 
 Do not use recovery for a complete malformed line, invalid canonical bytes,
 digest or hash-chain damage, an oversized file or tail, or changed inspection
@@ -1092,13 +1101,15 @@ Operational recovery rules:
   `product-recovery-status`, review its exact identity, complete-file, prefix,
   and tail guards, then obtain direct confirmation before running the returned
   `product-recover-partial-tail` arguments. The command first fsyncs an exact
-  owner-private archive under `~/CAM/Approvals/`, preserves the ledger inode,
-  publishes immutable recovery evidence, and preserves only the verified
-  approve/revoke prefix without changing active approvals. Never use it for a
-  complete malformed line or an invalid prefix. Treat `mutation_state: unknown`
-  or committed-but-verification/cleanup-uncertain as a reconciliation task, not
-  a safe failure or permission to retry old guards. Status verifies bounded
-  prepared evidence against a current exact or later extended valid prefix.
+  owner-private, content-addressed archive under `~/CAM/Approvals/`, preserves
+  the ledger inode, publishes an immutable occurrence-specific recovery
+  manifest, and preserves only the verified approve/revoke prefix without
+  changing active approvals. Never use it for a complete malformed line or an
+  invalid prefix. Treat `mutation_state: unknown` or
+  committed-but-verification/cleanup-uncertain as a reconciliation task, not a
+  safe failure or permission to retry old guards. Status verifies bounded
+  prepared evidence against a current exact or later extended valid prefix and
+  counts occurrence manifests even when they share byte-identical archive data.
 - **A command reports `product_approval.lock_timeout`:** let the bounded account
   approval operation finish, inspect status, and retry. Do not delete or replace
   the registry and do not infer whether the other mutation completed.
