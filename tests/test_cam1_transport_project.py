@@ -14,7 +14,7 @@ import unittest
 from unittest import mock
 
 from tools import cam1, cam1_transport
-from tools.cam1lib import journal, project, state
+from tools.cam1lib import journal, project, state, transport_audit
 
 if __package__:
     from .test_cam1_transport import (
@@ -488,39 +488,39 @@ class ProjectTransportGuardTests(ProjectBoundTransportTestCase):
             recipient = store.snapshot(transaction=transaction).roster.select(
                 "example-coordinator"
             )
-            attempt = cam1_transport._SendAttempt(
+            attempt = transport_audit._SendAttempt(
                 participant_id=recipient.participant_id,
                 transport="codex_queue",
                 route_address=CODEX_THREAD,
             )
             with (
                 mock.patch.object(
-                    cam1_transport.journal,
+                    transport_audit.journal,
                     "replay_records",
                     wraps=real_replay,
                 ) as replay,
                 mock.patch.object(
-                    cam1_transport,
+                    transport_audit,
                     "_require_reply_slot_available",
-                    wraps=cam1_transport._require_reply_slot_available,
+                    wraps=transport_audit._require_reply_slot_available,
                 ) as reply_slot,
                 mock.patch.object(
-                    cam1_transport,
+                    transport_audit,
                     "_require_safe_retry",
-                    wraps=cam1_transport._require_safe_retry,
+                    wraps=transport_audit._require_safe_retry,
                 ) as retry,
                 mock.patch.object(
-                    cam1_transport.causal,
+                    transport_audit.causal,
                     "build_outbound_context",
-                    wraps=cam1_transport.causal.build_outbound_context,
+                    wraps=transport_audit.causal.build_outbound_context,
                 ) as causal_context,
                 mock.patch.object(
-                    cam1_transport.journal,
+                    transport_audit.journal,
                     "decode_exact_message",
                     wraps=real_decode,
                 ) as decode,
             ):
-                cam1_transport._prepare_and_journal_intent(
+                transport_audit._prepare_and_journal_intent(
                     self.binding,
                     store,
                     transaction,
@@ -536,7 +536,7 @@ class ProjectTransportGuardTests(ProjectBoundTransportTestCase):
         self.assertEqual(replay.call_count, 1)
         self.assertEqual(
             replay.call_args.kwargs["event_types"],
-            cam1_transport.causal.CAUSAL_JOURNAL_EVENT_TYPES,
+            transport_audit.causal.CAUSAL_JOURNAL_EVENT_TYPES,
         )
         history = reply_slot.call_args.kwargs["records"]
         self.assertIs(history, retry.call_args.kwargs["records"])

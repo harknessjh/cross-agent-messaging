@@ -42,6 +42,7 @@ REQUIRED_PROFILE_PATHS = (
     "tools/cam1_project.py",
     "tools/cam1_transport.py",
     "tools/cam1_transport_native.py",
+    "tools/cam1_transport_products.py",
     "tools/cam1lib/__init__.py",
     "tools/cam1lib/builders.py",
     "tools/cam1lib/cli.py",
@@ -56,6 +57,7 @@ REQUIRED_PROFILE_PATHS = (
     "tools/cam1lib/protocol.py",
     "tools/cam1lib/routing.py",
     "tools/cam1lib/state.py",
+    "tools/cam1lib/transport_audit.py",
     "tools/cam1lib/validation.py",
 )
 REQUIRED_PROFILE_GLOBS = (

@@ -41,6 +41,7 @@ _SOURCE_PATHS = {
     "tools.cam1_project": "cam1_project.py",
     "tools.cam1_transport": "cam1_transport.py",
     "tools.cam1_transport_native": "cam1_transport_native.py",
+    "tools.cam1_transport_products": "cam1_transport_products.py",
     "tools.cam1_transport_retry": "cam1_transport_retry.py",
     "tools.cam1lib": "cam1lib/__init__.py",
     "tools.cam1lib.builders": "cam1lib/builders.py",
@@ -71,6 +72,7 @@ _SOURCE_PATHS = {
     "tools.cam1lib.state": "cam1lib/state.py",
     "tools.cam1lib.state_projection": "cam1lib/state_projection.py",
     "tools.cam1lib.state_store": "cam1lib/state_store.py",
+    "tools.cam1lib.transport_audit": "cam1lib/transport_audit.py",
     "tools.cam1lib.transport_cli": "cam1lib/transport_cli.py",
     "tools.cam1lib.validation": "cam1lib/validation.py",
 }

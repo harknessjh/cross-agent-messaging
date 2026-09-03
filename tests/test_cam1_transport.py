@@ -17,8 +17,13 @@ from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
-from tools import cam1, cam1_transport, cam1_transport_native
-from tools.cam1lib import project, routing
+from tools import (
+    cam1,
+    cam1_transport,
+    cam1_transport_native,
+    cam1_transport_products,
+)
+from tools.cam1lib import project, routing, transport_audit
 
 ROOT = Path(__file__).resolve().parents[1]
 TRANSPORT_CLI = ROOT / "tools" / "cam1_transport.py"
@@ -111,6 +116,27 @@ def with_agent_view(
         """
     )
     return f"{shebang}\n{prelude}{body}"
+
+
+class TransportFacadeCompatibilityTests(unittest.TestCase):
+    def test_extracted_services_retain_facade_aliases(self) -> None:
+        self.assertIs(
+            cam1_transport.resolve_product_binary,
+            cam1_transport_products.resolve_product_binary,
+        )
+        self.assertIs(
+            cam1_transport._require_current_product_approval,
+            cam1_transport_products._require_current_product_approval,
+        )
+        self.assertIs(cam1_transport._SendAttempt, transport_audit._SendAttempt)
+        self.assertIs(
+            cam1_transport._prepare_and_journal_intent,
+            transport_audit._prepare_and_journal_intent,
+        )
+        self.assertIs(
+            cam1_transport._finalize_accepted_attempt,
+            transport_audit._finalize_accepted_attempt,
+        )
 
 
 class PeerParsingTests(unittest.TestCase):

@@ -10,7 +10,7 @@ import unittest
 from unittest import mock
 
 from tools import cam1, cam1_transport, cam1_transport_native
-from tools.cam1lib import journal, state
+from tools.cam1lib import journal, state, transport_audit
 
 if __package__:
     from .test_cam1_transport import (
@@ -491,7 +491,7 @@ class ProjectTransportOutcomeTests(ProjectBoundTransportTestCase):
 
         with (
             mock.patch.object(
-                cam1_transport,
+                transport_audit,
                 "_utc_now",
                 return_value=(after_expiry, after_expiry_text),
             ),
@@ -568,10 +568,9 @@ class ProjectTransportOutcomeTests(ProjectBoundTransportTestCase):
 
         with (
             mock.patch.object(
-                cam1_transport,
+                transport_audit,
                 "_utc_now",
                 side_effect=[
-                    observed(before_expiry),
                     observed(before_expiry),
                     observed(before_expiry),
                     observed(after_expiry),
