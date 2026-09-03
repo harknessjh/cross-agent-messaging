@@ -84,13 +84,17 @@ local policy state, not message trust or authority.
   or kind drift; do not replace those checks with approval of an unobservable
   short ref. A changed ref alone is not an identity change.
 - Permit only `product-discover` to consult `PATH`. It resolves and fingerprints
-  one candidate without executing it. Before any product subprocess, require a
-  direct operator approval for that canonical path and exact fingerprint in the
-  account-scoped approval ledger. Never auto-approve, auto-revoke, or silently
-  replace an approval. A changed fingerprint requires guarded revocation,
-  rediscovery, and fresh approval.
-- Require an explicit absolute executable path for onboarding, doctor,
-  discovery, preflight, and send operations. Recheck its active approval and
+  one candidate without executing it. Before any product subprocess, require an
+  active account-scoped approval for that canonical path and exact fingerprint.
+  Ordinarily that approval comes directly from the operator. The only automatic
+  exception is the narrowly bounded, one-time migration of an unchanged roster
+  path from a directly confirmed enrollment made by a fixed, clean pre-feature
+  reader when that path has no approval history. Never auto-approve outside that
+  migration, auto-revoke, or silently replace an approval. A changed fingerprint
+  requires guarded revocation, rediscovery, and fresh approval.
+- Require an explicit absolute executable path for product-assisted onboarding,
+  doctor, Claude session or route discovery, preflight, and send operations;
+  `product-discover` is the sole exception. Recheck its active approval and
   bound file identity immediately before every product subprocess. A moved
   symlink or changed `PATH` alias does not retarget an approval: the old
   canonical-path approval remains historical local policy until explicitly

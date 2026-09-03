@@ -463,12 +463,20 @@ After that operator selection:
    this candidate-discovery operation MAY consult `PATH`. If the exact
    canonical path and fingerprint do not already have an active account-scoped
    approval, the implementation MUST display a concise candidate card and wait
-   for direct operator approval before appending an approval. A reserved
-   placeholder is not an operator reference. A changed fingerprint MUST require
-   an explicitly guarded revocation, rediscovery, and new approval; the
-   implementation MUST NOT replace or revoke an approval automatically. This
-   approval establishes product-I/O eligibility only and MUST NOT be treated as
-   session enrollment, message trust, action authority, or permission for
+   for direct operator approval before appending an approval, except for the
+   one-time legacy migration defined below. A reserved placeholder is not an
+   operator reference. The legacy migration MUST require an explicitly supplied
+   absolute roster path from a directly confirmed enrollment proposal, an
+   unchanged fingerprint, an explicitly supported clean pre-feature validation
+   profile, and no prior approval history for that path. It MUST append a normal
+   `grandfathered_roster` approval with the source project, participant, binding
+   generation, enrollment proposal, and prior direct operator reference before
+   product I/O. It MUST NOT apply to new enrollments, metadata-only bindings,
+   unknown profiles, changed files, or bare product names. A changed fingerprint
+   MUST require an explicitly guarded revocation, rediscovery, and new approval;
+   the implementation MUST NOT replace or revoke an approval automatically.
+   Any approval establishes product-I/O eligibility only and MUST NOT be treated
+   as session enrollment, message trust, action authority, or permission for
    workload work.
 3. Using that approved absolute executable, the session observes its own full stable session UUID from trusted product
    session metadata, or asks the operator for the full UUID when that metadata
@@ -644,8 +652,9 @@ that the override was used. That override MAY cover ordinary edits to
 non-executable profile inputs already represented in HEAD; executable Python
 source MUST match regular unconcealed HEAD blobs before import. The override
 MUST NOT cover executable source, missing Git history, a changed profile path
-set, or concealed index state. A source tree without its own Git metadata MAY
-be identified by its content digest and runtime metadata.
+set, or concealed index state. For offline operations only, a source tree
+without its own Git metadata MAY be identified by its content digest and
+runtime metadata.
 A source tree that claims to be a Git checkout but whose state cannot be
 verified MUST fail closed for live use. Offline validation MAY continue with an
 explicit profile report.

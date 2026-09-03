@@ -290,6 +290,42 @@ class DocumentationTests(unittest.TestCase):
             normalized_security,
         )
 
+    def test_sender_prompt_checks_each_endpoint_against_its_own_identity(self) -> None:
+        prompt = _copyable_prompts(START_HERE.read_text(encoding="utf-8"))["codex"]
+        self.assertIn(
+            "this Codex session's current identity, UUID, or Git project conflicts "
+            "with the intended sender identity",
+            prompt,
+        )
+        self.assertIn(
+            "intended Claude recipient conflicts with its confirmed roster identity",
+            prompt,
+        )
+        self.assertNotIn(
+            "intended recipient conflicts with this session's current identity",
+            prompt,
+        )
+
+    def test_public_executable_policy_discloses_the_legacy_exception(self) -> None:
+        readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
+        security = (REPOSITORY_ROOT / "SECURITY.md").read_text(encoding="utf-8")
+        protocol = (REPOSITORY_ROOT / "PROTOCOL.md").read_text(encoding="utf-8")
+        normalized_readme = " ".join(readme.split())
+        normalized_security = " ".join(security.split())
+
+        self.assertIn("one-time migration", readme)
+        self.assertIn(
+            "directly confirmed legacy CAM enrollment", normalized_readme
+        )
+        self.assertIn(
+            "one-time migration of an unchanged roster path", normalized_security
+        )
+        self.assertIn("fixed, clean pre-feature reader", normalized_security)
+        self.assertIn("one-time legacy migration", protocol)
+        self.assertIn("`grandfathered_roster` approval", protocol)
+        self.assertIn("`product-discover` is the sole exception", normalized_security)
+        self.assertIn("For offline operations only", protocol)
+
     def test_causal_ordering_is_optional_journal_only_and_authority_neutral(self) -> None:
         causal = (REPOSITORY_ROOT / "docs" / "CAUSAL_ORDERING.md").read_text(
             encoding="utf-8"

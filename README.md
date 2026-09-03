@@ -30,11 +30,13 @@ The journal makes conversations reviewable by the human operator. Product
 transports still control delivery, and a transport receipt remains distinct
 from recipient handling or completed work.
 
-Before CAM invokes Codex or Claude Code, a non-executing discovery step binds
-the exact product path and fingerprint to a direct, account-scoped operator
-approval. That approval is reused across projects while the executable remains
-unchanged; it authorizes only CAM's use of that executable, not a message body
-or project action.
+Before CAM invokes Codex or Claude Code, a non-executing discovery step normally
+binds the exact product path and fingerprint to a direct, account-scoped
+operator approval. That approval is reused across projects while the executable
+remains unchanged; it authorizes only CAM's use of that executable, not a
+message body or project action. A narrowly bounded one-time migration can
+grandfather an unchanged executable from a directly confirmed legacy CAM
+enrollment; it creates the same auditable approval record before product I/O.
 
 ## Deliberate limits
 
@@ -75,7 +77,9 @@ authority.
 - Git and a local target directory initialized with `git init`;
 - installed Codex and Claude Code commands;
 - one independent session from each product on the same host and user account;
-- direct approval of each unchanged product executable fingerprint; and
+- direct approval of each unchanged product executable fingerprint, except for
+  a qualifying one-time migration from a directly confirmed legacy enrollment;
+  and
 - human confirmation of each session's enrollment identity card.
 
 The target project does not need an initial commit. Start each agent inside the
