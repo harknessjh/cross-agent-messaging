@@ -828,6 +828,19 @@ class ProductApprovalRecoveryTests(unittest.TestCase):
             [str(pending)],
         )
 
+    def test_partial_status_reports_stale_reserved_pending_artifacts(self) -> None:
+        _prefix, damaged, _status = self.damage_registry()
+        pending = self.registry.parent / ".product-approval-recovery-stale.pending"
+        pending.write_bytes(b"stale")
+        pending.chmod(0o600)
+        status = product_approvals.approval_recovery_status()
+        self.assertEqual(status["status"], "recoverable_partial_tail")
+        self.assertEqual(
+            status["existing_recovery_evidence"]["stale_pending_artifacts"],
+            [str(pending)],
+        )
+        self.assertEqual(self.registry.read_bytes(), damaged)
+
     def test_public_transport_facade_exports_recovery_operations(self) -> None:
         self.assertIs(
             cam1_transport.product_recovery_status,

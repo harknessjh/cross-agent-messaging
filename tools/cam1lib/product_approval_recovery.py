@@ -517,6 +517,9 @@ def approval_recovery_status(*, api: RecoveryLedgerApi) -> dict[str, Any]:
             }
         report, _records = _recovery_report_locked(descriptor, api=api)
         evidence = inspect_recovery_evidence(registry.parent, report=report)
+        evidence["stale_pending_artifacts"] = _evidence.inspect_stale_pending_artifacts(
+            registry.parent
+        )
         return {
             "ok": True,
             "status": "recoverable_partial_tail",

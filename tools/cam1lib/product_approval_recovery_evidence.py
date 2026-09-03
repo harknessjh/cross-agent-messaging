@@ -547,6 +547,49 @@ def _verify_recovery_archive_entry(
         os.close(descriptor)
 
 
+def _discover_recovery_entries(
+    directory_descriptor: int,
+) -> tuple[list[str], list[str]]:
+    manifest_names: list[str] = []
+    pending_names: list[str] = []
+    with os.scandir(directory_descriptor) as entries:
+        for entry_count, entry in enumerate(entries, start=1):
+            if entry_count > MAX_RECOVERY_DIRECTORY_ENTRIES:
+                raise ProductApprovalError(
+                    "product_approval.recovery_evidence_scan_limit",
+                    "approval recovery evidence directory exceeds its scan limit",
+                )
+            if entry.name.startswith(
+                ".product-approval-recovery-"
+            ) and entry.name.endswith(".pending"):
+                pending_names.append(entry.name)
+                continue
+            if not entry.name.startswith(MANIFEST_PREFIX):
+                continue
+            manifest_names.append(entry.name)
+            if len(manifest_names) > MAX_RECOVERY_MANIFESTS:
+                raise ProductApprovalError(
+                    "product_approval.recovery_manifest_limit",
+                    "too many approval recovery manifests require reconciliation",
+                )
+    return sorted(manifest_names), sorted(pending_names)
+
+
+def inspect_stale_pending_artifacts(approvals_directory: Path) -> list[str]:
+    """Report, but never remove, reserved pending recovery artifacts."""
+
+    directory_descriptor = _open_private_directory(
+        approvals_directory, label="approval.directory"
+    )
+    try:
+        _manifest_names, pending_names = _discover_recovery_entries(
+            directory_descriptor
+        )
+        return [str(approvals_directory / name) for name in pending_names]
+    finally:
+        os.close(directory_descriptor)
+
+
 def inspect_reconciled_recovery_evidence(
     approvals_directory: Path,
     *,
@@ -564,32 +607,11 @@ def inspect_reconciled_recovery_evidence(
     directory_descriptor = _open_private_directory(
         approvals_directory, label="approval.directory"
     )
-    manifest_names: list[str] = []
-    pending_names: list[str] = []
     try:
-        with os.scandir(directory_descriptor) as entries:
-            for entry_count, entry in enumerate(entries, start=1):
-                if entry_count > MAX_RECOVERY_DIRECTORY_ENTRIES:
-                    raise ProductApprovalError(
-                        "product_approval.recovery_evidence_scan_limit",
-                        "approval recovery evidence directory exceeds its scan limit",
-                    )
-                if entry.name.startswith(
-                    ".product-approval-recovery-"
-                ) and entry.name.endswith(".pending"):
-                    pending_names.append(entry.name)
-                    continue
-                if not entry.name.startswith(MANIFEST_PREFIX):
-                    continue
-                manifest_names.append(entry.name)
-                if len(manifest_names) > MAX_RECOVERY_MANIFESTS:
-                    raise ProductApprovalError(
-                        "product_approval.recovery_manifest_limit",
-                        "too many approval recovery manifests require reconciliation",
-                    )
+        manifest_names, pending_names = _discover_recovery_entries(directory_descriptor)
 
         reconciled: list[dict[str, Any]] = []
-        for manifest_name in sorted(manifest_names):
+        for manifest_name in manifest_names:
             manifest = _read_recovery_manifest_entry(
                 directory_descriptor,
                 manifest_name,
@@ -646,7 +668,7 @@ def inspect_reconciled_recovery_evidence(
             "count": len(reconciled),
             "items": reconciled,
             "stale_pending_artifacts": [
-                str(approvals_directory / name) for name in sorted(pending_names)
+                str(approvals_directory / name) for name in pending_names
             ],
         }
     finally:
