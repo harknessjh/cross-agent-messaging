@@ -158,6 +158,12 @@ class DocumentationTests(unittest.TestCase):
             self.assertEqual(prompt.count("product-discover --vendor"), 1)
             self.assertIn("it must not execute or approve the product", prompt)
             self.assertIn("Do not approve your own card", prompt)
+            self.assertIn(
+                "show me the guarded status and the proposed revoke, rediscover, "
+                "and approve recovery sequence",
+                prompt,
+            )
+            self.assertIn("stop before running any mutating recovery command", prompt)
             self.assertIn("never revoke or replace an approval automatically", prompt)
             self.assertIn("DIRECT_OPERATOR_REFERENCE", prompt)
             self.assertIn("Require doctor to exit zero and report ok:true", prompt)
@@ -348,6 +354,74 @@ class DocumentationTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertNotRegex(detailed_guide, r"Read [^\n]*AGENTS\.md")
+
+    def test_advanced_onboarding_examples_require_approved_product_paths(self) -> None:
+        detailed = (REPOSITORY_ROOT / "docs" / "CODEX_TO_CLAUDE.md").read_text(
+            encoding="utf-8"
+        )
+        bash_blocks = re.findall(r"```bash\n(.*?)```", detailed, re.DOTALL)
+        expected_paths = {
+            "onboarding prepare --vendor claude-code": (
+                "/OPERATOR/APPROVED/ABSOLUTE/PATH/TO/CLAUDE"
+            ),
+            "onboarding prepare --vendor codex": (
+                "/OPERATOR/APPROVED/ABSOLUTE/PATH/TO/CODEX"
+            ),
+            "onboarding inspect-self": "/OPERATOR/APPROVED/ABSOLUTE/PATH/TO/CODEX",
+        }
+        for marker, approved_path in expected_paths.items():
+            with self.subTest(command=marker):
+                matching = [block for block in bash_blocks if marker in block]
+                self.assertEqual(len(matching), 1)
+                self.assertIn(f'--product-bin "{approved_path}"', matching[0])
+        self.assertIn(
+            "Each command requires the operator-approved absolute product executable",
+            detailed,
+        )
+        self.assertNotIn(
+            "absolute `--product-bin` arguments replace proposed values", detailed
+        )
+
+    def test_release_checklist_tracks_transport_and_upgrade_contracts(self) -> None:
+        checklist = (
+            REPOSITORY_ROOT / "docs" / "PUBLIC_RELEASE_CHECKLIST.md"
+        ).read_text(encoding="utf-8")
+        command_section = checklist.split("12 operations, grouped by purpose:", 1)[
+            1
+        ].split("No command may provide", 1)[0]
+        expected_commands = {
+            "doctor",
+            "claude-list",
+            "product-discover",
+            "product-approve",
+            "product-status",
+            "product-recovery-status",
+            "product-recover-partial-tail",
+            "product-revoke",
+            "claude-preflight",
+            "claude-send",
+            "codex-send",
+            "codex-reply",
+        }
+        self.assertEqual(
+            set(re.findall(r"`([a-z][a-z-]+)`", command_section)), expected_commands
+        )
+        required_contracts = (
+            "`product-discover` is the only operation permitted to consult",
+            "`PATH`",
+            "compatibility `plan`, `ready`, and `activate`",
+            "`compatibility.upgrade_required`",
+            "`activated_projection_stale`",
+            "`CAM-CAUSAL/1` context only from the canonical project journal",
+            "`lifecycle_committed: false`",
+            "conversations remain grandfathered",
+            "`delivery_state: not_attempted`",
+            "no unreviewed `WARN` findings",
+            "`tools/cam1_transport_native.py` at 1,299 lines",
+            "`tools/cam1lib/state_projection.py` at 1,206 lines",
+        )
+        for requirement in required_contracts:
+            self.assertIn(requirement, checklist)
 
     def test_behavioral_evaluation_is_explicitly_opt_in_and_bounded(self) -> None:
         evaluation = (

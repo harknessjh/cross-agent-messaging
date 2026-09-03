@@ -76,12 +76,17 @@ Use this checklist against the exact commit proposed for publication. A green so
 - Run the full offline test suite.
 - Compare every documented `tools/cam1.py`, `tools/cam1_project.py`, and
   `tools/cam1_transport.py` invocation with the live `--help` output.
-- Confirm that the canonical `cam1_transport.py` operations are `doctor`,
-  `claude-list`, `claude-preflight`, `claude-send`, and `codex-send`. A
-  compatibility alias must not introduce another behavior, and no command may
-  provide receive, polling, an automatic retry service, daemon, database,
-  board, raw-socket, or remote behavior. The explicit journal-gated retry must
-  remain the only retry path.
+- Confirm that the canonical `cam1_transport.py` command surface contains these
+  12 operations, grouped by purpose:
+  - capability and routing: `doctor`, `claude-list`, `claude-preflight`;
+  - executable approval and guarded recovery: `product-discover`,
+    `product-approve`, `product-status`, `product-recovery-status`,
+    `product-recover-partial-tail`, `product-revoke`; and
+  - live transport: `claude-send`, `codex-send`, and the behavior-identical
+    `codex-reply` compatibility alias.
+  No command may provide receive, polling, an automatic retry service, daemon,
+  database, board, raw-socket, or remote behavior. The explicit journal-gated
+  retry must remain the only retry path.
 - Confirm `cam1.py validation-profile` reports an available deterministic
   digest covering every Python source below `tools/` and non-cache importable
   modules, a concrete HEAD, matching regular profile path sets and bytes,
@@ -96,10 +101,12 @@ Use this checklist against the exact commit proposed for publication. A green so
   `dirty_validator_override`; it is not release evidence and cannot override a
   changed executable Python source, a missing HEAD, a changed profile path set,
   or concealed/sparse index state.
-- Confirm that every live list, preflight, send, and reply requires an
-  operator-approved absolute product executable path; every project preflight,
-  send, and reply must also resolve the bound project. Doctor may discover and
-  report candidate paths but does not approve them.
+- Confirm that `product-discover` is the only operation permitted to consult
+  `PATH`, and that it only resolves and fingerprints a candidate without
+  executing or approving it. Every live doctor, list, preflight, send, and
+  reply requires the applicable operator-approved absolute product executable
+  path; every project preflight, send, and reply must also resolve the bound
+  project.
 - Confirm approval-ledger shared and exclusive locks use a bounded monotonic
   wait and fail closed on timeout. Exercise status and mutation contention
   without deleting a lock target or weakening transaction semantics.
@@ -150,6 +157,24 @@ Use this checklist against the exact commit proposed for publication. A green so
 - Confirm that atomic `state-current.json` rebuilds exclusively from the
   journal, includes enrollment, participant, and lifecycle projections, and
   cannot authorize a message or repair history.
+- Exercise compatibility `plan`, `ready`, and `activate` as one staged,
+  clean-profile workflow. Confirm the plan freezes every non-retired binding
+  and required reader capability; activation refuses incomplete readiness,
+  expiry, profile or roster drift, unsupported capability, and conflicting
+  replay; and no compatibility event grants authority or performs product I/O.
+- Confirm an unsupported active gate fails with
+  `compatibility.upgrade_required` before stateful replay. If activation commits
+  but projection refresh fails, require `activated_projection_stale`, do not
+  retry activation, and rebuild the disposable projection from the canonical
+  journal.
+- With `causal.ordering/1` active, confirm the project-aware adapter derives
+  `CAM-CAUSAL/1` context only from the canonical project journal and never adds
+  it to the wire envelope. Exercise a post-activation stale request or cancel:
+  record one hold with `lifecycle_committed: false`, apply no lifecycle or
+  action state, and keep an exact redelivery held. Confirm pre-activation
+  conversations remain grandfathered and that only an exact
+  `transport.not_accepted` outcome with `delivery_state: not_attempted` is
+  excluded from the potentially dispatched frontier.
 - Exercise enrollment proposal replay, exact-digest confirmation, current
   session/project/profile recheck, supersession, duplicate prepare/confirm
   idempotency, common-name and session collisions, and atomic participant plus
@@ -205,7 +230,12 @@ Use this checklist against the exact commit proposed for publication. A green so
 - Exercise the single-nonce rule: received advances through nonce-null status,
   held advances through a later ACK, and a cancel accepted after a received ACK
   uses nonce-null `status: accepted`.
-- Run the public-release audit with warnings treated as failures.
+- Run the public-release audit and require no unreviewed `WARN` findings. The
+  two explicitly reviewed runtime-size deferrals in this revision are
+  `tools/cam1_transport_native.py` at 1,299 lines and
+  `tools/cam1lib/state_projection.py` at 1,206 lines. Keep both visible in the
+  release evidence, reassess them after any material change, and treat every
+  other or new `WARN` as a release failure.
 - Review dependency licenses and vulnerability status.
 - Obtain an independent technical and security review of the exact staged tree.
 

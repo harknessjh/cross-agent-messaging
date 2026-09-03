@@ -429,7 +429,8 @@ start:
 "/ABSOLUTE/PATH/TO/CAM_CHECKOUT/.venv/bin/python" \
   "/ABSOLUTE/PATH/TO/CAM_CHECKOUT/tools/cam1_project.py" \
   --project-root "/ABSOLUTE/PATH/TO/PROJECT_ROOT" \
-  onboarding prepare --vendor claude-code
+  onboarding prepare --vendor claude-code \
+  --product-bin "/OPERATOR/APPROVED/ABSOLUTE/PATH/TO/CLAUDE"
 ```
 
 Codex prepares from its own session:
@@ -438,18 +439,19 @@ Codex prepares from its own session:
 "/ABSOLUTE/PATH/TO/CAM_CHECKOUT/.venv/bin/python" \
   "/ABSOLUTE/PATH/TO/CAM_CHECKOUT/tools/cam1_project.py" \
   --project-root "/ABSOLUTE/PATH/TO/PROJECT_ROOT" \
-  onboarding prepare --vendor codex
+  onboarding prepare --vendor codex \
+  --product-bin "/OPERATOR/APPROVED/ABSOLUTE/PATH/TO/CODEX"
 ```
 
-Each command discovers its own full UUID from product session metadata when
-available, verifies Git-project membership, resolves an absolute product
-executable candidate, journals a new pending proposal or reuses the identical
-pending proposal, and prints one identity card. For Claude it also selects that
-exact full UUID in fresh Agent View output. Supply `--session-id FULL_UUID`
-only when the current product does not
-expose its UUID to the running agent. Optional `--common-name`,
-`--display-name`, `--role`, and absolute `--product-bin` arguments replace
-proposed values; do not invent missing metadata.
+Each command requires the operator-approved absolute product executable from
+section 3, verifies its active account approval, discovers its own full UUID
+from product session metadata when available, verifies Git-project membership,
+journals a new pending proposal or reuses the identical pending proposal, and
+prints one identity card. For Claude it also selects that exact full UUID in
+fresh Agent View output. Supply `--session-id FULL_UUID` only when the current
+product does not expose its UUID to the running agent. Optional
+`--common-name`, `--display-name`, and `--role` arguments replace proposed
+values; do not invent missing metadata.
 
 The pending proposal is not a participant and cannot be addressed. The agent
 shows the complete `human_card` once and stops. The operator checks the stable
@@ -532,14 +534,15 @@ Git project. Have it inspect itself without changing CAM state:
   --project-root "/ABSOLUTE/PATH/TO/PROJECT_ROOT" \
   onboarding inspect-self \
   --vendor codex \
+  --product-bin "/OPERATOR/APPROVED/ABSOLUTE/PATH/TO/CODEX" \
   --common-name EXISTING_COMMON_NAME
 ```
 
-Use `--vendor claude-code` for Claude. The operator reviews the reported
-project, existing common name, full new session UUID, product label and kind,
-product executable, CAM checkout, and validation profile directly in that new
-session. `inspect-self` is read-only: it neither reserves the name nor changes
-the roster.
+Use `--vendor claude-code` and the operator-approved absolute Claude executable
+for Claude. The operator reviews the reported project, existing common name,
+full new session UUID, product label and kind, product executable, CAM checkout,
+and validation profile directly in that new session. `inspect-self` is
+read-only: it neither reserves the name nor changes the roster.
 
 After that exact inspection is directly confirmed, rebind the existing
 participant. For Codex:
