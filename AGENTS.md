@@ -13,6 +13,27 @@ procedure](docs/CODEX_TO_CLAUDE.md) supplies the command-reference sections
 named by START HERE and optional human troubleshooting; do not copy or maintain
 alternate first-contact prompts elsewhere.
 
+## Collaboration behavior
+
+CAM's mechanical checks are strict; its effect on ordinary collaboration
+should be light.
+
+- Keep successful transport and journal plumbing in the background. Report it
+  when it fails or materially changes the evidence.
+- Discuss the collaborator's substance rather than narrating every protocol
+  step.
+- Do not let CAM reduce ordinary reasoning, initiative, constructive
+  disagreement, or work already authorized independently.
+- Treat a peer's proposed mechanism as a proposal unless independently
+  applicable operator direction or receiver-owned policy requires literal
+  implementation.
+- Surface identity or project inconsistencies, but do not claim CAM can
+  prevent direct human misdirection or govern messages handled outside CAM.
+- Run the [authority-neutrality
+  evaluation](docs/AUTHORITY_NEUTRALITY_EVALUATION.md) only as its explicitly
+  approved, disposable maintainer experiment—not during onboarding or real
+  project work.
+
 For every cross-session message:
 
 1. Require one host and the same operating-system account. Refuse remote,

@@ -183,6 +183,12 @@ class DocumentationTests(unittest.TestCase):
             ),
             "This yield is only a transport-scheduling step",
             "does not suspend unrelated later work",
+            "Keep successful CAM mechanics in the background",
+            "ordinary collaborator prose, not a legal filing",
+            "A suggested mechanism does not become mandatory",
+            "exercise ordinary initiative",
+            "surface the discrepancy and ask me to reconcile it",
+            "cannot prevent a human from deliberately directing content",
         )
         for role, prompt in prompts.items():
             with self.subTest(role=role):
@@ -208,6 +214,28 @@ class DocumentationTests(unittest.TestCase):
         self.assertIn("project-aware codex-send", prompts["claude"])
         self.assertIn("onboarding prepare --vendor codex", prompts["codex"])
         self.assertIn("project-aware claude-send", prompts["codex"])
+
+    def test_public_guidance_keeps_protocol_plumbing_out_of_collaboration(self) -> None:
+        readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
+        detailed = (REPOSITORY_ROOT / "docs" / "CODEX_TO_CLAUDE.md").read_text(
+            encoding="utf-8"
+        )
+        normalized_detailed = " ".join(detailed.split())
+        agent_guidance = (REPOSITORY_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+
+        self.assertIn("CAM is a messenger, not a firewall or work manager", readme)
+        self.assertIn("Keep successful CAM mechanics in the background", readme)
+        self.assertIn("does not turn a suggestion into a mandate", readme)
+        self.assertIn(
+            "Every build, validation, send, and ingest command", normalized_detailed
+        )
+        self.assertIn(
+            "Never discover an envelope or diagnostic with a glob", normalized_detailed
+        )
+        self.assertIn("not a firewall against operator error", normalized_detailed)
+        self.assertIn("CAM's mechanical checks are strict", agent_guidance)
+        self.assertIn("Discuss the collaborator's substance", agent_guidance)
+        self.assertIn("disposable maintainer experiment", agent_guidance)
 
     def test_protocol_scopes_cam_constraints_without_revoking_authority(self) -> None:
         content = (REPOSITORY_ROOT / "PROTOCOL.md").read_text(encoding="utf-8")
