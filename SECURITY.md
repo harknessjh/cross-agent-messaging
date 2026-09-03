@@ -20,7 +20,9 @@ and native product transports outside this profile are unsupported.
 
 CAM/1 operates no broker, daemon, database, queue reader, automatic retry
 service, GUI, or automatic executor. Its required project journal is a private
-audit record, not a delivery mechanism or authority source.
+audit record, not a delivery mechanism or authority source. The reference
+implementation's separate account-scoped executable-approval ledger is also
+local policy state, not message trust or authority.
 
 ## Trust and authorization
 
@@ -81,21 +83,26 @@ audit record, not a delivery mechanism or authority source.
   generation changed, or evidence conflicts, including product session-label
   or kind drift; do not replace those checks with approval of an unobservable
   short ref. A changed ref alone is not an identity change.
-- Treat paths discovered by `doctor` or self-enrollment as candidates until the
-  operator reviews the absolute path on the identity card. Candidate discovery
-  is a bounded bootstrap exception: `doctor` executes read-only version and
-  capability probes, and Claude self-enrollment executes `agents --json`,
-  before that review. Do not run either flow with an untrusted `PATH`; supply a
-  previously reviewed absolute `--product-bin` when available. Every later live
-  operation must use the operator-reviewed absolute Claude or Codex executable
-  and repeat the applicable existence and capability checks. This avoids
-  ordinary `PATH` substitution at the transport boundary but cannot eliminate
-  replacement or time-of-check/time-of-use attacks by the same account.
-- Require project-aware preflight and send operations to match that resolved
-  executable exactly to the participant's confirmed roster value. A missing
-  legacy value and a different path both fail before product I/O; clearing the
-  value intentionally disables live transport until another confirmed metadata
-  update restores it.
+- Permit only `product-discover` to consult `PATH`. It resolves and fingerprints
+  one candidate without executing it. Before any product subprocess, require a
+  direct operator approval for that canonical path and exact fingerprint in the
+  account-scoped approval ledger. Never auto-approve, auto-revoke, or silently
+  replace an approval. A changed fingerprint requires guarded revocation,
+  rediscovery, and fresh approval.
+- Require an explicit absolute executable path for onboarding, doctor,
+  discovery, preflight, and send operations. Recheck its active approval and
+  bound file identity immediately before every product subprocess. A moved
+  symlink or changed `PATH` alias does not retarget an approval: the old
+  canonical-path approval remains historical local policy until explicitly
+  revoked, while the new candidate requires its own approval. These checks
+  reduce accidental substitution but cannot defeat a process already operating
+  as the same account or eliminate every time-of-check/time-of-use race.
+- Require project-aware preflight and send operations to match the executable
+  exactly to the participant's confirmed roster association as well. Account
+  approval and roster association are independent gates. A missing legacy
+  roster value, a different path, a missing approval, or fingerprint drift all
+  fail before product I/O; clearing the roster value intentionally disables live
+  transport until another confirmed metadata update restores it.
 - Minimize and redact session IDs, callbacks, queue IDs, peer listings, working
   directories, and route observations outside their authorized local project.
 - Before every live send, require the selected recipient and claimed sender to
@@ -109,6 +116,14 @@ audit record, not a delivery mechanism or authority source.
 Each supported live project uses an owner-only external journal beneath
 `~/CAM/Journals/<project-slug>--<project-uuid>/`. Its private pointer lives in
 `<git-common-dir>/cam1/project.json`, not in the tracked worktree.
+
+The reference implementation separately stores account-wide executable
+approvals in `~/CAM/Approvals/product-executables-v1.jsonl`. That owner-private,
+append-only hash-chained ledger contains executable paths, fingerprints, and
+operator references. It is shared by CAM projects under the same operating-
+system account, so keep operator references concise and non-secret. It is not a
+project message journal and does not authorize any message body or workload
+action.
 
 Project initialization and enrollment require a Git worktree but not an
 initial commit. They must create no tracked or untracked application-worktree
@@ -220,6 +235,12 @@ address that threat and is outside CAM/1's current same-user boundary.
   may cover ordinary tracked edits to non-executable profile inputs, but never
   executable source, missing or untracked profile paths, or concealed index
   state.
+- Run `product-discover` and complete any required account approval before
+  product-assisted onboarding. Later commands must receive the approved
+  absolute path; they must not fall back to `PATH`. The executable gate applies
+  before product I/O even when a project has not activated the corresponding
+  compatibility feature. Project-gate records document an atomic reader rollout
+  and do not create the account approval or grant action authority.
 - Do not use an unpacked or otherwise unversioned source tree for live sends.
   Offline validation remains available, but live use requires verifiable Git
   revision and clean/dirty state in addition to the content profile.

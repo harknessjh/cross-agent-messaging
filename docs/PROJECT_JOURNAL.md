@@ -59,6 +59,11 @@ projection files with mode `0600`. They resolve the account home from the
 operating-system account record rather than trusting the `HOME` environment
 variable.
 
+Executable approvals live separately in the account-scoped, owner-private
+`~/CAM/Approvals/product-executables-v1.jsonl` ledger. That ledger is reused by
+projects under the same operating-system account. It is not part of this
+project journal, participant roster, or Git worktree.
+
 Do not copy the binding into the tracked worktree, commit the journal, or move
 the journal into a temporary directory. A state-root override is intended for
 tests and explicitly managed local installations; it must be an absolute,
@@ -237,9 +242,10 @@ these concepts separate:
   operator;
 - **session label**: the current human-readable product conversation or
   session name, which may change;
-- **approved product executable**: the absolute executable path displayed in
-  the enrollment card and reviewed by the operator; it is runtime metadata,
-  not participant identity; and
+- **associated product executable**: the absolute path associated with this
+  participant after operator review; it is runtime metadata, not participant
+  identity. A separate active account approval for the same unchanged path and
+  fingerprint is still required before product I/O; and
 - **route observation**: a fresh, tool-derived transient transport address and
   the evidence used to observe it. Claude observations include the Agent View
   session kind and start time, the optional validated Agent View ID (null when
@@ -264,6 +270,13 @@ session must prepare, display, and receive direct confirmation for a fresh card;
 the implementation must not silently rename a previously confirmed proposal.
 
 For normal first contact, each product session inspects and proposes itself.
+Before doing so, it runs the non-executing `product-discover` command. If the
+exact canonical path and fingerprint lack an active account approval, the
+session shows the returned candidate card and waits for direct operator
+approval before running its guarded `product-approve` command. Only
+`product-discover` may consult `PATH`; onboarding receives the approved absolute
+path explicitly.
+
 Codex uses trusted `CODEX_THREAD_ID` session metadata when available. Claude
 Code uses trusted `CLAUDE_CODE_SESSION_ID` metadata when available and
 correlates that full UUID to Agent View. If either full UUID is unavailable to
@@ -436,13 +449,13 @@ preserves participant identity, session binding, and route. A stale
 
 Historical participants may replay with
 `approved_product_executable: null`. Such an entry is retained for audit but is
-not live-ready. After directly reviewing one absolute candidate, record it with
-the same `participant update-metadata --product-bin` command above. Do not
-re-add or rebind the participant and do not rewrite prior journal events.
-Project-aware Claude preflight/send and Codex send compare their resolved CLI
-executable to this recorded path and fail before product I/O when it is absent
-or different. Clearing the path intentionally disables live transport for that
-participant until another directly confirmed metadata update restores it.
+not live-ready. First obtain or verify the account approval for one absolute
+candidate, then record that same path with the `participant update-metadata
+--product-bin` command above. Do not re-add or rebind the participant and do not
+rewrite prior journal events. Project-aware Claude preflight/send and Codex send
+require both the unchanged account approval and an exact match to this recorded
+path before product I/O. Clearing the roster path intentionally disables live
+transport for that participant without revoking the separate account approval.
 
 Use `participant invalidate` when a binding or route becomes questionable and
 `participant retire` when its project role ends. Both append history; neither
@@ -550,6 +563,14 @@ A successful ingest reports `status: validated`, lifecycle state,
 `authorization_evaluated: false`, and `action_authorized: false`. Validation is
 not a recipient acceptance decision and never authorizes the message body.
 
+When the optional `causal.ordering/1` compatibility gate is active, the
+project-aware sender derives non-wire `CAM-CAUSAL/1` context from this same
+journal. Ingest holds a post-activation request or cancel that omits potentially
+dispatched recipient work, records `held_for_clarification`, returns exit status
+`4`, and leaves lifecycle state uncommitted. The record shows shared-journal
+ordering only; it does not prove that an agent read or understood a message and
+does not constrain unrelated work. See [causal ordering](CAUSAL_ORDERING.md).
+
 ## Privacy, retention, and moderation
 
 The journal contains message bodies and capability-like routing metadata. Keep
@@ -558,6 +579,10 @@ apply the operator's retention and backup policy. Ordinary filesystem deletion
 is not guaranteed secure erasure, and product transcripts or queues may retain
 additional copies. The tools do not automatically delete envelope working
 files or journal records.
+
+The separate account approval ledger contains local executable paths,
+fingerprints, and operator references. Protect and retain it as local policy
+state, but do not confuse it with the per-project conversation history.
 
 A future read-only moderator may watch journal appends and alert the operator.
 That facility is deliberately deferred. It must not become a daemon required
