@@ -742,6 +742,7 @@ def recover_partial_tail(
                 "approval registry changed or does not match the inspected recovery guards",
             )
         active_before = api.active_records(records)
+        _evidence.require_recovery_capacity(registry.parent, report=report)
         archive_file, archive_path = _evidence.create_recovery_archive(
             registry.parent,
             source_descriptor=descriptor,
@@ -805,6 +806,19 @@ def recover_partial_tail(
                     "product_approval.recovery_evidence_changed",
                     "approval recovery evidence changed before ledger mutation",
                 )
+            repaired_registry = _range_bytes(
+                descriptor,
+                offset=0,
+                length=current_report.verified_prefix_bytes,
+            )
+            _evidence.inspect_reconciled_recovery_evidence(
+                registry.parent,
+                current_registry=repaired_registry,
+                current_record_sha256s=[
+                    record["record_sha256"] for record in current_records
+                ],
+            )
+            _evidence.sync_recovery_directory(registry.parent)
         except ProductApprovalError as error:
             raise RecoveryMutationError(
                 error.code,

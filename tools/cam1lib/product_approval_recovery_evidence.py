@@ -562,9 +562,10 @@ def _verify_recovery_archive_entry(
 
 def _discover_recovery_entries(
     directory_descriptor: int,
-) -> tuple[list[str], list[str]]:
+) -> tuple[list[str], list[str], int]:
     manifest_names: list[str] = []
     pending_names: list[str] = []
+    entry_count = 0
     with os.scandir(directory_descriptor) as entries:
         for entry_count, entry in enumerate(entries, start=1):
             if entry_count > MAX_RECOVERY_DIRECTORY_ENTRIES:
@@ -585,7 +586,7 @@ def _discover_recovery_entries(
                     "product_approval.recovery_manifest_limit",
                     "too many approval recovery manifests require reconciliation",
                 )
-    return sorted(manifest_names), sorted(pending_names)
+    return sorted(manifest_names), sorted(pending_names), entry_count
 
 
 def inspect_stale_pending_artifacts(approvals_directory: Path) -> list[str]:
@@ -595,7 +596,7 @@ def inspect_stale_pending_artifacts(approvals_directory: Path) -> list[str]:
         approvals_directory, label="approval.directory"
     )
     try:
-        _manifest_names, pending_names = _discover_recovery_entries(
+        _manifest_names, pending_names, _entry_count = _discover_recovery_entries(
             directory_descriptor
         )
         return [str(approvals_directory / name) for name in pending_names]
@@ -621,7 +622,9 @@ def inspect_reconciled_recovery_evidence(
         approvals_directory, label="approval.directory"
     )
     try:
-        manifest_names, pending_names = _discover_recovery_entries(directory_descriptor)
+        manifest_names, pending_names, _entry_count = _discover_recovery_entries(
+            directory_descriptor
+        )
 
         reconciled: list[dict[str, Any]] = []
         for manifest_name in manifest_names:
@@ -694,6 +697,57 @@ def inspect_reconciled_recovery_evidence(
                 str(approvals_directory / name) for name in pending_names
             ],
         }
+    finally:
+        os.close(directory_descriptor)
+
+
+def require_recovery_capacity(
+    approvals_directory: Path,
+    *,
+    report: PartialTailReport,
+) -> None:
+    """Refuse recovery before its immutable evidence could poison later scans."""
+
+    existing = inspect_recovery_evidence(approvals_directory, report=report)
+    additional_archive = int(existing["status"] == "absent")
+    additional_manifest = int(existing["status"] != "prepared")
+    directory_descriptor = _open_private_directory(
+        approvals_directory, label="approval.directory"
+    )
+    try:
+        manifest_names, _pending_names, entry_count = _discover_recovery_entries(
+            directory_descriptor
+        )
+        if len(manifest_names) + additional_manifest > MAX_RECOVERY_MANIFESTS:
+            raise ProductApprovalError(
+                "product_approval.recovery_manifest_limit",
+                "approval recovery would exceed the manifest reconciliation limit",
+            )
+        if (
+            entry_count + additional_archive + additional_manifest
+            > MAX_RECOVERY_DIRECTORY_ENTRIES
+        ):
+            raise ProductApprovalError(
+                "product_approval.recovery_evidence_scan_limit",
+                "approval recovery would exceed the evidence directory scan limit",
+            )
+    finally:
+        os.close(directory_descriptor)
+
+
+def sync_recovery_directory(approvals_directory: Path) -> None:
+    """Commit already verified recovery evidence names before ledger mutation."""
+
+    directory_descriptor = _open_private_directory(
+        approvals_directory, label="approval.directory"
+    )
+    try:
+        os.fsync(directory_descriptor)
+    except OSError:
+        raise ProductApprovalError(
+            "product_approval.recovery_evidence_sync",
+            "approval recovery evidence durability could not be confirmed",
+        ) from None
     finally:
         os.close(directory_descriptor)
 
