@@ -154,9 +154,7 @@ class DocumentationTests(unittest.TestCase):
             self.assertNotIn("docs/FIRST_CONTACT.md", prompt)
             self.assertIn("doctor guidance in section 3", prompt)
             self.assertIn("sections 4, 5", prompt)
-            self.assertIn(
-                "PATH lookup is only for product-discover", prompt
-            )
+            self.assertIn("PATH lookup is only for product-discover", prompt)
             self.assertEqual(prompt.count("product-discover --vendor"), 1)
             self.assertIn("it must not execute or approve the product", prompt)
             self.assertIn("Do not approve your own card", prompt)
@@ -314,9 +312,7 @@ class DocumentationTests(unittest.TestCase):
         normalized_security = " ".join(security.split())
 
         self.assertIn("one-time migration", readme)
-        self.assertIn(
-            "directly confirmed legacy CAM enrollment", normalized_readme
-        )
+        self.assertIn("directly confirmed legacy CAM enrollment", normalized_readme)
         self.assertIn(
             "one-time migration of an unchanged roster path", normalized_security
         )
@@ -326,7 +322,9 @@ class DocumentationTests(unittest.TestCase):
         self.assertIn("`product-discover` is the sole exception", normalized_security)
         self.assertIn("For offline operations only", protocol)
 
-    def test_causal_ordering_is_optional_journal_only_and_authority_neutral(self) -> None:
+    def test_causal_ordering_is_optional_journal_only_and_authority_neutral(
+        self,
+    ) -> None:
         causal = (REPOSITORY_ROOT / "docs" / "CAUSAL_ORDERING.md").read_text(
             encoding="utf-8"
         )
