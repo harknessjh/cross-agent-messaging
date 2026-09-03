@@ -43,6 +43,14 @@ RECOVERY_FORMAT = "CAM-PRODUCT-EXECUTABLE-RECOVERY/1"
 MAX_RECOVERY_REASON_LENGTH = 500
 MAX_RECOVERY_MANIFESTS = 64
 MAX_RECOVERY_DIRECTORY_ENTRIES = 1_024
+MANIFEST_INTEGER_FIELDS = (
+    "archive_byte_length",
+    "damaged_registry_byte_length",
+    "verified_prefix_byte_length",
+    "verified_prefix_record_count",
+    "partial_tail_byte_length",
+    "partial_tail_fragment_count",
+)
 RECOVERY_NAMESPACE = uuid.UUID("31a657d3-a589-44a9-9f97-d698ef769342")
 READ_FLAGS = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
 CREATE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
@@ -291,6 +299,11 @@ def parse_recovery_manifest(raw: bytes) -> dict[str, Any]:
         raise ProductApprovalError(
             "product_approval.recovery_manifest",
             "approval recovery manifest is not canonical JSON",
+        )
+    if any(type(value[field]) is not int for field in MANIFEST_INTEGER_FIELDS):
+        raise ProductApprovalError(
+            "product_approval.recovery_manifest",
+            "approval recovery manifest integer fields must use JSON integers",
         )
     unsigned = dict(value)
     claimed = unsigned.pop("record_sha256")
@@ -629,8 +642,18 @@ def inspect_reconciled_recovery_evidence(
             prefix_length = manifest["verified_prefix_byte_length"]
             prefix_count = manifest["verified_prefix_record_count"]
             prefix_last = manifest["verified_prefix_last_record_sha256"]
+            prefix_record_boundary_matches = (
+                prefix_length == 0
+                and prefix_count == 0
+                or (
+                    0 < prefix_length <= len(current_registry)
+                    and current_registry[prefix_length - 1 : prefix_length] == b"\n"
+                    and current_registry.count(b"\n", 0, prefix_length) == prefix_count
+                )
+            )
             current_prefix_matches = (
                 prefix_length <= len(current_registry)
+                and prefix_record_boundary_matches
                 and hashlib.sha256(
                     memoryview(current_registry)[:prefix_length]
                 ).hexdigest()

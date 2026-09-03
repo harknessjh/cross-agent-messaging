@@ -648,6 +648,40 @@ class ProductApprovalRecoveryTests(unittest.TestCase):
             )
         self.assertEqual(identity.exception.code, "product_approval.recovery_manifest")
 
+    def test_manifest_parser_rejects_integral_json_floats(self) -> None:
+        _prefix, _damaged, status = self.damage_registry()
+        result = product_approvals.recover_partial_tail(**self.recovery_kwargs(status))
+        original = dict(result["recovery_manifest"])
+
+        def encoded(field: str) -> bytes:
+            manifest = dict(original)
+            manifest[field] = float(manifest[field])
+            unsigned = dict(manifest)
+            unsigned.pop("record_sha256")
+            manifest["record_sha256"] = product_approvals._digest(unsigned)
+            return product_approvals._canonical_json(manifest)
+
+        for field in product_approval_recovery._evidence.MANIFEST_INTEGER_FIELDS:
+            with self.subTest(field=field):
+                with self.assertRaises(
+                    product_approvals.ProductApprovalError
+                ) as invalid:
+                    product_approval_recovery.parse_recovery_manifest(encoded(field))
+                self.assertEqual(
+                    invalid.exception.code,
+                    "product_approval.recovery_manifest",
+                )
+
+        manifest_path = Path(result["manifest_path"])
+        manifest_path.write_bytes(encoded("verified_prefix_byte_length"))
+        manifest_path.chmod(0o600)
+        with self.assertRaises(product_approvals.ProductApprovalError) as status_error:
+            product_approvals.approval_recovery_status()
+        self.assertEqual(
+            status_error.exception.code,
+            "product_approval.recovery_manifest",
+        )
+
     def test_committed_cleanup_failure_returns_reconciliation_result(self) -> None:
         prefix, _damaged, status = self.damage_registry()
         real_flock = product_approval_recovery.fcntl.flock
@@ -737,6 +771,27 @@ class ProductApprovalRecoveryTests(unittest.TestCase):
         self.assertEqual(
             evidence["items"][0]["relationship"],
             "later_valid_ledger_extends_prefix",
+        )
+
+    def test_reconciliation_binds_prefix_bytes_to_record_count(self) -> None:
+        _prefix, _damaged, status = self.damage_registry()
+        result = product_approvals.recover_partial_tail(**self.recovery_kwargs(status))
+        manifest_path = Path(result["manifest_path"])
+        manifest = dict(result["recovery_manifest"])
+        manifest["verified_prefix_record_count"] = 0
+        manifest["verified_prefix_last_record_sha256"] = None
+        unsigned = dict(manifest)
+        unsigned.pop("record_sha256")
+        manifest["record_sha256"] = product_approvals._digest(unsigned)
+        manifest_path.write_bytes(product_approvals._canonical_json(manifest))
+        manifest_path.chmod(0o600)
+
+        with self.assertRaises(product_approvals.ProductApprovalError) as mismatch:
+            product_approvals.approval_recovery_status()
+
+        self.assertEqual(
+            mismatch.exception.code,
+            "product_approval.recovery_evidence_mismatch",
         )
 
     def test_empty_repaired_prefix_is_reconciled(self) -> None:
