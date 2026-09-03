@@ -16,6 +16,10 @@ _COMMANDS = {
 _LIVE_TRANSPORT_COMMANDS = frozenset(
     {
         "doctor",
+        "product-discover",
+        "product-approve",
+        "product-status",
+        "product-revoke",
         "claude-list",
         "claude-preflight",
         "claude-send",

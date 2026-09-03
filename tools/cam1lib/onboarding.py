@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 import stat
 import subprocess
 import uuid
@@ -16,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import profile, project, routing
+from . import product_approvals, profile, project, routing
 from .enrollment import EnrollmentProposal
 from .protocol import CamUsageError
 
@@ -40,22 +39,20 @@ def _canonical_uuid(value: str, *, field_name: str) -> str:
 def _resolved_executable(value: str | None, *, vendor: str) -> tuple[str, str]:
     command = _PRODUCT_COMMAND[vendor]
     if value is None:
-        candidate = shutil.which(command)
-        source = "path_candidate"
-    else:
-        supplied = Path(value).expanduser()
-        if not supplied.is_absolute():
-            raise CamUsageError(
-                "onboarding.product_bin_absolute",
-                "an explicitly supplied product executable must be an absolute path",
-            )
-        candidate = str(supplied)
-        source = "explicit_candidate"
-    if candidate is None:
         raise CamUsageError(
             "onboarding.product_bin_missing",
-            f"no {command} executable candidate was found",
+            f"supply the account-approved absolute {command} executable path; "
+            f"use product-discover --vendor {vendor} before onboarding",
         )
+    supplied = Path(value)
+    if not supplied.is_absolute():
+        raise CamUsageError(
+            "onboarding.product_bin_absolute",
+            "the supplied product executable must be an account-approved absolute "
+            "path; PATH lookup is available only through product-discover",
+        )
+    candidate = str(supplied)
+    source = "explicit_candidate"
     try:
         resolved = Path(candidate).resolve(strict=True)
         metadata = resolved.stat(follow_symlinks=False)
@@ -109,6 +106,22 @@ def _claude_agent_view(
     session_id: str,
 ) -> routing.AgentViewSession:
     try:
+        product_approvals.require_approved_executable(
+            vendor="claude-code",
+            product_bin=executable,
+            allow_path_lookup=False,
+        )
+    except product_approvals.ProductApprovalError as error:
+        raise CamUsageError(error.code, error.detail) from error
+    try:
+        # The full content fingerprint above is cached for this one-shot
+        # operation.  Recheck the registry and bound file metadata as close as
+        # possible to the product subprocess without hashing the large binary
+        # a second time.
+        product_approvals.require_approved_metadata(
+            vendor="claude-code",
+            product_bin=executable,
+        )
         completed = subprocess.run(
             [executable, "agents", "--json"],
             check=False,
@@ -255,6 +268,14 @@ def inspect_self(
         observed_kind = discovered.kind
         discovery_source = f"{session_source}+claude_agent_view"
     else:
+        try:
+            product_approvals.require_approved_executable(
+                vendor="codex",
+                product_bin=executable,
+                allow_path_lookup=False,
+            )
+        except product_approvals.ProductApprovalError as error:
+            raise CamUsageError(error.code, error.detail) from error
         try:
             session_context = project.discover_git_context(
                 Path.cwd(), git_bin=binding.git_bin

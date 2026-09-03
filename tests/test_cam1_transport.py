@@ -23,6 +23,7 @@ from tools.cam1lib import project, routing
 ROOT = Path(__file__).resolve().parents[1]
 TRANSPORT_CLI = ROOT / "tools" / "cam1_transport.py"
 PROJECT_CLI = ROOT / "tools" / "cam1_project.py"
+CLI_TEST_HARNESS = ROOT / "tests" / "_cam1_cli_test_harness.py"
 CODEX_THREAD = "00000000-0000-4000-8000-000000000101"
 CLAUDE_SESSION = "00000000-0000-4000-8000-000000000102"
 CODEX_PARTICIPANT = "00000000-0000-4000-8000-000000000201"
@@ -241,8 +242,11 @@ class PeerParsingTests(unittest.TestCase):
         successful_probe = {"ok": True, "exit_code": 0, "output": "test"}
         with (
             mock.patch.object(
-                cam1_transport, "_resolve_binary", return_value="/bin/test"
+                cam1_transport_native,
+                "_approved_binary",
+                return_value=("/bin/test", {"record_id": "test"}),
             ),
+            mock.patch.object(cam1_transport_native, "_require_product_metadata"),
             mock.patch.object(
                 cam1_transport, "_run_probe_before", return_value=successful_probe
             ),
@@ -260,6 +264,7 @@ class PeerParsingTests(unittest.TestCase):
             )
         self.assertFalse(result["ok"])
         self.assertEqual(result["checks"]["mcp_sdk"]["version"], "2.0.9")
+        self.assertTrue(result["live_path_configuration"]["account_approval_verified"])
 
     def test_live_binary_resolution_requires_an_absolute_path(self) -> None:
         for supplied in ("claude", "./claude"):
@@ -270,14 +275,20 @@ class PeerParsingTests(unittest.TestCase):
                     context.exception.code, "claude.absolute_path_required"
                 )
 
-    def test_doctor_requires_and_reports_explicit_live_binary_paths(self) -> None:
+    def test_doctor_requires_account_approved_paths_before_product_io(self) -> None:
         successful_probe = {"ok": True, "exit_code": 0, "output": "test"}
+
+        def approved_path(_value: str, *, label: str) -> tuple[str, dict[str, str]]:
+            path = f"/opt/example/{label}"
+            return path, {"record_id": f"approved-{label}"}
+
         with (
             mock.patch.object(
-                cam1_transport,
-                "_resolve_binary",
-                side_effect=("/opt/example/claude", "/opt/example/codex") * 2,
-            ),
+                cam1_transport_native,
+                "_approved_binary",
+                side_effect=approved_path,
+            ) as resolve_approved,
+            mock.patch.object(cam1_transport_native, "_require_product_metadata"),
             mock.patch.object(
                 cam1_transport, "_run_probe_before", return_value=successful_probe
             ),
@@ -290,23 +301,21 @@ class PeerParsingTests(unittest.TestCase):
                 cam1_transport, "_mcp_sdk_check", return_value=(True, "2.1.0")
             ),
         ):
-            discovered = cam1_transport.doctor(
-                claude_bin="claude", codex_bin="codex", timeout_seconds=1
-            )
-            explicit = cam1_transport.doctor(
+            result = cam1_transport.doctor(
                 claude_bin="/opt/example/claude",
                 codex_bin="/opt/example/codex",
                 timeout_seconds=1,
             )
 
-        self.assertTrue(discovered["prerequisites_ok"])
-        self.assertFalse(discovered["ok"])
-        self.assertEqual(discovered["status"], "operator_path_confirmation_required")
-        self.assertFalse(
-            discovered["live_path_configuration"]["explicit_absolute_paths_supplied"]
+        self.assertEqual(resolve_approved.call_count, 2)
+        self.assertTrue(result["prerequisites_ok"])
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "ready")
+        self.assertTrue(
+            result["live_path_configuration"]["explicit_absolute_paths_supplied"]
         )
         self.assertEqual(
-            discovered["live_path_configuration"]["required_global_arguments"],
+            result["live_path_configuration"]["required_global_arguments"],
             [
                 "--claude-bin",
                 "/opt/example/claude",
@@ -315,12 +324,10 @@ class PeerParsingTests(unittest.TestCase):
             ],
         )
         self.assertEqual(
-            discovered["live_path_configuration"]["copy_paste_flags"],
+            result["live_path_configuration"]["copy_paste_flags"],
             "--claude-bin /opt/example/claude --codex-bin /opt/example/codex",
         )
-        self.assertTrue(explicit["ok"])
-        self.assertEqual(explicit["status"], "ready")
-        self.assertTrue(explicit["live_path_configuration"]["ready"])
+        self.assertTrue(result["live_path_configuration"]["ready"])
 
     def test_doctor_reports_dirty_validation_source_as_send_blocked(self) -> None:
         result = {
@@ -722,7 +729,8 @@ class ProjectBoundTransportTestCase(unittest.TestCase):
     ) -> list[str]:
         command = [
             sys.executable,
-            str(TRANSPORT_CLI),
+            str(CLI_TEST_HARNESS),
+            "transport",
             *live_validation_cli_arguments(),
         ]
         if claude_bin is not None:

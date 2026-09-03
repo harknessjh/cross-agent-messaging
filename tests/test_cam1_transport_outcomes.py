@@ -9,7 +9,7 @@ import json
 import unittest
 from unittest import mock
 
-from tools import cam1, cam1_transport
+from tools import cam1, cam1_transport, cam1_transport_native
 from tools.cam1lib import journal, state
 
 if __package__:
@@ -125,6 +125,10 @@ class ProjectTransportOutcomeTests(ProjectBoundTransportTestCase):
                 "_send_to_codex_queue",
                 side_effect=accepted_send,
             ),
+            mock.patch.object(
+                cam1_transport,
+                "_require_current_product_approval",
+            ),
             self.assertRaises(cam1_transport.TransportError) as context,
         ):
             cam1_transport.send_project_codex(
@@ -181,6 +185,10 @@ class ProjectTransportOutcomeTests(ProjectBoundTransportTestCase):
                 cam1_transport,
                 "_send_to_codex_queue",
                 side_effect=failed_send,
+            ),
+            mock.patch.object(
+                cam1_transport,
+                "_require_current_product_approval",
             ),
             self.assertRaises(cam1_transport.TransportError) as context,
         ):
@@ -487,6 +495,15 @@ class ProjectTransportOutcomeTests(ProjectBoundTransportTestCase):
                 "_utc_now",
                 return_value=(after_expiry, after_expiry_text),
             ),
+            mock.patch.object(
+                cam1_transport_native,
+                "_resolve_binary",
+                side_effect=lambda value, *, label: value,
+            ),
+            mock.patch.object(
+                cam1_transport_native,
+                "_require_product_metadata",
+            ),
             self.assertRaises(cam1_transport.TransportError) as context,
         ):
             asyncio.run(
@@ -561,6 +578,15 @@ class ProjectTransportOutcomeTests(ProjectBoundTransportTestCase):
                     observed(after_expiry),
                 ],
             ),
+            mock.patch.object(
+                cam1_transport_native,
+                "_resolve_binary",
+                side_effect=lambda value, *, label: value,
+            ),
+            mock.patch.object(
+                cam1_transport_native,
+                "_require_product_metadata",
+            ),
             self.assertRaises(cam1_transport.TransportError) as context,
         ):
             asyncio.run(
@@ -584,6 +610,82 @@ class ProjectTransportOutcomeTests(ProjectBoundTransportTestCase):
             context.exception.code,
             "state.observation_expired",
         )
+        self.assertFalse(marker.exists())
+        records = journal.replay_records(self.binding)
+        self.assertEqual(
+            [record["event_type"] for record in records[-3:]],
+            [
+                "message.outbound.intent",
+                state.LIFECYCLE_ROOT_REGISTERED,
+                "transport.not_accepted",
+            ],
+        )
+        self.assertEqual(records[-1]["attributes"]["delivery_state"], "not_attempted")
+
+    def test_final_approval_drift_after_intent_is_not_attempted(self) -> None:
+        self.add_claude_participant()
+        self.add_codex_participant()
+        raw = build_first_contact()
+        envelope = self.private_envelope("approval-drift.cam1.json", raw)
+        marker = self.base / "approval-drift-send.called"
+        claude_bin = self.fake_claude(
+            returned={
+                "success": True,
+                "msg_id": "00000000-0000-4000-8000-000000000900",
+            },
+            expected_message=raw,
+            marker=marker,
+        )
+        self.preflight_tool_correlated_route(claude_bin)
+        metadata_calls = 0
+
+        def metadata_recheck(_value: str, *, label: str) -> None:
+            nonlocal metadata_calls
+            self.assertEqual(label, "claude")
+            metadata_calls += 1
+            if metadata_calls == 4:
+                raise cam1_transport.TransportError(
+                    "product_approval.drift",
+                    "synthetic drift immediately before SendMessage",
+                )
+
+        with (
+            mock.patch.object(
+                cam1_transport,
+                "_require_live_validation_profile",
+                return_value=({"available": True}, False),
+            ),
+            mock.patch.object(
+                cam1_transport_native,
+                "_resolve_binary",
+                side_effect=lambda value, *, label: value,
+            ),
+            mock.patch.object(
+                cam1_transport_native,
+                "_require_product_metadata",
+                side_effect=metadata_recheck,
+            ),
+            self.assertRaises(cam1_transport.TransportError) as error,
+        ):
+            asyncio.run(
+                cam1_transport.send_project_claude(
+                    self.binding,
+                    claude_bin=str(claude_bin),
+                    participant_selector="local-worker",
+                    session_id_guard=CLAUDE_SESSION,
+                    target_guard="local-worker [abcdef]",
+                    envelope_path=str(envelope),
+                    against_path=None,
+                    renewal_of=None,
+                    retry_after_intent=None,
+                    summary=None,
+                    timeout_seconds=10,
+                    **live_validation_arguments(),
+                )
+            )
+
+        self.assertEqual(error.exception.code, "product_approval.drift")
+        self.assertEqual(metadata_calls, 4)
         self.assertFalse(marker.exists())
         records = journal.replay_records(self.binding)
         self.assertEqual(

@@ -20,12 +20,13 @@ from tools.cam1lib.enrollment import EnrollmentStatus
 from tools.cam1lib.protocol import CamUsageError
 from tools.cam1lib.state_store import ParticipantAlreadyEnrolled
 
+CLI_TEST_HARNESS = Path(__file__).resolve().with_name("_cam1_cli_test_harness.py")
+
 if __package__:
     from .test_cam1_project import (
         CLAUDE_SESSION,
         CODEX_SESSION,
         NOW,
-        PROJECT_TOOL,
         ProjectTestCase,
     )
 else:
@@ -33,7 +34,6 @@ else:
         CLAUDE_SESSION,
         CODEX_SESSION,
         NOW,
-        PROJECT_TOOL,
         ProjectTestCase,
     )
 
@@ -502,6 +502,10 @@ class OnboardingInspectionGuardTests(ProjectTestCase):
 
         with (
             mock.patch.object(
+                cam1_project.product_approvals,
+                "begin_operation",
+            ) as begin_operation,
+            mock.patch.object(
                 cam1_project.onboarding,
                 "require_trusted_source",
                 side_effect=blocked,
@@ -521,6 +525,7 @@ class OnboardingInspectionGuardTests(ProjectTestCase):
             )
 
         self.assertEqual(return_code, 2)
+        begin_operation.assert_called_once_with()
         initialize.assert_not_called()
         self.assertEqual(
             emit.call_args.args[0]["error"]["code"], "profile.path_set_mismatch"
@@ -575,7 +580,8 @@ class OnboardingCliTests(ProjectTestCase):
         return subprocess.run(
             [
                 sys.executable,
-                str(PROJECT_TOOL),
+                str(CLI_TEST_HARNESS),
+                "onboarding",
                 *global_arguments,
                 *arguments,
             ],
@@ -805,10 +811,10 @@ class OnboardingCliTests(ProjectTestCase):
         self.assertEqual(len(snapshot.roster.participants), 0)
         self.assertEqual(len(journal.replay_records(binding)), 1)
 
-    def test_path_discovered_executable_can_be_confirmed_by_exact_path(
+    def test_prepare_requires_an_account_approved_absolute_product_path(
         self,
     ) -> None:
-        prepared = self.run_onboarding(
+        missing = self.run_onboarding(
             "onboarding",
             "prepare",
             "--vendor",
@@ -816,31 +822,27 @@ class OnboardingCliTests(ProjectTestCase):
             vendor="codex",
             session_id=CODEX_SESSION,
         )
-        self.assertEqual(prepared.returncode, 0, prepared.stderr)
-        card = json.loads(prepared.stdout)["identity_card"]
+        self.assertEqual(missing.returncode, 2)
         self.assertEqual(
-            card["execution_context"]["product_executable_source"],
-            "path_candidate",
-        )
-        self.assertEqual(
-            card["execution_context"]["product_executable"], str(self.codex_bin)
+            json.loads(missing.stderr)["error"]["code"],
+            "onboarding.product_bin_missing",
         )
 
-        confirmed = self.run_onboarding(
+        relative = self.run_onboarding(
             "onboarding",
-            "confirm",
-            "--proposal-id",
-            card["proposal_id"],
-            "--confirmation-code",
-            card["confirmation_code"],
-            "--operator-reference",
-            "direct confirmation of the PATH-derived card",
+            "prepare",
+            "--vendor",
+            "codex",
+            "--product-bin",
+            "codex",
             vendor="codex",
             session_id=CODEX_SESSION,
         )
-
-        self.assertEqual(confirmed.returncode, 0, confirmed.stderr)
-        self.assertEqual(json.loads(confirmed.stdout)["status"], "enrolled")
+        self.assertEqual(relative.returncode, 2)
+        self.assertEqual(
+            json.loads(relative.stderr)["error"]["code"],
+            "onboarding.product_bin_absolute",
+        )
 
     def test_claude_prepare_discovers_its_own_agent_view_identity(self) -> None:
         claude_bin = self.bin_dir / "claude"
@@ -865,6 +867,8 @@ class OnboardingCliTests(ProjectTestCase):
             "prepare",
             "--vendor",
             "claude-code",
+            "--product-bin",
+            str(claude_bin),
             vendor="claude-code",
             session_id=CLAUDE_SESSION,
         )
@@ -879,7 +883,7 @@ class OnboardingCliTests(ProjectTestCase):
         self.assertNotIn("4321", json.dumps(card))
         self.assertEqual(
             card["execution_context"]["product_executable_source"],
-            "path_candidate",
+            "explicit_candidate",
         )
 
         confirmed = self.run_onboarding(

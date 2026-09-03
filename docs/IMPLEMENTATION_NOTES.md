@@ -365,6 +365,52 @@ roster path before product I/O and recheck it at the pre-dispatch transaction
 boundary. Legacy null paths remain replayable but require a directly confirmed
 metadata update before live use.
 
+Current readers additionally require an account-scoped approval for the exact
+canonical executable and fingerprint before onboarding product discovery,
+`doctor`, list, preflight, or send can perform product I/O. Candidate discovery
+does not execute the product. The private append-only registry lives at the
+account-database home under `CAM/Approvals/product-executables-v1.jsonl`; active
+approval is reusable across projects while unchanged. The fingerprint binds
+the executable SHA-256, size, uid, mode, device, inode, and ctime. Approval
+permits CAM to invoke that unchanged executable for product I/O. It does not
+cover dependencies, authenticate a vendor or session, authorize a message or
+workload action, or establish that the program is trustworthy.
+
+To preserve already adopted local projects without repeating approval prompts,
+automatic grandfathering is limited to unchanged roster paths from confirmed
+enrollment proposals carrying one of an explicit set of clean pre-feature
+validation-profile digests. The migration writes a normal approval record with
+its project, participant, binding generation, source proposal, and prior direct
+operator reference. Unversioned metadata updates and proposals from any newer
+or unknown profile cannot qualify; they must use `product-discover` and direct
+`product-approve`. Grandfathering is available only once for a path with no
+prior approval history.
+
+An executable update at the same canonical path does not overwrite its active
+approval. Discovery reports `replacement_approval_required` with the exact
+active record and fingerprint guards. The operator reviews `product-status`,
+directly confirms the guarded `product-revoke`, rediscovers the executable, and
+then approves the replacement fingerprint. Each transition remains visible in
+the append-only account ledger.
+
+Approval is attached to the canonical resolved path. A moved `PATH` result or
+retargeted symlink therefore leaves the former canonical-path record active but
+cannot reuse it for the replacement target. Listing the vendor's active records,
+guardedly revoking the former canonical path, and approving the newly discovered
+target is explicit cleanup rather than an implicit side effect of discovery.
+
+Every native product-launch primitive establishes the full account approval
+inside the primitive and performs a cheap registry/file-metadata check directly
+before each subprocess or message dispatch. Callers cannot opt out by omitting a
+hook. The native module remains an internal implementation surface; supported
+automation uses the public isolated facades, which also enforce the clean source
+profile before importing live command modules.
+
+The reader capability `local.product-executable-preapproval/1` lets an operator
+stage project-wide rollout evidence through the compatibility kernel. Local
+enforcement is unconditional in any reader that advertises the capability;
+activating or omitting that project gate never enables or disables it.
+
 The target may be an unborn `git init` repository; no initial application
 commit is needed. Project pointers remain below the Git common directory and
 the canonical journal remains below `~/CAM/Journals`, so onboarding creates no

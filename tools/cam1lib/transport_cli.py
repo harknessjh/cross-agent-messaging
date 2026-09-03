@@ -28,6 +28,11 @@ class TransportCliApi:
     doctor: Callable[..., dict[str, Any]]
     require_live_validation_profile: Callable[..., tuple[dict[str, Any], bool]]
     resolve_binary: Callable[..., str]
+    resolve_product_binary: Callable[..., str]
+    discover_product_executable: Callable[..., dict[str, Any]]
+    approve_product_executable: Callable[..., dict[str, Any]]
+    product_executable_status: Callable[..., dict[str, Any]]
+    revoke_product_executable: Callable[..., dict[str, Any]]
     resolve_project: Callable[[argparse.Namespace], Any]
     list_local_peers: Callable[..., Any]
     preflight_project_claude: Callable[..., Any]
@@ -101,6 +106,42 @@ def build_parser(api: TransportCliApi) -> argparse.ArgumentParser:
 
     subparsers.add_parser("doctor", help="check local transport prerequisites")
     subparsers.add_parser("claude-list", help="list eligible local Claude sessions")
+
+    discovery_parser = subparsers.add_parser(
+        "product-discover",
+        help="inspect one executable candidate without running or approving it",
+    )
+    discovery_parser.add_argument(
+        "--vendor", choices=("codex", "claude-code"), required=True
+    )
+    discovery_parser.add_argument("--product-bin")
+
+    approval_parser = subparsers.add_parser(
+        "product-approve", help="approve one unchanged reviewed executable candidate"
+    )
+    approval_parser.add_argument(
+        "--vendor", choices=("codex", "claude-code"), required=True
+    )
+    approval_parser.add_argument("--product-bin", required=True)
+    approval_parser.add_argument("--expected-fingerprint-sha256", required=True)
+    approval_parser.add_argument("--operator-reference", required=True)
+
+    status_parser = subparsers.add_parser(
+        "product-status", help="verify and list account-scoped executable approvals"
+    )
+    status_parser.add_argument("--vendor", choices=("codex", "claude-code"))
+    status_parser.add_argument("--product-bin")
+
+    revoke_parser = subparsers.add_parser(
+        "product-revoke", help="append a guarded revocation for one active approval"
+    )
+    revoke_parser.add_argument(
+        "--vendor", choices=("codex", "claude-code"), required=True
+    )
+    revoke_parser.add_argument("--product-bin", required=True)
+    revoke_parser.add_argument("--approval-record-id", required=True)
+    revoke_parser.add_argument("--expected-fingerprint-sha256", required=True)
+    revoke_parser.add_argument("--operator-reference", required=True)
 
     preflight_parser = subparsers.add_parser(
         "claude-preflight",
@@ -196,6 +237,37 @@ def main(
     args = build_parser(api).parse_args(argv)
     try:
         timeout_seconds = api.bounded_timeout(args.timeout_seconds)
+        if args.command.startswith("product-"):
+            api.require_live_validation_profile(
+                allow_dirty=args.allow_dirty_validator,
+                expected_sha256=args.expected_validation_profile_sha256,
+            )
+            if args.command == "product-discover":
+                result = api.discover_product_executable(
+                    vendor=args.vendor, product_bin=args.product_bin
+                )
+            elif args.command == "product-approve":
+                result = api.approve_product_executable(
+                    vendor=args.vendor,
+                    product_bin=args.product_bin,
+                    expected_fingerprint_sha256=args.expected_fingerprint_sha256,
+                    operator_reference=args.operator_reference,
+                )
+            elif args.command == "product-status":
+                result = api.product_executable_status(
+                    vendor=args.vendor, product_bin=args.product_bin
+                )
+            else:
+                result = api.revoke_product_executable(
+                    vendor=args.vendor,
+                    product_bin=args.product_bin,
+                    approval_record_id=args.approval_record_id,
+                    expected_fingerprint_sha256=args.expected_fingerprint_sha256,
+                    operator_reference=args.operator_reference,
+                )
+            api.emit(api.with_validation_profile(result))
+            return 0
+
         if args.command == "doctor":
             try:
                 api.require_live_validation_profile(
@@ -220,10 +292,21 @@ def main(
                     )
                 )
                 return 2
+            try:
+                binding = api.resolve_project(args)
+            except api.project.ProjectError:
+                binding = None
+            claude_bin = api.resolve_product_binary(
+                args.claude_bin, vendor="claude-code", binding=binding
+            )
+            codex_bin = api.resolve_product_binary(
+                args.codex_bin, vendor="codex", binding=binding
+            )
             result = api.doctor(
-                claude_bin=args.claude_bin,
-                codex_bin=args.codex_bin,
+                claude_bin=claude_bin,
+                codex_bin=codex_bin,
                 timeout_seconds=timeout_seconds,
+                prevalidated=True,
             )
             result["checks"]["validation_profile"] = {"ok": True}
             api.emit(api.with_validation_profile(result))
@@ -234,7 +317,13 @@ def main(
                 allow_dirty=args.allow_dirty_validator,
                 expected_sha256=args.expected_validation_profile_sha256,
             )
-            claude_bin = api.resolve_binary(args.claude_bin, label="claude")
+            try:
+                binding = api.resolve_project(args)
+            except api.project.ProjectError:
+                binding = None
+            claude_bin = api.resolve_product_binary(
+                args.claude_bin, vendor="claude-code", binding=binding
+            )
             protocol, local_peers, unavailable, excluded = asyncio.run(
                 api.list_local_peers(
                     claude_bin=claude_bin, timeout_seconds=timeout_seconds
@@ -263,8 +352,10 @@ def main(
                 allow_dirty=args.allow_dirty_validator,
                 expected_sha256=args.expected_validation_profile_sha256,
             )
-            claude_bin = api.resolve_binary(args.claude_bin, label="claude")
             binding = api.resolve_project(args)
+            claude_bin = api.resolve_product_binary(
+                args.claude_bin, vendor="claude-code", binding=binding
+            )
             result = asyncio.run(
                 api.preflight_project_claude(
                     binding,
@@ -283,8 +374,10 @@ def main(
                 allow_dirty=args.allow_dirty_validator,
                 expected_sha256=args.expected_validation_profile_sha256,
             )
-            claude_bin = api.resolve_binary(args.claude_bin, label="claude")
             binding = api.resolve_project(args)
+            claude_bin = api.resolve_product_binary(
+                args.claude_bin, vendor="claude-code", binding=binding
+            )
             result = asyncio.run(
                 api.send_project_claude(
                     binding,
@@ -312,8 +405,10 @@ def main(
                 allow_dirty=args.allow_dirty_validator,
                 expected_sha256=args.expected_validation_profile_sha256,
             )
-            codex_bin = api.resolve_binary(args.codex_bin, label="codex")
             binding = api.resolve_project(args)
+            codex_bin = api.resolve_product_binary(
+                args.codex_bin, vendor="codex", binding=binding
+            )
             result = api.send_project_codex(
                 binding,
                 codex_bin=codex_bin,

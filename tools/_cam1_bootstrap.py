@@ -60,6 +60,8 @@ _SOURCE_PATHS = {
     "tools.cam1lib.onboarding_cli": "cam1lib/onboarding_cli.py",
     "tools.cam1lib.participants": "cam1lib/participants.py",
     "tools.cam1lib.profile": "cam1lib/profile.py",
+    "tools.cam1lib.product_approvals": "cam1lib/product_approvals.py",
+    "tools.cam1lib.product_executables": "cam1lib/product_executables.py",
     "tools.cam1lib.project": "cam1lib/project.py",
     "tools.cam1lib.project_git": "cam1lib/project_git.py",
     "tools.cam1lib.protocol": "cam1lib/protocol.py",

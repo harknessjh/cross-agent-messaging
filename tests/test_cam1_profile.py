@@ -16,7 +16,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from tools.cam1lib import profile
+from tools.cam1lib import product_executables, profile
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -505,6 +505,92 @@ class ValidationProfileTests(unittest.TestCase):
                     ).get("validation_profile", {}).get("code")
                     self.assertEqual(code, "profile.path_set_mismatch")
                     self.assertFalse(marker.exists())
+
+    def test_dirty_product_commands_cannot_import_or_mutate_approval_state(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            copied, _git_bin = self.initialized_git_profile_root(base / "cam")
+            import_marker = base / "approval-module-imported"
+            account = base / "synthetic-account"
+            account.mkdir(mode=0o700)
+            approval_source = copied / "tools" / "cam1lib" / "product_approvals.py"
+            approval_source.write_bytes(
+                approval_source.read_bytes()
+                + (
+                    "\nfrom pathlib import Path as _InjectedPath\n"
+                    f"_InjectedPath({str(import_marker)!r}).write_text("
+                    "'executed', encoding='utf-8')\n"
+                    "def account_home():\n"
+                    f"    return _InjectedPath({str(account)!r})\n"
+                ).encode()
+            )
+            executable = base / "codex"
+            executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            executable.chmod(0o700)
+            candidate = product_executables.discover_candidate(
+                "codex",
+                str(executable),
+                allow_path_lookup=False,
+            )
+            commands = (
+                (
+                    "product-discover",
+                    "--vendor",
+                    "codex",
+                    "--product-bin",
+                    str(executable),
+                ),
+                (
+                    "product-approve",
+                    "--vendor",
+                    "codex",
+                    "--product-bin",
+                    str(executable),
+                    "--expected-fingerprint-sha256",
+                    candidate.fingerprint_sha256,
+                    "--operator-reference",
+                    "direct synthetic test confirmation",
+                ),
+                (
+                    "product-status",
+                    "--vendor",
+                    "codex",
+                    "--product-bin",
+                    str(executable),
+                ),
+                (
+                    "product-revoke",
+                    "--vendor",
+                    "codex",
+                    "--product-bin",
+                    str(executable),
+                    "--approval-record-id",
+                    "00000000-0000-4000-8000-000000000001",
+                    "--expected-fingerprint-sha256",
+                    candidate.fingerprint_sha256,
+                    "--operator-reference",
+                    "direct synthetic test revocation",
+                ),
+            )
+            for command in commands:
+                with self.subTest(command=command[0]):
+                    completed = subprocess.run(
+                        [sys.executable, "tools/cam1_transport.py", *command],
+                        cwd=copied,
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        timeout=20,
+                    )
+                    self.assertEqual(completed.returncode, 2, completed.stderr)
+                    self.assertEqual(
+                        json.loads(completed.stderr)["error"]["code"],
+                        "profile.executable_source_dirty",
+                    )
+                    self.assertFalse(import_marker.exists())
+                    self.assertFalse((account / "CAM").exists())
 
     def test_legacy_profile_bytecode_cannot_replace_hidden_source(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

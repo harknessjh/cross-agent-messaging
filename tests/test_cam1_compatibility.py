@@ -302,6 +302,24 @@ class CompatibilityKernelTests(unittest.TestCase):
             "compatibility.feature_capability",
         )
 
+    def test_hyphenated_local_safety_feature_can_be_staged(self) -> None:
+        capability = compatibility.PRODUCT_EXECUTABLE_PREAPPROVAL_CAPABILITY
+        plan = self.plan_attributes(
+            required_capabilities=[
+                compatibility.COMPATIBILITY_KERNEL_CAPABILITY,
+                capability,
+            ]
+        )
+        plan["feature_id"] = compatibility.PRODUCT_EXECUTABLE_PREAPPROVAL_FEATURE_ID
+
+        validated = compatibility.validate_plan(plan)
+
+        self.assertEqual(
+            validated.feature_id,
+            compatibility.PRODUCT_EXECUTABLE_PREAPPROVAL_FEATURE_ID,
+        )
+        self.assertIn(capability, validated.required_capabilities)
+
     def test_feature_identifier_and_version_bounds_form_a_legal_capability(
         self,
     ) -> None:

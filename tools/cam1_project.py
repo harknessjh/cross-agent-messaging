@@ -40,6 +40,7 @@ from tools.cam1lib import (
     onboarding,
     onboarding_cli,
     participants,
+    product_approvals,
     profile,
     project,
     state,
@@ -1462,6 +1463,7 @@ def _handle_message(args: argparse.Namespace, binding: project.ProjectBinding) -
 
 
 def main(argv: list[str] | None = None) -> int:
+    product_approvals.begin_operation()
     parser = _parser()
     args = parser.parse_args(argv)
     _validate_arguments(parser, args)

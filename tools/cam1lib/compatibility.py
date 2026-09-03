@@ -31,8 +31,19 @@ CURRENT_READER_EPOCH = 1
 COMPATIBILITY_KERNEL_FEATURE_ID = "compatibility.kernel"
 COMPATIBILITY_KERNEL_FEATURE_VERSION = 1
 COMPATIBILITY_KERNEL_CAPABILITY = "compatibility.kernel/1"
+PRODUCT_EXECUTABLE_PREAPPROVAL_FEATURE_ID = "local.product-executable-preapproval"
+PRODUCT_EXECUTABLE_PREAPPROVAL_CAPABILITY = (
+    f"{PRODUCT_EXECUTABLE_PREAPPROVAL_FEATURE_ID}/1"
+)
+# This capability advertises that the reader enforces an account-local
+# bootstrap prerequisite.  A project may stage it to prove participant rollout,
+# but project-gate activation neither enables nor disables local enforcement.
 SUPPORTED_READER_CAPABILITIES = frozenset(
-    {COMPATIBILITY_KERNEL_CAPABILITY, CAUSAL_CAPABILITY}
+    {
+        COMPATIBILITY_KERNEL_CAPABILITY,
+        CAUSAL_CAPABILITY,
+        PRODUCT_EXECUTABLE_PREAPPROVAL_CAPABILITY,
+    }
 )
 
 COMPATIBILITY_PLAN_EVENT = "compatibility.upgrade.planned"

@@ -49,6 +49,16 @@ prevents kernel support alone from being mistaken for support for an unknown
 feature. See [CAUSAL_ORDERING.md](CAUSAL_ORDERING.md) for that feature's
 journal semantics and held-message runbook.
 
+`local.product-executable-preapproval/1` is also an account-local safety
+prerequisite in readers that advertise it. Those readers enforce executable
+approval before product I/O even when no project compatibility gate is active,
+including pre-project onboarding. A project gate for
+`local.product-executable-preapproval` can prove that every frozen participant
+reported a capable reader before the operator relies on that hygiene
+project-wide; activation does not switch local enforcement on or off. The
+capability therefore must not be described as an authentication flag or a
+message or workload-action authorization flag.
+
 ## Commands
 
 Run these commands from the selected CAM checkout. Replace every uppercase

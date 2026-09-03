@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Copyright © 2026 John Harkness. Licensed under the PolyForm Noncommercial License 1.0.0; see LICENSE.",
+  "title": "CAM product executable approval record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "sequence", "record_id", "recorded_at", "event_type", "previous_record_sha256", "attributes", "record_sha256"],
+  "properties": {
+    "format": {"const": "CAM-PRODUCT-EXECUTABLE-APPROVAL/1"},
+    "sequence": {"type": "integer", "minimum": 1, "maximum": 10000},
+    "record_id": {"type": "string", "format": "uuid"},
+    "recorded_at": {"type": "string", "format": "date-time", "maxLength": 64},
+    "event_type": {"enum": ["product_executable.approved", "product_executable.revoked"]},
+    "previous_record_sha256": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]},
+    "attributes": {
+      "oneOf": [
+        {"$ref": "#/$defs/approval"},
+        {"$ref": "#/$defs/revocation"}
+      ]
+    },
+    "record_sha256": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "vendor": {"enum": ["codex", "claude-code"]},
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^/",
+      "$comment": "The runtime also rejects every Unicode Cc, Cf, Cs, Zl, and Zp code point; this explicit set is schema-level defense in depth.",
+      "not": {"pattern": "[\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff]"}
+    },
+    "singleLine": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^\\S(?:.*\\S)?$",
+      "$comment": "The runtime also rejects every Unicode Cc, Cf, Cs, Zl, and Zp code point; this explicit set is schema-level defense in depth.",
+      "not": {"pattern": "[\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff]"}
+    },
+    "fingerprint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "size", "uid", "mode", "dev", "inode", "ctime_ns"],
+      "properties": {
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "size": {"type": "integer", "minimum": 0, "maximum": 1073741824},
+        "uid": {"type": "integer", "minimum": 0},
+        "mode": {"type": "integer", "minimum": 0, "maximum": 4095},
+        "dev": {"type": "integer", "minimum": 0},
+        "inode": {"type": "integer", "minimum": 0},
+        "ctime_ns": {"type": "integer", "minimum": 0}
+      }
+    },
+    "migration": {
+      "anyOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["project_id", "participant_id", "binding_generation", "source", "source_reference"],
+          "properties": {
+            "project_id": {"type": "string", "format": "uuid"},
+            "participant_id": {"type": "string", "format": "uuid"},
+            "binding_generation": {"type": "integer", "minimum": 1},
+            "source": {"const": "confirmed_enrollment"},
+            "source_reference": {"type": "string", "format": "uuid"}
+          }
+        }
+      ]
+    },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["vendor", "canonical_path", "fingerprint", "fingerprint_sha256", "basis", "operator_reference", "migration"],
+      "properties": {
+        "vendor": {"$ref": "#/$defs/vendor"},
+        "canonical_path": {"$ref": "#/$defs/path"},
+        "fingerprint": {"$ref": "#/$defs/fingerprint"},
+        "fingerprint_sha256": {"$ref": "#/$defs/sha256"},
+        "basis": {"enum": ["operator_confirmation", "grandfathered_roster"]},
+        "operator_reference": {"$ref": "#/$defs/singleLine"},
+        "migration": {"$ref": "#/$defs/migration"}
+      }
+    },
+    "revocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["vendor", "canonical_path", "fingerprint_sha256", "approval_record_id", "operator_reference"],
+      "properties": {
+        "vendor": {"$ref": "#/$defs/vendor"},
+        "canonical_path": {"$ref": "#/$defs/path"},
+        "fingerprint_sha256": {"$ref": "#/$defs/sha256"},
+        "approval_record_id": {"type": "string", "format": "uuid"},
+        "operator_reference": {"$ref": "#/$defs/singleLine"}
+      }
+    }
+  }
+}

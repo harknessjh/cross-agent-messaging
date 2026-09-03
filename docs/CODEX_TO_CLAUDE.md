@@ -154,20 +154,30 @@ python3 -m venv .venv
 If `python3` is outside the supported range, use an installed compatible
 interpreter such as `python3.12`. The tests must finish with `OK`.
 
-Run candidate discovery separately:
+Discover each product executable before onboarding or `doctor`. Discovery may
+consult `PATH`, but it only resolves and fingerprints a candidate; it never
+executes or approves that program:
 
 ```bash
-.venv/bin/python tools/cam1_transport.py doctor
+.venv/bin/python tools/cam1_transport.py product-discover --vendor codex
+.venv/bin/python tools/cam1_transport.py product-discover --vendor claude-code
 ```
 
-This first invocation is expected to exit nonzero. It may resolve the current
-`PATH` for diagnosis and executes bounded read-only version and capability
-probes against the resulting candidates. It
-reports `"prerequisites_ok":true`, exact candidates under `checks`, and
-copy/paste-safe `live_path_configuration.copy_paste_flags`, but remains
-`"ok":false` until both paths are supplied explicitly. The operator must
-inspect and approve those absolute paths, then rerun `doctor` with the reported
-global flags, for example:
+Each command returns a concise candidate card, an exact canonical target, a
+fingerprint, and `approval_command`. The operator checks the displayed vendor,
+path, SHA-256, size, owner, mode, device, inode, and ctime, then directly
+confirms whether to run that exact approval command after replacing
+`DIRECT_OPERATOR_REFERENCE`. Do not let an agent approve its own discovery
+card. Approval is normally once per unchanged executable fingerprint for the
+operating-system account, not once per project or session.
+
+The approval registry is the owner-private, append-only, hash-chained file
+`~/CAM/Approvals/product-executables-v1.jsonl`, where `~` is obtained from the
+account database rather than the `HOME` environment variable. `product-status`
+verifies and reports active records without executing a product. A guarded
+`product-revoke` appends a revocation; it never rewrites approval history.
+
+After both approvals, run `doctor` with the returned absolute paths:
 
 ```bash
 .venv/bin/python tools/cam1_transport.py \
@@ -176,12 +186,52 @@ global flags, for example:
   doctor
 ```
 
-Only that run may report `"ok":true`. Pass the approved Claude
-path explicitly to every live
-`claude-list`, `claude-preflight`, and `claude-send` call, and the approved
-Codex path explicitly to every live `codex-send` call. A `PATH` lookup is not
-transport authority, and an approved path remains subject to same-user
-replacement between checking and execution.
+`doctor`, `claude-list`, `claude-preflight`, `claude-send`, `codex-send`, and
+product-assisted onboarding all fail before product I/O unless the resolved
+target has an unchanged active account approval. Pass the approved Claude path
+explicitly to every live Claude command and the approved Codex path explicitly
+to every live Codex command. A `PATH` result is only a discovery candidate; it
+never makes a product executable eligible to run.
+
+The full content hash is checked once per executable in a one-shot operation.
+The helper then rechecks the approval registry and the bound non-content file
+identity immediately before each product subprocess; if the registry changed,
+it is fully replayed before reuse. Path or fingerprint drift fails closed and
+requires guarded replacement of the old approval. If `product-discover` reports
+`replacement_approval_required`, follow its exact recovery sequence: inspect
+`product-status`; directly confirm the returned `product-revoke` command, which
+includes the active record ID and old fingerprint as guards; run
+`product-discover` again; then directly approve the new fingerprint. Approval
+never silently overwrites an active record. These checks narrow same-user
+replacement risk but cannot eliminate the final check-to-exec race.
+
+`doctor` and accepted send output identify the approval record, record digest,
+candidate fingerprint, vendor, and canonical path that guarded the operation.
+This is causal audit evidence, not proof of product authorship or trust.
+
+Approvals follow the canonical resolved target, not a `PATH` entry or symlink
+alias. If `PATH` starts selecting another executable, or an alias is retargeted,
+the old canonical-path approval remains visible history but does not approve the
+new target. Run `product-status --vendor VENDOR` to find the old active record,
+use its canonical path, record ID, and fingerprint in a directly confirmed
+guarded `product-revoke`, then discover and approve the new target. Do not assume
+that approving a new canonical path revokes an old one.
+
+Existing projects can perform one automatic migration only when an explicitly
+supplied absolute roster path comes from a directly confirmed enrollment made
+by a known clean pre-feature reader. For example, a project-aware
+`--claude-bin /EXACT/LEGACY/ROSTER/PATH claude-list` invokes that migration before
+Claude I/O. The resulting approval has basis `grandfathered_roster` and records
+the source project, participant, binding generation, and enrollment proposal.
+New enrollments, metadata-only bindings, unknown validation profiles, changed
+files, and bare product names never qualify; use the candidate-card approval
+flow instead.
+
+The fingerprint covers the executable file and its canonical path metadata.
+Approval permits CAM to invoke that unchanged executable for product I/O. It
+does not cover dynamically loaded dependencies, authenticate the vendor or
+agent, authorize a message or workload action, or establish that the program
+is trustworthy.
 
 `validation-profile` reports a deterministic digest of every Python source
 below `tools/`, the schemas, runtime requirements, and importable binary or
