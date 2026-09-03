@@ -95,6 +95,7 @@ class DocumentationTests(unittest.TestCase):
             "PROTOCOL.md",
             "SECURITY.md",
             "docs/CODEX_TO_CLAUDE.md",
+            "docs/CAUSAL_ORDERING.md",
             "docs/PROJECT_JOURNAL.md",
             "docs/PUBLIC_RELEASE_CHECKLIST.md",
         )

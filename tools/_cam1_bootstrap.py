@@ -44,6 +44,7 @@ _SOURCE_PATHS = {
     "tools.cam1_transport_retry": "cam1_transport_retry.py",
     "tools.cam1lib": "cam1lib/__init__.py",
     "tools.cam1lib.builders": "cam1lib/builders.py",
+    "tools.cam1lib.causal": "cam1lib/causal.py",
     "tools.cam1lib.cli": "cam1lib/cli.py",
     "tools.cam1lib.compatibility": "cam1lib/compatibility.py",
     "tools.cam1lib.compatibility_cli": "cam1lib/compatibility_cli.py",

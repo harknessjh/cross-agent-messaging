@@ -41,7 +41,8 @@ Every plan and gate must require both `compatibility.kernel/1` and its own
 `causal.ordering` version `1` requires `causal.ordering/1`. A participant cannot
 record readiness until its reader advertises every required capability. This
 prevents kernel support alone from being mistaken for support for an unknown
-feature.
+feature. See [CAUSAL_ORDERING.md](CAUSAL_ORDERING.md) for that feature's
+journal semantics and held-message runbook.
 
 ## Commands
 

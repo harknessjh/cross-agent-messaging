@@ -130,6 +130,32 @@ class ValidationProfileTests(unittest.TestCase):
             "cam1lib/compatibility.py",
         )
 
+    def test_profile_closes_over_causal_enforcement_code_and_schema(self) -> None:
+        expected = {
+            "schemas/cam-causal-context-1.schema.json",
+            "tools/cam1lib/causal.py",
+        }
+        profiled = {
+            path.relative_to(ROOT).as_posix() for path in profile._profile_paths(ROOT)
+        }
+        self.assertLessEqual(expected, profiled)
+        self.assertEqual(
+            profile._cam1_bootstrap._SOURCE_PATHS["tools.cam1lib.causal"],
+            "cam1lib/causal.py",
+        )
+
+        for relative in sorted(expected):
+            with self.subTest(relative=relative), tempfile.TemporaryDirectory() as root:
+                copied = self.copied_profile_root(Path(root))
+                before = profile.build_validation_profile(copied)
+                path = copied / relative
+                path.write_bytes(path.read_bytes() + b"\n")
+                after = profile.build_validation_profile(copied)
+                self.assertNotEqual(
+                    before.validation_profile_sha256,
+                    after.validation_profile_sha256,
+                )
+
     def test_profile_reports_runtime_outside_the_source_digest(self) -> None:
         report = profile.validation_profile_report()
         self.assertTrue(report["available"])

@@ -22,6 +22,7 @@ from typing import Any, cast
 
 from jsonschema import Draft202012Validator, FormatChecker
 
+from .causal import CAUSAL_CAPABILITY
 from .errors import ProjectError
 from .participants import Participant, ParticipantRoster, ParticipantStatus
 
@@ -30,7 +31,9 @@ CURRENT_READER_EPOCH = 1
 COMPATIBILITY_KERNEL_FEATURE_ID = "compatibility.kernel"
 COMPATIBILITY_KERNEL_FEATURE_VERSION = 1
 COMPATIBILITY_KERNEL_CAPABILITY = "compatibility.kernel/1"
-SUPPORTED_READER_CAPABILITIES = frozenset({COMPATIBILITY_KERNEL_CAPABILITY})
+SUPPORTED_READER_CAPABILITIES = frozenset(
+    {COMPATIBILITY_KERNEL_CAPABILITY, CAUSAL_CAPABILITY}
+)
 
 COMPATIBILITY_PLAN_EVENT = "compatibility.upgrade.planned"
 COMPATIBILITY_READINESS_EVENT = "compatibility.participant.ready"

@@ -195,7 +195,7 @@ class CompatibilityKernelTests(unittest.TestCase):
             projection["compatibility"]["reader"],
             {
                 "epoch": 1,
-                "capabilities": [compatibility.COMPATIBILITY_KERNEL_CAPABILITY],
+                "capabilities": sorted(compatibility.SUPPORTED_READER_CAPABILITIES),
             },
         )
         self.assertEqual(
@@ -249,7 +249,7 @@ class CompatibilityKernelTests(unittest.TestCase):
         plan = self.plan_attributes(
             required_capabilities=[
                 compatibility.COMPATIBILITY_KERNEL_CAPABILITY,
-                "causal.ordering/1",
+                "future.unavailable/1",
             ]
         )
         plan_record = self.append_plan(plan)
@@ -264,7 +264,10 @@ class CompatibilityKernelTests(unittest.TestCase):
         with self.assertRaises(compatibility.CompatibilityUpgradeRequired) as context:
             self.store.rebuild()
 
-        self.assertEqual(context.exception.missing_capabilities, ("causal.ordering/1",))
+        self.assertEqual(
+            context.exception.missing_capabilities,
+            ("future.unavailable/1",),
+        )
         self.assertEqual(
             context.exception.as_dict()["feature_id"], "compatibility.kernel"
         )
@@ -334,7 +337,7 @@ class CompatibilityKernelTests(unittest.TestCase):
         plan = self.plan_attributes(
             required_capabilities=[
                 compatibility.COMPATIBILITY_KERNEL_CAPABILITY,
-                "causal.ordering/1",
+                "future.unavailable/1",
             ]
         )
         plan_record = self.append_plan(plan)
@@ -354,7 +357,7 @@ class CompatibilityKernelTests(unittest.TestCase):
             recorded_at=activation["activated_at"],
         )
 
-        self.assertIn("causal.ordering/1", gate.required_capabilities)
+        self.assertIn("future.unavailable/1", gate.required_capabilities)
         with self.assertRaises(compatibility.CompatibilityUpgradeRequired):
             compatibility.require_reader_support(gate)
 

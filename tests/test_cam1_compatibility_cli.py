@@ -258,7 +258,7 @@ class CompatibilityCliTests(ProjectTestCase):
         self.assertEqual(status_payload["status"], "compatible")
         self.assertEqual(len(status_payload["compatibility"]["plans"]), 1)
 
-    def test_future_feature_is_automatically_bound_to_its_capability(self) -> None:
+    def test_supported_feature_is_automatically_bound_to_its_capability(self) -> None:
         binding = self.initialize()
         self.enroll_codex()
         planned = self.plan(feature_id="causal.ordering")
@@ -284,12 +284,13 @@ class CompatibilityCliTests(ProjectTestCase):
             "operator confirmed participant compatibility",
         )
 
-        self.assertEqual(ready.returncode, 2)
+        self.assertEqual(ready.returncode, 0, ready.stderr)
+        readiness = json.loads(ready.stdout)["readiness"]
         self.assertEqual(
-            json.loads(ready.stderr)["error"]["code"],
-            "compatibility.readiness_insufficient",
+            readiness["capabilities"],
+            sorted(compatibility.SUPPORTED_READER_CAPABILITIES),
         )
-        self.assertEqual(journal.verify_journal(binding).record_count, before)
+        self.assertEqual(journal.verify_journal(binding).record_count, before + 1)
 
     def test_activation_reports_committed_when_projection_refresh_fails(self) -> None:
         binding = self.initialize()
@@ -613,13 +614,13 @@ class CompatibilityCliTests(ProjectTestCase):
         plan = {
             "format": compatibility.COMPATIBILITY_FORMAT,
             "plan_id": str(uuid.uuid4()),
-            "feature_id": "causal.ordering",
+            "feature_id": "future.unavailable",
             "feature_version": 1,
             "feature_config": {},
             "required_reader_epoch": compatibility.CURRENT_READER_EPOCH + 1,
             "required_capabilities": [
                 compatibility.COMPATIBILITY_KERNEL_CAPABILITY,
-                "causal.ordering/1",
+                "future.unavailable/1",
             ],
             "validation_profile_sha256": "a" * 64,
             "frozen_participants": [],
@@ -685,7 +686,7 @@ class CompatibilityCliTests(ProjectTestCase):
         )
         self.assertEqual(
             ordinary_payload["error"]["missing_capabilities"],
-            ["causal.ordering/1"],
+            ["future.unavailable/1"],
         )
         self.assertEqual(
             ordinary_payload["recovery"]["command"], "compatibility status"

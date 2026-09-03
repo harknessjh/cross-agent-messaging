@@ -994,12 +994,17 @@ def validate_cancel_exact_bytes(
     request_raw: bytes,
     *,
     now: dt.datetime | None = None,
+    allow_expired: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Validate a cancel against the exact preserved request outside a project."""
 
     event_now, observed_at = _event_time(now)
     del event_now
-    cancel = _validate_message(cancel_raw, observed_at=observed_at)
+    cancel = _validate_message(
+        cancel_raw,
+        observed_at=observed_at,
+        allow_expired=allow_expired,
+    )
     request = _validate_message(
         request_raw,
         observed_at=observed_at,

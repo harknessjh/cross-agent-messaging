@@ -26,12 +26,14 @@ if __name__ == "__main__":
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import uuid
 from pathlib import Path
 from typing import Any
 
 from tools.cam1lib import (
+    causal,
     compatibility_cli,
     journal,
     lifecycle,
@@ -41,8 +43,14 @@ from tools.cam1lib import (
     profile,
     project,
     state,
+    validation,
 )
-from tools.cam1lib.protocol import CamUsageError, CamValidationError, parse_exact_bytes
+from tools.cam1lib.protocol import (
+    CamUsageError,
+    CamValidationError,
+    ValidationPolicy,
+    parse_exact_bytes,
+)
 from tools.cam1lib.state import StateStore
 
 
@@ -434,20 +442,57 @@ def _require_inbound_roster_endpoints(
 def _prior_inbound_validation(
     binding: project.ProjectBinding,
     *,
+    raw: bytes,
     message_id: str,
     recipient_participant_id: str,
 ) -> dict[str, Any] | None:
     """Return the prior recipient-specific validation for one exact message."""
 
-    for record in reversed(journal.replay_records(binding)):
-        if record["event_type"] != "message.inbound.validated":
-            continue
+    validations = journal.replay_records(
+        binding,
+        event_types={"message.inbound.validated"},
+    )
+    candidates: list[dict[str, Any]] = []
+    observed_record_ids: set[str] = set()
+    for record in reversed(validations):
         attributes = record.get("attributes")
-        if (
-            isinstance(attributes, dict)
-            and _uuid_values_equal(attributes.get("message_id"), message_id)
+        if not isinstance(attributes, dict) or not (
+            _uuid_values_equal(attributes.get("message_id"), message_id)
             and attributes.get("recipient_participant_id") == recipient_participant_id
         ):
+            continue
+        observed_record_id = attributes.get("observed_record_id")
+        if not isinstance(observed_record_id, str):
+            continue
+        try:
+            if str(uuid.UUID(observed_record_id)) != observed_record_id:
+                continue
+        except ValueError:
+            continue
+        candidates.append(record)
+        observed_record_ids.add(observed_record_id)
+    if not candidates:
+        return None
+
+    observations = {
+        record["record_id"]: record
+        for record in journal.replay_records(
+            binding,
+            event_types={"message.inbound.observed"},
+            record_ids=observed_record_ids,
+        )
+    }
+    expected_digest = hashlib.sha256(raw).hexdigest()
+    for record in candidates:
+        attributes = record["attributes"]
+        observation = observations.get(attributes["observed_record_id"])
+        encoded = observation.get("message") if observation is not None else None
+        if not isinstance(encoded, dict) or (
+            encoded.get("byte_length") != len(raw)
+            or encoded.get("sha256") != expected_digest
+        ):
+            continue
+        if journal.decode_exact_message(observation) == raw:
             return record
     return None
 
@@ -461,7 +506,8 @@ def _record_inbound_duplicate(
     prior_validation: dict[str, Any],
     local_participant: state.Participant,
     sender_participant: state.Participant,
-    lifecycle_entry: lifecycle.LifecycleEntry,
+    lifecycle_summary: dict[str, Any] | None,
+    lifecycle_committed: bool,
     validation_profile: dict[str, Any],
 ) -> tuple[int, dict[str, Any]]:
     """Journal and describe one recipient-specific exact retransmission."""
@@ -484,9 +530,14 @@ def _record_inbound_duplicate(
         now=duplicate_now,
         transaction=transaction,
     )
-    return 0, {
-        "ok": True,
-        "status": "duplicate",
+    prior_attributes = prior_validation.get("attributes")
+    held = isinstance(prior_attributes, dict) and (
+        prior_attributes.get("assessment") == "held_for_clarification"
+    )
+    return_code = 4 if held else 0
+    payload = {
+        "ok": not held,
+        "status": "held_for_clarification" if held else "duplicate",
         "duplicate": True,
         "authorization_evaluated": False,
         "action_authorized": False,
@@ -497,8 +548,33 @@ def _record_inbound_duplicate(
             "participant_id": local_participant.participant_id,
             "common_name": local_participant.common_name,
         },
-        "lifecycle": lifecycle_entry.as_dict(),
+        "lifecycle_committed": lifecycle_committed,
+        "lifecycle": lifecycle_summary,
     }
+    if held:
+        causal_assessment = (
+            prior_attributes.get("causal_assessment")
+            if isinstance(prior_attributes, dict)
+            else None
+        )
+        reason_code = (
+            causal_assessment.get("reason_code")
+            if isinstance(causal_assessment, dict)
+            else None
+        )
+        reason_detail = (
+            causal_assessment.get("reason_detail")
+            if isinstance(causal_assessment, dict)
+            else None
+        )
+        payload["error"] = {
+            "code": reason_code or "causal.stale_instruction",
+            "detail": reason_detail
+            or "exact retransmission remains held; send a fresh corrected envelope",
+        }
+        if isinstance(prior_attributes, dict):
+            payload["causal"] = causal_assessment
+    return return_code, payload
 
 
 def _record_inbound_rejection(
@@ -562,15 +638,18 @@ def _observe_inbound(
     raw: bytes,
     *,
     source: str,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], dt.datetime]:
     observed_now, observed_at = _utc_now()
-    return journal.append_record(
-        binding,
-        event_type="message.inbound.observed",
-        exact_message=raw,
-        attributes={"source": source, "observed_at": observed_at},
-        now=observed_now,
-        transaction=transaction,
+    return (
+        journal.append_record(
+            binding,
+            event_type="message.inbound.observed",
+            exact_message=raw,
+            attributes={"source": source, "observed_at": observed_at},
+            now=observed_now,
+            transaction=transaction,
+        ),
+        observed_now,
     )
 
 
@@ -611,30 +690,49 @@ def _early_exact_duplicate(
     store: StateStore,
     *,
     raw: bytes,
-    as_participant: str,
+    envelope: dict[str, Any],
+    local_participant: state.Participant,
+    sender_participant: state.Participant,
     observed_record: dict[str, Any],
     validation_profile: dict[str, Any],
 ) -> tuple[int, dict[str, Any]] | None:
-    envelope = parse_exact_bytes(raw)
     message_id = _candidate_message_id(envelope)
     if message_id is None:
         return None
-    if store.preserved_message(message_id, transaction=transaction) != raw:
-        return None
-    local_participant, sender_participant = _require_inbound_roster_endpoints(
-        store,
-        transaction,
-        raw,
-        local_selector=as_participant,
-    )
     prior_validation = _prior_inbound_validation(
         binding,
+        raw=raw,
         message_id=message_id,
         recipient_participant_id=local_participant.participant_id,
     )
     if prior_validation is None:
         return None
-    entry = _duplicate_lifecycle_entry(store, transaction, envelope, message_id)
+    prior_attributes = prior_validation.get("attributes")
+    commitment_marker = (
+        prior_attributes.get("lifecycle_committed")
+        if isinstance(prior_attributes, dict)
+        else None
+    )
+    lifecycle_committed = commitment_marker is True or (
+        commitment_marker is None
+        and store.preserved_message(message_id, transaction=transaction) == raw
+    )
+    if lifecycle_committed:
+        lifecycle_summary = _duplicate_lifecycle_entry(
+            store, transaction, envelope, message_id
+        ).as_dict()
+    else:
+        candidate = (
+            prior_attributes.get("lifecycle_candidate")
+            if isinstance(prior_attributes, dict)
+            else None
+        )
+        if candidate is not None and not isinstance(candidate, dict):
+            raise CamUsageError(
+                "state.duplicate_missing",
+                "held validation has no preserved lifecycle candidate",
+            )
+        lifecycle_summary = candidate
     return _record_inbound_duplicate(
         binding,
         transaction,
@@ -643,7 +741,8 @@ def _early_exact_duplicate(
         prior_validation=prior_validation,
         local_participant=local_participant,
         sender_participant=sender_participant,
-        lifecycle_entry=entry,
+        lifecycle_summary=lifecycle_summary,
+        lifecycle_committed=lifecycle_committed,
         validation_profile=validation_profile,
     )
 
@@ -681,6 +780,48 @@ def _prepare_initial_inbound(
             "root expired before application handling and was not accepted",
         )
     return plan, local_participant, sender_participant
+
+
+def _validate_initial_inbound(
+    store: StateStore,
+    transaction: project.ProjectTransaction,
+    *,
+    raw: bytes,
+    as_participant: str,
+    observed_at: dt.datetime,
+) -> tuple[dict[str, Any], state.Participant, state.Participant]:
+    """Validate wire bytes and roster endpoints without interpreting lifecycle."""
+
+    envelope = validation.validate_exact_bytes(
+        raw,
+        now=observed_at,
+        policy=ValidationPolicy(allow_expired=True),
+    ).envelope
+    if envelope.get("type") == "cancel":
+        target = envelope.get("in_reply_to")
+        if not isinstance(target, str):
+            raise CamUsageError(
+                "lifecycle.cancel_target", "cancel target identifier is invalid"
+            )
+        preserved = store.preserved_message(target, transaction=transaction)
+        if preserved is None:
+            raise CamUsageError(
+                "state.root_missing",
+                "cancel target is not present in project lifecycle state",
+            )
+        state.validate_cancel_exact_bytes(
+            raw,
+            preserved,
+            now=observed_at,
+            allow_expired=True,
+        )
+    local, sender = _require_inbound_roster_endpoints(
+        store,
+        transaction,
+        raw,
+        local_selector=as_participant,
+    )
+    return envelope, local, sender
 
 
 def _refresh_inbound_plan(
@@ -736,6 +877,8 @@ def _record_validated_inbound(
     entry: lifecycle.LifecycleEntry,
     projection_error: state.ProjectionRefreshError | None,
     validation_profile: dict[str, Any],
+    causal_assessment: causal.CausalAssessment,
+    lifecycle_committed: bool,
 ) -> tuple[int, dict[str, Any]]:
     validated_now, validated_at = _utc_now()
     validated_record = journal.append_record(
@@ -750,6 +893,14 @@ def _record_validated_inbound(
             "recipient_participant_id": local_participant.participant_id,
             "authorization_evaluated": False,
             "action_authorized": False,
+            "assessment": (
+                "held_for_clarification" if causal_assessment.held else "validated"
+            ),
+            "causal_assessment": (
+                causal_assessment.as_dict() if causal_assessment.enforced else None
+            ),
+            "lifecycle_committed": lifecycle_committed,
+            "lifecycle_candidate": entry.as_dict(),
             "state_projection_current": projection_error is None,
             "validation_profile": validation_profile,
             "observed_at": validated_at,
@@ -763,12 +914,14 @@ def _record_validated_inbound(
             "record_id": projection_error.record_id,
             "sequence": projection_error.sequence,
         }
-    return 0, {
-        "ok": True,
-        "status": "validated",
+    return_code = 4 if causal_assessment.held else 0
+    payload = {
+        "ok": not causal_assessment.held,
+        "status": ("held_for_clarification" if causal_assessment.held else "validated"),
         "duplicate": False,
         "authorization_evaluated": False,
         "action_authorized": False,
+        "lifecycle_committed": lifecycle_committed,
         "validation_profile": validation_profile,
         "state_projection": {
             "current": projection_error is None,
@@ -782,6 +935,85 @@ def _record_validated_inbound(
             "common_name": local_participant.common_name,
         },
         "lifecycle": entry.as_dict(),
+    }
+    if causal_assessment.enforced:
+        payload["causal"] = causal_assessment.as_dict()
+    if causal_assessment.held:
+        payload["error"] = {
+            "code": causal_assessment.reason_code or "causal.stale_instruction",
+            "detail": causal_assessment.reason_detail
+            or (
+                "request does not cover the receiver's current project-journal "
+                "frontier; clarify with a fresh envelope"
+            ),
+        }
+    return return_code, payload
+
+
+def _record_held_inbound(
+    binding: project.ProjectBinding,
+    transaction: project.ProjectTransaction,
+    *,
+    observed_record: dict[str, Any],
+    envelope: dict[str, Any],
+    local_participant: state.Participant,
+    sender_participant: state.Participant,
+    validation_profile: dict[str, Any],
+    causal_assessment: causal.CausalAssessment,
+) -> tuple[int, dict[str, Any]]:
+    """Record a validated causal hold without applying lifecycle or action state."""
+
+    validated_now, validated_at = _utc_now()
+    validated_record = journal.append_record(
+        binding,
+        event_type="message.inbound.validated",
+        attributes={
+            "observed_record_id": observed_record["record_id"],
+            "message_id": envelope["message_id"],
+            "sender_participant_id": sender_participant.participant_id,
+            "recipient_participant_id": local_participant.participant_id,
+            "authorization_evaluated": False,
+            "action_authorized": False,
+            "assessment": "held_for_clarification",
+            "causal_assessment": causal_assessment.as_dict(),
+            "lifecycle_committed": False,
+            "lifecycle_candidate": None,
+            "state_projection_current": True,
+            "validation_profile": validation_profile,
+            "observed_at": validated_at,
+        },
+        now=validated_now,
+        transaction=transaction,
+    )
+    return 4, {
+        "ok": False,
+        "status": "held_for_clarification",
+        "duplicate": False,
+        "authorization_evaluated": False,
+        "action_authorized": False,
+        "lifecycle_committed": False,
+        "lifecycle": None,
+        "validation_profile": validation_profile,
+        "state_projection": {
+            "current": True,
+            "rebuild_required": False,
+            "last_committed_record": None,
+        },
+        "observed_record": _record_summary(observed_record),
+        "validated_record": _record_summary(validated_record),
+        "as_participant": {
+            "participant_id": local_participant.participant_id,
+            "common_name": local_participant.common_name,
+        },
+        "causal": causal_assessment.as_dict(),
+        "error": {
+            "code": causal_assessment.reason_code or "causal.stale_instruction",
+            "detail": causal_assessment.reason_detail
+            or (
+                "request does not cover the receiver's current project-journal "
+                "frontier; clarify with a fresh envelope"
+            ),
+        },
     }
 
 
@@ -801,31 +1033,33 @@ def _ingest_message(
     )
     store = StateStore(binding)
     with project.project_transaction(binding) as transaction:
-        observed_record = _observe_inbound(
+        observed_record, observed_at = _observe_inbound(
             binding,
             transaction,
             raw,
             source=observed_source,
         )
         try:
+            envelope, local_participant, sender_participant = _validate_initial_inbound(
+                store,
+                transaction,
+                raw=raw,
+                as_participant=as_participant,
+                observed_at=observed_at,
+            )
             duplicate_result = _early_exact_duplicate(
                 binding,
                 transaction,
                 store,
                 raw=raw,
-                as_participant=as_participant,
+                envelope=envelope,
+                local_participant=local_participant,
+                sender_participant=sender_participant,
                 observed_record=observed_record,
                 validation_profile=validation_profile,
             )
             if duplicate_result is not None:
                 return duplicate_result
-            plan, local_participant, sender_participant = _prepare_initial_inbound(
-                store,
-                transaction,
-                raw=raw,
-                renewal_of=renewal_of,
-                as_participant=as_participant,
-            )
         except (CamUsageError, CamValidationError, state.StateError) as error:
             return _record_inbound_rejection(
                 binding,
@@ -834,25 +1068,71 @@ def _ingest_message(
                 error=error,
                 validation_profile=validation_profile,
             )
-        message_id = plan.attributes.get(
-            "message_id", plan.attributes["root_message_id"]
-        )
-        prior_validation = _prior_inbound_validation(
-            binding,
-            message_id=message_id,
-            recipient_participant_id=local_participant.participant_id,
-        )
-        if prior_validation is not None:
-            return _record_inbound_duplicate(
+        plan: state.LifecyclePlan | None = None
+        lifecycle_problem: (
+            CamUsageError | CamValidationError | state.StateError | None
+        ) = None
+        try:
+            plan, _, _ = _prepare_initial_inbound(
+                store,
+                transaction,
+                raw=raw,
+                renewal_of=renewal_of,
+                as_participant=as_participant,
+            )
+        except (CamUsageError, CamValidationError, state.StateError) as error:
+            if (
+                isinstance(error, CamUsageError) and error.code == "state.root_expired"
+            ) or isinstance(error, state.ProjectionRefreshError):
+                return _record_inbound_rejection(
+                    binding,
+                    transaction,
+                    observed_record=observed_record,
+                    error=error,
+                    validation_profile=validation_profile,
+                )
+            lifecycle_problem = error
+        try:
+            causal_assessment = causal.assess_inbound_order(
+                journal.replay_records(
+                    binding,
+                    event_types=causal.CAUSAL_JOURNAL_EVENT_TYPES,
+                ),
+                raw,
+                local_participant_id=local_participant.participant_id,
+                sender_participant_id=sender_participant.participant_id,
+            )
+        except causal.CausalError as error:
+            causal_assessment = causal.CausalAssessment(
+                enforced=True,
+                held=True,
+                conversation_id=None,
+                reason_code=error.code,
+                reason_detail=error.detail,
+            )
+        if causal_assessment.held:
+            return _record_held_inbound(
                 binding,
                 transaction,
                 observed_record=observed_record,
-                message_id=message_id,
-                prior_validation=prior_validation,
+                envelope=envelope,
                 local_participant=local_participant,
                 sender_participant=sender_participant,
-                lifecycle_entry=plan.preview,
                 validation_profile=validation_profile,
+                causal_assessment=causal_assessment,
+            )
+        if lifecycle_problem is not None:
+            return _record_inbound_rejection(
+                binding,
+                transaction,
+                observed_record=observed_record,
+                error=lifecycle_problem,
+                validation_profile=validation_profile,
+            )
+        if plan is None:
+            raise CamUsageError(
+                "state.plan_missing",
+                "validated inbound message has no lifecycle plan",
             )
         try:
             plan = _refresh_inbound_plan(
@@ -861,15 +1141,6 @@ def _ingest_message(
                 raw=raw,
                 renewal_of=renewal_of,
             )
-        except (CamUsageError, CamValidationError, state.StateError) as error:
-            return _record_inbound_rejection(
-                binding,
-                transaction,
-                observed_record=observed_record,
-                error=error,
-                validation_profile=validation_profile,
-            )
-        try:
             entry, projection_error = _commit_inbound_plan(store, transaction, plan)
         except (CamUsageError, CamValidationError, state.StateError) as error:
             return _record_inbound_rejection(
@@ -889,6 +1160,8 @@ def _ingest_message(
             entry=entry,
             projection_error=projection_error,
             validation_profile=validation_profile,
+            causal_assessment=causal_assessment,
+            lifecycle_committed=True,
         )
 
 
