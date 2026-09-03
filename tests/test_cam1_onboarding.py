@@ -880,7 +880,7 @@ class OnboardingCliTests(ProjectTestCase):
         self.assertEqual(participant["session_kind"], "interactive")
         self.assertEqual(participant["session_label"], "cam-claude-2")
         self.assertEqual(participant["session_id"], CLAUDE_SESSION)
-        self.assertNotIn("4321", json.dumps(card))
+        self.assertNotIn('"pid"', json.dumps(card))
         self.assertEqual(
             card["execution_context"]["product_executable_source"],
             "explicit_candidate",
