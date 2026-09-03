@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -15,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.cam1lib import product_approvals  # noqa: E402
+from tools.cam1lib import product_approvals
 
 
 def _wait_for(path: Path, *, detail: str) -> None:
@@ -76,9 +78,36 @@ def _run_create_lock_timeout() -> int:
     raise SystemExit("creator unexpectedly acquired the registry lock")
 
 
+def _run_hold_registry_lock() -> int:
+    if len(sys.argv) != 5:
+        raise SystemExit(
+            "usage: _product_approval_process.py hold-registry-lock "
+            "ACCOUNT_HOME READY RELEASE"
+        )
+    account_home, ready, release = sys.argv[2:]
+    registry = (
+        Path(account_home) / "CAM" / "Approvals" / product_approvals.REGISTRY_NAME
+    )
+    descriptor = os.open(
+        registry,
+        os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        Path(ready).touch(mode=0o600)
+        _wait_for(Path(release), detail="registry-lock release gate was not opened")
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+    finally:
+        os.close(descriptor)
+    print(json.dumps({"status": "released"}, sort_keys=True))
+    return 0
+
+
 def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] == "create-lock-timeout":
         return _run_create_lock_timeout()
+    if len(sys.argv) > 1 and sys.argv[1] == "hold-registry-lock":
+        return _run_hold_registry_lock()
     if len(sys.argv) != 6:
         raise SystemExit(
             "usage: _product_approval_process.py ACCOUNT_HOME GATE "

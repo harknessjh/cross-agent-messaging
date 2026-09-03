@@ -251,12 +251,20 @@ address that threat and is outside CAM/1's current same-user boundary.
   plus a non-placeholder direct operator reference; it reopens under a bounded
   exclusive lock, revalidates the complete prefix and active projection, and
   fsyncs an exact owner-only archive and immutable prepared-recovery manifest
-  before truncating only the incomplete EOF fragment. The primary `/1` ledger
+  before re-verifying both artifacts and truncating only the incomplete EOF
+  fragment. After truncate and fsync, it verifies both the repaired bytes and
+  that the live registry path still names the locked inode. The primary `/1` ledger
   remains approve/revoke-only and active approvals do not change. Complete
   malformed, noncanonical, digest-invalid, chain-invalid, oversized, or
   interior corruption remains investigation-only. A lock timeout is a refusal,
   not permission to bypass the ledger. Once a registry filename is published,
   a failed lock attempt never unlinks it.
+- Treat `mutation_state: unknown`, committed verification uncertainty, and
+  committed cleanup uncertainty as reconciliation states, not safe failures.
+  `product-recovery-status` verifies a bounded set of owner-private,
+  non-symlinked prepared manifests and archives against an exact current prefix
+  or later valid ledger and reports stale reserved pending artifacts. Refuse
+  malformed, mismatched, or over-limit evidence rather than guessing.
 - Do not use an unpacked or otherwise unversioned source tree for live sends.
   Offline validation remains available, but live use requires verifiable Git
   revision and clean/dirty state in addition to the content profile.

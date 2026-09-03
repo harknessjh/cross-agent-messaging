@@ -117,7 +117,10 @@ Use this checklist against the exact commit proposed for publication. A green so
   active approvals, deterministic evidence reuse, stale-guard refusal,
   complete/interior corruption refusal, symlink and permission refusal,
   concurrent recovery, lock-loss publication races, and truthful interrupted
-  recovery mutation states.
+  recovery mutation states. Exercise artifact mutation immediately after
+  publication and at the final pre-truncate check, post-commit live-path
+  substitution, cleanup failure, canonical manifest parsing, and bounded
+  reconciliation of hard-crash, empty-prefix, and later-append states.
 - Confirm that project initialization writes only to private Git administrative
   state and the external journal root, linked worktrees share the project UUID,
   and no journal is tracked by Git. Confirm enrollment works after `git init`

@@ -132,7 +132,11 @@ fully verified approve/revoke prefix. The primary `/1` ledger never receives a
 new event type, so older readers remain compatible. It never repairs complete
 malformed, altered, noncanonical, or chain-invalid records. Ordinary approval
 operations report `product_approval.recovery_required` for this one eligible
-case. This exceptional recovery is not part of onboarding.
+case. On a later status check, a bounded no-follow scan verifies prepared
+manifests and exact archives against the current valid ledger, including a
+later ledger that extends the recovered prefix; it also reports stale pending
+artifacts left by a hard process interruption. This exceptional recovery is
+not part of onboarding.
 
 Reader and project-state upgrades use the staged, atomic
 [compatibility kernel](docs/COMPATIBILITY.md).

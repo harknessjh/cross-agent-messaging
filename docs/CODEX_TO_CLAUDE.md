@@ -199,8 +199,12 @@ archives and fsyncs the exact damaged bytes under `~/CAM/Approvals/`, preserves
 the ledger inode, publishes an immutable prepared-recovery manifest, and
 truncates the primary `/1` ledger to its verified approve/revoke prefix without
 changing active approvals. If it reports mutation `unknown` or committed but
-verification uncertain, do not reuse the old guards; run the returned read-only
-reconciliation command.
+verification or cleanup uncertainty, do not reuse the old guards; run the
+returned read-only reconciliation command. That status command performs a
+bounded no-follow scan of prepared manifests and exact archives even when the
+primary ledger is already valid, and reports whether the current ledger equals
+or extends each recovered prefix. It reports stale pending artifacts but never
+deletes them automatically.
 
 Do not use recovery for a complete malformed line, invalid canonical bytes,
 digest or hash-chain damage, an oversized file or tail, or changed inspection
@@ -1092,8 +1096,9 @@ Operational recovery rules:
   publishes immutable recovery evidence, and preserves only the verified
   approve/revoke prefix without changing active approvals. Never use it for a
   complete malformed line or an invalid prefix. Treat `mutation_state: unknown`
-  or committed-but-verification-uncertain as a reconciliation task, not a safe
-  failure or permission to retry old guards.
+  or committed-but-verification/cleanup-uncertain as a reconciliation task, not
+  a safe failure or permission to retry old guards. Status verifies bounded
+  prepared evidence against a current exact or later extended valid prefix.
 - **A command reports `product_approval.lock_timeout`:** let the bounded account
   approval operation finish, inspect status, and retry. Do not delete or replace
   the registry and do not infer whether the other mutation completed.

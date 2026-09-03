@@ -460,6 +460,11 @@ def approval_recovery_status(*, api: RecoveryLedgerApi) -> dict[str, Any]:
                 "approval registry exceeds its bounded limits",
             )
         if metadata.st_size == 0:
+            evidence = _evidence.inspect_reconciled_recovery_evidence(
+                registry.parent,
+                current_registry=b"",
+                current_record_sha256s=[],
+            )
             return {
                 "ok": True,
                 "status": "recovery_not_needed",
@@ -468,6 +473,13 @@ def approval_recovery_status(*, api: RecoveryLedgerApi) -> dict[str, Any]:
                 "record_count": 0,
                 "registry_bytes": 0,
                 "registry_sha256": range_digest(descriptor, offset=0, length=0),
+                "registry_identity": {
+                    "device": metadata.st_dev,
+                    "inode": metadata.st_ino,
+                    "ctime_ns": metadata.st_ctime_ns,
+                    "mtime_ns": metadata.st_mtime_ns,
+                },
+                "reconciled_recovery_evidence": evidence,
             }
         try:
             final_byte = os.pread(descriptor, 1, metadata.st_size - 1)
@@ -480,6 +492,12 @@ def approval_recovery_status(*, api: RecoveryLedgerApi) -> dict[str, Any]:
             handle.seek(0)
             records, total = api.verify(handle)
             active = api.active_records(records)
+            current_registry = _range_bytes(descriptor, offset=0, length=total)
+            evidence = _evidence.inspect_reconciled_recovery_evidence(
+                registry.parent,
+                current_registry=current_registry,
+                current_record_sha256s=[record["record_sha256"] for record in records],
+            )
             return {
                 "ok": True,
                 "status": "recovery_not_needed",
@@ -488,7 +506,14 @@ def approval_recovery_status(*, api: RecoveryLedgerApi) -> dict[str, Any]:
                 "record_count": len(records),
                 "active_approval_count": len(active),
                 "registry_bytes": total,
-                "registry_sha256": range_digest(descriptor, offset=0, length=total),
+                "registry_sha256": hashlib.sha256(current_registry).hexdigest(),
+                "registry_identity": {
+                    "device": metadata.st_dev,
+                    "inode": metadata.st_ino,
+                    "ctime_ns": metadata.st_ctime_ns,
+                    "mtime_ns": metadata.st_mtime_ns,
+                },
+                "reconciled_recovery_evidence": evidence,
             }
         report, _records = _recovery_report_locked(descriptor, api=api)
         evidence = inspect_recovery_evidence(registry.parent, report=report)
@@ -552,6 +577,69 @@ def _revalidate_registry_path(
         os.close(directory_descriptor)
 
 
+def _revalidate_repaired_registry_path(
+    registry: Path,
+    descriptor: int,
+    report: PartialApprovalTailReport,
+) -> None:
+    """Require the repaired locked inode to remain the live registry path."""
+
+    directory_descriptor = _open_private_directory(
+        registry.parent, label="approval.directory"
+    )
+    try:
+        try:
+            path_metadata = os.stat(
+                registry.name,
+                dir_fd=directory_descriptor,
+                follow_symlinks=False,
+            )
+        except OSError:
+            raise ProductApprovalError(
+                "product_approval.recovery_changed",
+                "approval registry path changed after recovery",
+            ) from None
+        _validate_private_file_metadata(path_metadata, label="approval.registry")
+        opened_metadata = _validate_private_file(descriptor, label="approval.registry")
+        expected_identity = (report.registry_device, report.registry_inode)
+        if (
+            (path_metadata.st_dev, path_metadata.st_ino) != expected_identity
+            or (opened_metadata.st_dev, opened_metadata.st_ino) != expected_identity
+            or path_metadata.st_size != report.verified_prefix_bytes
+            or opened_metadata.st_size != report.verified_prefix_bytes
+        ):
+            raise ProductApprovalError(
+                "product_approval.recovery_changed",
+                "approval registry path no longer names the repaired locked inode",
+            )
+    finally:
+        os.close(directory_descriptor)
+
+
+def _cleanup_registry_handles(
+    handle: BinaryIO,
+    descriptor: int,
+) -> list[dict[str, str]]:
+    """Attempt every cleanup action without hiding an earlier operation result."""
+
+    failures: list[dict[str, str]] = []
+    for operation, cleanup in (
+        ("handle_close", handle.close),
+        ("registry_unlock", lambda: fcntl.flock(descriptor, fcntl.LOCK_UN)),
+        ("descriptor_close", lambda: os.close(descriptor)),
+    ):
+        try:
+            cleanup()
+        except OSError as error:
+            failures.append(
+                {
+                    "operation": operation,
+                    "error_type": type(error).__name__,
+                }
+            )
+    return failures
+
+
 def recover_partial_tail(
     *,
     api: RecoveryLedgerApi,
@@ -611,6 +699,12 @@ def recover_partial_tail(
     normalized_reference = api.operator_reference(operator_reference)
 
     registry, descriptor, handle = api.open_registry(exclusive=True, create=False)
+    mutation_state = "not_attempted"
+    report: PartialApprovalTailReport | None = None
+    archive_path: str | None = None
+    manifest_path: str | None = None
+    recovery_manifest: dict[str, Any] | None = None
+    operation_result: dict[str, Any] | None = None
     try:
         report, records = _recovery_report_locked(descriptor, api=api)
         supplied_guards = (
@@ -694,6 +788,20 @@ def recover_partial_tail(
                     "product_approval.recovery_changed",
                     "approval registry changed after recovery inspection",
                 )
+            current_evidence = _evidence.inspect_recovery_evidence(
+                registry.parent,
+                report=current_report,
+            )
+            if (
+                current_evidence["status"] != "prepared"
+                or current_evidence["archive_path"] != archive_path
+                or current_evidence["manifest_path"] != manifest_path
+                or current_evidence["manifest"] != recovery_manifest
+            ):
+                raise ProductApprovalError(
+                    "product_approval.recovery_evidence_changed",
+                    "approval recovery evidence changed before ledger mutation",
+                )
         except ProductApprovalError as error:
             raise RecoveryMutationError(
                 error.code,
@@ -708,6 +816,7 @@ def recover_partial_tail(
                 ),
             ) from error
 
+        mutation_state = "unknown"
         try:
             os.ftruncate(descriptor, report.verified_prefix_bytes)
         except OSError as error:
@@ -739,6 +848,7 @@ def recover_partial_tail(
                     manifest=recovery_manifest,
                 ),
             ) from error
+        mutation_state = "committed"
 
         try:
             handle.seek(0)
@@ -758,9 +868,10 @@ def recover_partial_tail(
                     "product_approval.recovery_verify",
                     "recovered approval registry did not preserve active approvals",
                 )
+            _revalidate_repaired_registry_path(registry, descriptor, report)
         except (OSError, ProjectError, ProductApprovalError) as error:
             api.begin_operation()
-            return {
+            operation_result = {
                 "ok": False,
                 "status": "recovery_committed_verification_uncertain",
                 **_mutation_audit(
@@ -790,24 +901,82 @@ def recover_partial_tail(
                     "recovery manifest."
                 ),
             }
-        api.begin_operation()
-        return {
-            "ok": True,
-            "status": "recovered_partial_tail",
-            **_mutation_audit(
-                mutation_state="committed",
+        else:
+            api.begin_operation()
+            operation_result = {
+                "ok": True,
+                "status": "recovered_partial_tail",
+                **_mutation_audit(
+                    mutation_state="committed",
+                    registry=registry,
+                    report=report,
+                    archive_path=archive_path,
+                    manifest_path=manifest_path,
+                    manifest=recovery_manifest,
+                ),
+                "original": report.summary(),
+                "record_count": len(final_records),
+                "active_approval_count": len(active_after),
+                "active_approvals_unchanged": True,
+            }
+    except BaseException as active_error:
+        cleanup_failures = _cleanup_registry_handles(handle, descriptor)
+        if cleanup_failures:
+            if isinstance(active_error, RecoveryMutationError):
+                active_error.audit["cleanup_errors"] = cleanup_failures
+            else:
+                active_error.add_note(
+                    "approval recovery cleanup also failed; run "
+                    "product-recovery-status before retrying"
+                )
+        raise
+
+    cleanup_failures = _cleanup_registry_handles(handle, descriptor)
+    if cleanup_failures:
+        if (
+            mutation_state in {"committed", "unknown"}
+            and report is not None
+            and archive_path is not None
+            and manifest_path is not None
+        ):
+            api.begin_operation()
+            audit = _mutation_audit(
+                mutation_state=mutation_state,
                 registry=registry,
                 report=report,
                 archive_path=archive_path,
                 manifest_path=manifest_path,
                 manifest=recovery_manifest,
-            ),
-            "original": report.summary(),
-            "record_count": len(final_records),
-            "active_approval_count": len(active_after),
-            "active_approvals_unchanged": True,
-        }
-    finally:
-        handle.close()
-        fcntl.flock(descriptor, fcntl.LOCK_UN)
-        os.close(descriptor)
+            )
+            audit["cleanup_errors"] = cleanup_failures
+            if mutation_state == "committed":
+                return {
+                    "ok": False,
+                    "status": "recovery_committed_cleanup_uncertain",
+                    **audit,
+                    "prior_status": (
+                        operation_result.get("status")
+                        if operation_result is not None
+                        else None
+                    ),
+                    "next_step": (
+                        "The ledger repair committed, but process cleanup did not "
+                        "complete normally. Do not reuse the old guards; run the "
+                        "returned read-only product-recovery-status command."
+                    ),
+                }
+            raise RecoveryMutationError(
+                "product_approval.recovery_cleanup_uncertain",
+                "approval recovery mutation or cleanup may be incomplete",
+                audit=audit,
+            )
+        raise ProductApprovalError(
+            "product_approval.recovery_cleanup",
+            "approval recovery handle cleanup failed before mutation",
+        )
+    if operation_result is None:
+        raise ProductApprovalError(
+            "product_approval.recovery_internal",
+            "approval recovery produced no operation result",
+        )
+    return operation_result

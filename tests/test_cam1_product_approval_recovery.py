@@ -142,6 +142,15 @@ class ProductApprovalRecoveryTests(unittest.TestCase):
         status = product_approvals.approval_recovery_status()
         self.assertEqual(status["status"], "recovery_not_needed")
         self.assertFalse(status["recovery_required"])
+        self.assertEqual(
+            status["reconciled_recovery_evidence"],
+            {
+                "status": "absent",
+                "count": 0,
+                "items": [],
+                "stale_pending_artifacts": [],
+            },
+        )
         self.assertEqual(self.registry.read_bytes(), complete)
         self.assertFalse(self.marker.exists())
 
@@ -461,6 +470,14 @@ class ProductApprovalRecoveryTests(unittest.TestCase):
         self.assertEqual(self.registry.read_bytes(), prefix)
         follow_up = product_approvals.approval_recovery_status()
         self.assertEqual(follow_up["status"], "recovery_not_needed")
+        self.assertEqual(
+            follow_up["reconciled_recovery_evidence"]["status"], "reconciled"
+        )
+        self.assertEqual(follow_up["reconciled_recovery_evidence"]["count"], 1)
+        self.assertEqual(
+            follow_up["reconciled_recovery_evidence"]["items"][0]["relationship"],
+            "exact_verified_prefix",
+        )
         archives = list(
             self.registry.parent.glob("product-executables-v1.damaged-*.jsonl")
         )
@@ -509,6 +526,317 @@ class ProductApprovalRecoveryTests(unittest.TestCase):
         self.assertEqual(before, after)
         self.assertEqual(self.registry.read_bytes(), prefix)
         self.assertEqual(result["mutation_state"], "committed")
+
+    def test_manifest_publication_rejects_suffix_append_before_mutation(self) -> None:
+        _prefix, damaged, status = self.damage_registry()
+        evidence = product_approval_recovery._evidence
+        real_rename = evidence.rename_noreplace
+
+        def append_after_publish(
+            directory_descriptor: int,
+            source_name: str,
+            destination_name: str,
+        ) -> None:
+            real_rename(directory_descriptor, source_name, destination_name)
+            if destination_name.endswith(evidence.MANIFEST_SUFFIX):
+                descriptor = os.open(
+                    destination_name,
+                    os.O_WRONLY | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=directory_descriptor,
+                )
+                try:
+                    os.write(descriptor, b"x")
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+
+        with (
+            mock.patch.object(
+                evidence,
+                "rename_noreplace",
+                side_effect=append_after_publish,
+            ),
+            self.assertRaises(
+                product_approval_recovery.RecoveryMutationError
+            ) as changed,
+        ):
+            product_approvals.recover_partial_tail(**self.recovery_kwargs(status))
+        self.assertEqual(
+            changed.exception.code,
+            "product_approval.recovery_manifest_changed",
+        )
+        self.assertEqual(changed.exception.audit["mutation_state"], "not_attempted")
+        self.assertEqual(self.registry.read_bytes(), damaged)
+
+    def test_evidence_is_reinspected_immediately_before_truncate(self) -> None:
+        _prefix, damaged, status = self.damage_registry()
+        token = uuid.uuid5(
+            product_approval_recovery._RECOVERY_NAMESPACE,
+            status["recovery"]["registry_sha256"],
+        )
+        manifest = (
+            self.registry.parent / f"product-executables-v1.recovery-{token}.json"
+        )
+        real_revalidate = product_approval_recovery._revalidate_registry_path
+        appended = False
+
+        def alter_after_registry_revalidation(
+            registry: Path,
+            descriptor: int,
+            report: product_approval_recovery.PartialApprovalTailReport,
+        ) -> None:
+            nonlocal appended
+            real_revalidate(registry, descriptor, report)
+            if not appended:
+                appended = True
+                with manifest.open("ab") as handle:
+                    handle.write(b"x")
+                    handle.flush()
+                    os.fsync(handle.fileno())
+
+        with (
+            mock.patch.object(
+                product_approval_recovery,
+                "_revalidate_registry_path",
+                side_effect=alter_after_registry_revalidation,
+            ),
+            self.assertRaises(
+                product_approval_recovery.RecoveryMutationError
+            ) as changed,
+        ):
+            product_approvals.recover_partial_tail(**self.recovery_kwargs(status))
+        self.assertEqual(changed.exception.audit["mutation_state"], "not_attempted")
+        self.assertEqual(
+            changed.exception.code,
+            "product_approval.recovery_manifest",
+        )
+        self.assertEqual(self.registry.read_bytes(), damaged)
+
+    def test_manifest_parser_enforces_text_timestamp_and_recovery_identity(
+        self,
+    ) -> None:
+        _prefix, _damaged, status = self.damage_registry()
+        result = product_approvals.recover_partial_tail(**self.recovery_kwargs(status))
+        original = dict(result["recovery_manifest"])
+
+        def encoded(**changes: object) -> bytes:
+            manifest = {**original, **changes}
+            unsigned = dict(manifest)
+            unsigned.pop("record_sha256")
+            manifest["record_sha256"] = product_approvals._digest(unsigned)
+            return product_approvals._canonical_json(manifest)
+
+        with self.assertRaises(product_approvals.ProductApprovalError) as unsafe_text:
+            product_approval_recovery.parse_recovery_manifest(
+                encoded(operator_reference="direct\u0600operator confirmation")
+            )
+        self.assertEqual(unsafe_text.exception.code, "product_approval.field")
+
+        with self.assertRaises(product_approvals.ProductApprovalError) as timestamp:
+            product_approval_recovery.parse_recovery_manifest(
+                encoded(prepared_at="2026-09-02T00:00:00Z")
+            )
+        self.assertEqual(timestamp.exception.code, "product_approval.timestamp")
+
+        different = str(uuid.uuid4())
+        with self.assertRaises(product_approvals.ProductApprovalError) as identity:
+            product_approval_recovery.parse_recovery_manifest(
+                encoded(
+                    recovery_id=different,
+                    archive_file=(f"product-executables-v1.damaged-{different}.jsonl"),
+                )
+            )
+        self.assertEqual(identity.exception.code, "product_approval.recovery_manifest")
+
+    def test_committed_cleanup_failure_returns_reconciliation_result(self) -> None:
+        prefix, _damaged, status = self.damage_registry()
+        real_flock = product_approval_recovery.fcntl.flock
+
+        def fail_after_unlock(descriptor: int, operation: int) -> None:
+            real_flock(descriptor, operation)
+            if operation == product_approval_recovery.fcntl.LOCK_UN:
+                raise OSError(errno.EIO, "synthetic unlock failure")
+
+        with mock.patch.object(
+            product_approval_recovery.fcntl,
+            "flock",
+            side_effect=fail_after_unlock,
+        ):
+            result = product_approvals.recover_partial_tail(
+                **self.recovery_kwargs(status)
+            )
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "recovery_committed_cleanup_uncertain")
+        self.assertEqual(result["mutation_state"], "committed")
+        self.assertEqual(
+            result["cleanup_errors"],
+            [{"operation": "registry_unlock", "error_type": "OSError"}],
+        )
+        self.assertEqual(self.registry.read_bytes(), prefix)
+        self.assertTrue(Path(result["archive_path"]).exists())
+        self.assertTrue(Path(result["manifest_path"]).exists())
+
+    def test_postcommit_registry_path_substitution_is_not_success(self) -> None:
+        prefix, _damaged, status = self.damage_registry()
+        real_verify = product_approvals._verify
+        calls = 0
+        displaced = self.registry.with_name("repaired-displaced.jsonl")
+
+        def substitute_after_final_verify(
+            handle: object,
+        ) -> tuple[list[dict[str, object]], int]:
+            nonlocal calls
+            calls += 1
+            result = real_verify(handle)
+            if calls == 3:
+                self.registry.rename(displaced)
+                self.registry.write_bytes(prefix)
+                self.registry.chmod(0o600)
+            return result
+
+        with mock.patch.object(
+            product_approvals,
+            "_verify",
+            side_effect=substitute_after_final_verify,
+        ):
+            result = product_approvals.recover_partial_tail(
+                **self.recovery_kwargs(status)
+            )
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "recovery_committed_verification_uncertain")
+        self.assertEqual(result["mutation_state"], "committed")
+        self.assertEqual(
+            result["verification_error"]["code"],
+            "product_approval.recovery_changed",
+        )
+        self.assertEqual(displaced.read_bytes(), prefix)
+        self.assertEqual(self.registry.read_bytes(), prefix)
+
+    def test_valid_primary_reconciles_evidence_after_later_append(self) -> None:
+        approved = self.approve()
+        prefix = self.registry.read_bytes()
+        self.registry.write_bytes(prefix + b'{"interrupted":')
+        self.registry.chmod(0o600)
+        status = product_approvals.approval_recovery_status()
+        product_approvals.recover_partial_tail(**self.recovery_kwargs(status))
+        product_approvals.revoke_approval(
+            vendor="claude-code",
+            product_bin=str(self.executable),
+            approval_record_id=approved["approval"]["record_id"],
+            expected_fingerprint_sha256=approved["approval"]["attributes"][
+                "fingerprint_sha256"
+            ],
+            operator_reference="direct test post-recovery revocation",
+        )
+
+        reconciled = product_approvals.approval_recovery_status()
+        self.assertEqual(reconciled["status"], "recovery_not_needed")
+        evidence = reconciled["reconciled_recovery_evidence"]
+        self.assertEqual(evidence["status"], "reconciled")
+        self.assertEqual(evidence["count"], 1)
+        self.assertEqual(
+            evidence["items"][0]["relationship"],
+            "later_valid_ledger_extends_prefix",
+        )
+
+    def test_empty_repaired_prefix_is_reconciled(self) -> None:
+        cam_directory = self.home / "CAM"
+        cam_directory.mkdir(mode=0o700)
+        self.registry.parent.mkdir(mode=0o700)
+        damaged = b'{"interrupted":'
+        self.registry.write_bytes(damaged)
+        self.registry.chmod(0o600)
+        status = product_approvals.approval_recovery_status()
+        self.assertEqual(status["recovery"]["verified_prefix_bytes"], 0)
+        product_approvals.recover_partial_tail(**self.recovery_kwargs(status))
+
+        reconciled = product_approvals.approval_recovery_status()
+        self.assertEqual(reconciled["registry_bytes"], 0)
+        self.assertEqual(
+            reconciled["reconciled_recovery_evidence"]["items"][0]["relationship"],
+            "exact_verified_prefix",
+        )
+
+    def test_valid_primary_refuses_malformed_or_symlinked_manifests(self) -> None:
+        self.approve()
+        malformed = self.registry.parent / (
+            f"product-executables-v1.recovery-{uuid.uuid4()}.json"
+        )
+        malformed.write_bytes(b"{}")
+        malformed.chmod(0o600)
+        with self.assertRaises(product_approvals.ProductApprovalError) as invalid:
+            product_approvals.approval_recovery_status()
+        self.assertEqual(invalid.exception.code, "product_approval.recovery_manifest")
+
+        malformed.unlink()
+        outside = self.home / "outside-recovery-manifest"
+        outside.write_bytes(b"{}")
+        malformed.symlink_to(outside)
+        with self.assertRaises(product_approvals.ProductApprovalError) as symlink:
+            product_approvals.approval_recovery_status()
+        self.assertEqual(
+            symlink.exception.code,
+            "product_approval.recovery_manifest_changed",
+        )
+
+    def test_valid_primary_refuses_unbounded_manifest_scan(self) -> None:
+        self.approve()
+        evidence = product_approval_recovery._evidence
+        for _index in range(evidence.MAX_RECOVERY_MANIFESTS + 1):
+            path = self.registry.parent / (
+                f"product-executables-v1.recovery-{uuid.uuid4()}.json"
+            )
+            path.write_bytes(b"{}")
+            path.chmod(0o600)
+        with self.assertRaises(product_approvals.ProductApprovalError) as bounded:
+            product_approvals.approval_recovery_status()
+        self.assertEqual(
+            bounded.exception.code,
+            "product_approval.recovery_manifest_limit",
+        )
+
+    def test_valid_primary_refuses_prepared_prefix_mismatch(self) -> None:
+        prefix, _damaged, status = self.damage_registry()
+        product_approvals.recover_partial_tail(**self.recovery_kwargs(status))
+        replacement = json.loads(prefix)
+        replacement["attributes"]["operator_reference"] = (
+            "different direct operator confirmation"
+        )
+        unsigned = dict(replacement)
+        unsigned.pop("record_sha256")
+        replacement["record_sha256"] = product_approvals._digest(unsigned)
+        self.registry.write_bytes(
+            product_approvals._canonical_json(replacement) + b"\n"
+        )
+        self.registry.chmod(0o600)
+
+        with self.assertRaises(product_approvals.ProductApprovalError) as mismatch:
+            product_approvals.approval_recovery_status()
+        self.assertEqual(
+            mismatch.exception.code,
+            "product_approval.recovery_evidence_mismatch",
+        )
+
+    def test_status_reports_stale_reserved_pending_artifacts(self) -> None:
+        self.approve()
+        pending = self.registry.parent / ".product-approval-recovery-stale.pending"
+        pending.write_bytes(b"stale")
+        pending.chmod(0o600)
+        status = product_approvals.approval_recovery_status()
+        self.assertEqual(
+            status["reconciled_recovery_evidence"]["stale_pending_artifacts"],
+            [str(pending)],
+        )
+
+    def test_public_transport_facade_exports_recovery_operations(self) -> None:
+        self.assertIs(
+            cam1_transport.product_recovery_status,
+            cam1_transport._products.product_recovery_status,
+        )
+        self.assertIs(
+            cam1_transport.recover_product_partial_tail,
+            cam1_transport._products.recover_product_partial_tail,
+        )
 
     def test_reason_bound_matches_manifest_schema(self) -> None:
         _prefix, damaged, status = self.damage_registry()
@@ -705,6 +1033,60 @@ class ProductApprovalRecoveryTests(unittest.TestCase):
             product_approvals.recover_partial_tail(**self.recovery_kwargs(status))
         self.assertEqual(exclusive.exception.code, "product_approval.lock_timeout")
         self.assertEqual(self.registry.read_bytes(), damaged)
+
+    def test_competing_process_lock_blocks_recovery_without_mutation(self) -> None:
+        _prefix, damaged, status = self.damage_registry()
+        ready = self.home / "registry-lock-ready"
+        release = self.home / "registry-lock-release"
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                str(APPROVAL_PROCESS_HELPER),
+                "hold-registry-lock",
+                str(self.home),
+                str(ready),
+                str(release),
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            deadline = time.monotonic() + 10
+            while not ready.exists():
+                if time.monotonic() >= deadline:
+                    process.kill()
+                    self.fail("competing process did not acquire the registry lock")
+                time.sleep(0.005)
+            with (
+                mock.patch.object(
+                    product_approvals,
+                    "REGISTRY_LOCK_TIMEOUT_SECONDS",
+                    0.05,
+                ),
+                mock.patch.object(
+                    product_approvals,
+                    "REGISTRY_LOCK_POLL_SECONDS",
+                    0.005,
+                ),
+                self.assertRaises(product_approvals.ProductApprovalError) as busy,
+            ):
+                product_approvals.recover_partial_tail(**self.recovery_kwargs(status))
+            self.assertEqual(busy.exception.code, "product_approval.lock_timeout")
+            self.assertEqual(busy.exception.audit["mutation_state"], "not_attempted")
+            self.assertEqual(self.registry.read_bytes(), damaged)
+            self.assertEqual(
+                list(
+                    self.registry.parent.glob("product-executables-v1.damaged-*.jsonl")
+                ),
+                [],
+            )
+        finally:
+            release.touch(mode=0o600)
+            stdout, stderr = process.communicate(timeout=10)
+            self.assertEqual(process.returncode, 0, stderr)
+            self.assertEqual(json.loads(stdout)["status"], "released")
 
     def test_cli_requires_status_then_exact_guards(self) -> None:
         self.approve()

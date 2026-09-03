@@ -41,6 +41,8 @@ MANIFEST_PREFIX = "product-executables-v1.recovery-"
 MANIFEST_SUFFIX = ".json"
 RECOVERY_FORMAT = "CAM-PRODUCT-EXECUTABLE-RECOVERY/1"
 MAX_RECOVERY_REASON_LENGTH = 500
+MAX_RECOVERY_MANIFESTS = 64
+MAX_RECOVERY_DIRECTORY_ENTRIES = 1_024
 RECOVERY_NAMESPACE = uuid.UUID("31a657d3-a589-44a9-9f97-d698ef769342")
 READ_FLAGS = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
 CREATE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
@@ -118,6 +120,48 @@ def _range_digest(descriptor: int, *, offset: int, length: int) -> str:
     return digest.hexdigest()
 
 
+def _archive_digests(
+    descriptor: int,
+    *,
+    prefix_length: int,
+    tail_length: int,
+) -> tuple[str, str, str]:
+    """Hash a complete archive and its two segments in one bounded read pass."""
+
+    full_digest = hashlib.sha256()
+    prefix_digest = hashlib.sha256()
+    tail_digest = hashlib.sha256()
+    total_length = prefix_length + tail_length
+    position = 0
+    while position < total_length:
+        try:
+            chunk = os.pread(
+                descriptor,
+                min(COPY_CHUNK_BYTES, total_length - position),
+                position,
+            )
+        except OSError:
+            raise ProductApprovalError(
+                "product_approval.recovery_read",
+                "approval recovery archive could not be read",
+            ) from None
+        if not chunk:
+            raise ProductApprovalError(
+                "product_approval.recovery_changed",
+                "approval recovery archive changed during inspection",
+            )
+        full_digest.update(chunk)
+        prefix_chunk_length = max(0, min(len(chunk), prefix_length - position))
+        prefix_digest.update(chunk[:prefix_chunk_length])
+        tail_digest.update(chunk[prefix_chunk_length:])
+        position += len(chunk)
+    return (
+        full_digest.hexdigest(),
+        prefix_digest.hexdigest(),
+        tail_digest.hexdigest(),
+    )
+
+
 def _copy_range(
     source_descriptor: int,
     target_descriptor: int,
@@ -189,6 +233,28 @@ def _utc_text(value: dt.datetime | None = None) -> str:
     )
 
 
+def _prepared_at(value: Any) -> str:
+    text = _bounded_text(value, label="prepared_at", maximum=64)
+    if not text.endswith("Z"):
+        raise ProductApprovalError(
+            "product_approval.timestamp",
+            "approval recovery timestamp must use canonical UTC text",
+        )
+    try:
+        parsed = dt.datetime.fromisoformat(text[:-1] + "+00:00")
+    except ValueError:
+        raise ProductApprovalError(
+            "product_approval.timestamp",
+            "approval recovery timestamp is invalid",
+        ) from None
+    if parsed.utcoffset() != dt.timedelta(0) or _utc_text(parsed) != text:
+        raise ProductApprovalError(
+            "product_approval.timestamp",
+            "approval recovery timestamp must use canonical UTC text",
+        )
+    return text
+
+
 def recovery_id(report: PartialTailReport) -> str:
     return str(uuid.uuid5(RECOVERY_NAMESPACE, report.registry_sha256))
 
@@ -233,14 +299,32 @@ def parse_recovery_manifest(raw: bytes) -> dict[str, Any]:
             "product_approval.recovery_manifest",
             "approval recovery manifest digest is invalid",
         )
-    validate_archive_name(value["archive_file"])
+    archive_name = validate_archive_name(value["archive_file"])
+    archive_identifier = archive_name[len(ARCHIVE_PREFIX) : -len(ARCHIVE_SUFFIX)]
+    claimed_identifier = value["recovery_id"]
+    try:
+        canonical_identifier = str(uuid.UUID(claimed_identifier))
+    except (AttributeError, ValueError):
+        canonical_identifier = ""
+    derived_identifier = str(
+        uuid.uuid5(RECOVERY_NAMESPACE, value["damaged_registry_sha256"])
+    )
     _bounded_text(
         value["reason"],
         label="reason",
         maximum=MAX_RECOVERY_REASON_LENGTH,
     )
+    _bounded_text(
+        value["operator_reference"],
+        label="operator_reference",
+        maximum=1_024,
+    )
+    _prepared_at(value["prepared_at"])
     if (
-        value["archive_sha256"] != value["damaged_registry_sha256"]
+        claimed_identifier != canonical_identifier
+        or claimed_identifier != archive_identifier
+        or claimed_identifier != derived_identifier
+        or value["archive_sha256"] != value["damaged_registry_sha256"]
         or value["archive_byte_length"] != value["damaged_registry_byte_length"]
         or value["verified_prefix_byte_length"] + value["partial_tail_byte_length"]
         != value["damaged_registry_byte_length"]
@@ -375,6 +459,195 @@ def inspect_recovery_evidence(
             "archive_path": str(approvals_directory / archive_name),
             "manifest_path": str(approvals_directory / manifest_name),
             "manifest": manifest,
+        }
+    finally:
+        os.close(directory_descriptor)
+
+
+def _read_recovery_manifest_entry(
+    directory_descriptor: int,
+    manifest_name: str,
+) -> dict[str, Any]:
+    """Open and verify one discovered manifest without following its path."""
+
+    try:
+        descriptor = os.open(
+            manifest_name,
+            READ_FLAGS,
+            dir_fd=directory_descriptor,
+        )
+    except OSError:
+        raise ProductApprovalError(
+            "product_approval.recovery_manifest_changed",
+            f"approval recovery manifest is unsafe: {manifest_name}",
+        ) from None
+    try:
+        metadata = _validate_private_file(
+            descriptor,
+            label="approval.recovery_manifest",
+        )
+        if not 0 < metadata.st_size <= 32_768:
+            raise ProductApprovalError(
+                "product_approval.recovery_manifest_changed",
+                f"approval recovery manifest has unsafe size: {manifest_name}",
+            )
+        return parse_recovery_manifest(
+            _range_bytes(
+                descriptor,
+                offset=0,
+                length=metadata.st_size,
+            )
+        )
+    finally:
+        os.close(descriptor)
+
+
+def _verify_recovery_archive_entry(
+    directory_descriptor: int,
+    manifest: dict[str, Any],
+) -> None:
+    """Verify the exact archive and both digest-bound segments in one read pass."""
+
+    archive_name = manifest["archive_file"]
+    try:
+        descriptor = os.open(
+            archive_name,
+            READ_FLAGS,
+            dir_fd=directory_descriptor,
+        )
+    except OSError:
+        raise ProductApprovalError(
+            "product_approval.recovery_archive_changed",
+            f"approval recovery archive is missing or unsafe: {archive_name}",
+        ) from None
+    try:
+        metadata = _validate_private_file(
+            descriptor,
+            label="approval.recovery_archive",
+        )
+        archive_length = manifest["archive_byte_length"]
+        prefix_length = manifest["verified_prefix_byte_length"]
+        tail_length = manifest["partial_tail_byte_length"]
+        full_digest, prefix_digest, tail_digest = _archive_digests(
+            descriptor,
+            prefix_length=prefix_length,
+            tail_length=tail_length,
+        )
+        if (
+            metadata.st_size != archive_length
+            or full_digest != manifest["archive_sha256"]
+            or prefix_digest != manifest["verified_prefix_sha256"]
+            or tail_digest != manifest["partial_tail_sha256"]
+        ):
+            raise ProductApprovalError(
+                "product_approval.recovery_archive_changed",
+                f"approval recovery archive failed verification: {archive_name}",
+            )
+    finally:
+        os.close(descriptor)
+
+
+def inspect_reconciled_recovery_evidence(
+    approvals_directory: Path,
+    *,
+    current_registry: bytes,
+    current_record_sha256s: list[str],
+) -> dict[str, Any]:
+    """Verify every prepared manifest against a complete current ledger.
+
+    A prepared recovery is reconcilable when its verified prefix is the complete
+    current ledger or an exact byte prefix of a later valid ledger.  Every
+    matching manifest and archive is inspected through owner-private,
+    non-following descriptors; the scan is deliberately bounded.
+    """
+
+    directory_descriptor = _open_private_directory(
+        approvals_directory, label="approval.directory"
+    )
+    manifest_names: list[str] = []
+    pending_names: list[str] = []
+    try:
+        with os.scandir(directory_descriptor) as entries:
+            for entry_count, entry in enumerate(entries, start=1):
+                if entry_count > MAX_RECOVERY_DIRECTORY_ENTRIES:
+                    raise ProductApprovalError(
+                        "product_approval.recovery_evidence_scan_limit",
+                        "approval recovery evidence directory exceeds its scan limit",
+                    )
+                if entry.name.startswith(
+                    ".product-approval-recovery-"
+                ) and entry.name.endswith(".pending"):
+                    pending_names.append(entry.name)
+                    continue
+                if not entry.name.startswith(MANIFEST_PREFIX):
+                    continue
+                manifest_names.append(entry.name)
+                if len(manifest_names) > MAX_RECOVERY_MANIFESTS:
+                    raise ProductApprovalError(
+                        "product_approval.recovery_manifest_limit",
+                        "too many approval recovery manifests require reconciliation",
+                    )
+
+        reconciled: list[dict[str, Any]] = []
+        for manifest_name in sorted(manifest_names):
+            manifest = _read_recovery_manifest_entry(
+                directory_descriptor,
+                manifest_name,
+            )
+
+            if _manifest_name(manifest["recovery_id"]) != manifest_name:
+                raise ProductApprovalError(
+                    "product_approval.recovery_manifest_changed",
+                    f"approval recovery manifest filename is inconsistent: {manifest_name}",
+                )
+
+            _verify_recovery_archive_entry(directory_descriptor, manifest)
+
+            archive_name = manifest["archive_file"]
+            prefix_length = manifest["verified_prefix_byte_length"]
+            prefix_count = manifest["verified_prefix_record_count"]
+            prefix_last = manifest["verified_prefix_last_record_sha256"]
+            current_prefix_matches = (
+                prefix_length <= len(current_registry)
+                and hashlib.sha256(
+                    memoryview(current_registry)[:prefix_length]
+                ).hexdigest()
+                == manifest["verified_prefix_sha256"]
+                and prefix_count <= len(current_record_sha256s)
+                and (
+                    (prefix_count == 0 and prefix_last is None)
+                    or (
+                        prefix_count > 0
+                        and current_record_sha256s[prefix_count - 1] == prefix_last
+                    )
+                )
+            )
+            if not current_prefix_matches:
+                raise ProductApprovalError(
+                    "product_approval.recovery_evidence_mismatch",
+                    "current approval registry does not extend prepared recovery "
+                    f"prefix: {manifest_name}",
+                )
+            reconciled.append(
+                {
+                    "recovery_id": manifest["recovery_id"],
+                    "relationship": (
+                        "exact_verified_prefix"
+                        if prefix_length == len(current_registry)
+                        else "later_valid_ledger_extends_prefix"
+                    ),
+                    "manifest_path": str(approvals_directory / manifest_name),
+                    "archive_path": str(approvals_directory / archive_name),
+                    "manifest": manifest,
+                }
+            )
+        return {
+            "status": "reconciled" if reconciled else "absent",
+            "count": len(reconciled),
+            "items": reconciled,
+            "stale_pending_artifacts": [
+                str(approvals_directory / name) for name in sorted(pending_names)
+            ],
         }
     finally:
         os.close(directory_descriptor)
@@ -567,7 +840,11 @@ def create_recovery_manifest(
                 offset=0,
                 length=len(raw),
             )
-            if pending_identity != (sealed.st_dev, sealed.st_ino) or observed != raw:
+            if (
+                pending_identity != (sealed.st_dev, sealed.st_ino)
+                or sealed.st_size != len(raw)
+                or observed != raw
+            ):
                 raise ProductApprovalError(
                     "product_approval.recovery_manifest_changed",
                     "sealed approval recovery manifest changed",

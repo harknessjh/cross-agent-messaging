@@ -1252,7 +1252,10 @@ the registry inode while locked and publish an immutable, owner-private,
 no-follow/no-replace recovery manifest that binds the archive, damaged-ledger,
 verified-prefix, and partial-tail digests and byte counts, reason, and direct
 operator reference. Only after both artifacts are fsynced may it truncate and
-fsync the primary registry to the verified prefix. The existing
+fsync the primary registry to the verified prefix. Both artifacts MUST be
+re-opened without following links and verified again immediately before
+truncation. After commit, the implementation MUST verify the repaired bytes and
+that the live registry path still names the locked inode. The existing
 `CAM-PRODUCT-EXECUTABLE-APPROVAL/1` ledger MUST remain approve/revoke-only so a
 prior `/1` reader can replay it. Recovery MUST leave the active approval
 projection unchanged.
@@ -1274,6 +1277,18 @@ registry identity, expected prefix guards, and the read-only
 reused. Evidence names MUST be deterministic for the damaged-ledger digest;
 an interrupted retry MUST reuse matching evidence or refuse mismatched evidence,
 not create duplicate full archives.
+
+The read-only status operation MUST reconcile prepared evidence even when the
+primary ledger is already complete. It MUST use a bounded no-follow scan,
+validate the manifest's canonical timestamp and safe text, bind its canonical
+recovery UUID to both the archive filename and the damaged-ledger digest, verify
+the complete archive plus its prefix and tail segments, and report whether the
+current valid ledger equals or extends that prefix. Unsafe, malformed,
+mismatched, or over-limit evidence MUST fail closed. Reserved pending artifacts
+left by abrupt termination MUST be reported without being removed automatically.
+Cleanup failure after mutation MUST preserve the truthful `committed` or
+`unknown` state and reconciliation handles; it MUST NOT overwrite that result
+with a generic pre-mutation failure.
 
 ### Project identity and location
 
