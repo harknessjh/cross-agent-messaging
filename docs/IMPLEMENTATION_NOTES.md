@@ -262,6 +262,12 @@ than asking the caller to reconstruct them. Status, result, and error builders
 can take a previous response so they can check stateful ordering before writing
 new bytes.
 
+Reference builders serialize new envelopes as two-space-indented UTF-8 JSON
+without a trailing newline so product-visible headers are easier for an
+operator to scan. Compact or differently spaced JSON remains valid CAM/1.
+After an envelope is built, its whitespace is part of the exact bytes and must
+not be reformatted before validation, journaling, transport, ingest, or retry.
+
 The local lifecycle projection rejects regressions, responses after a terminal
 state, duplicate semantic execution, and result-before-acceptance sequences.
 One root nonce can appear in only one non-interim ACK or verification. After

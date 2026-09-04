@@ -49,6 +49,32 @@ class CamBuilderTests(unittest.TestCase):
         self.assertEqual(cam1.serialize_envelope(envelope), raw)
         cam1.validate_exact_bytes(raw, now=NOW)
 
+    def test_serializer_uses_two_space_indentation(self) -> None:
+        raw = cam1.serialize_envelope(
+            {
+                "protocol": "CAM/1",
+                "body": "First line.\nSecond line.",
+            }
+        )
+
+        self.assertEqual(
+            raw,
+            b'{\n  "protocol": "CAM/1",\n  "body": "First line.\\nSecond line."\n}',
+        )
+        self.assertFalse(raw.endswith(b"\n"))
+
+    def test_validator_still_accepts_compact_envelopes(self) -> None:
+        envelope = json.loads(self.build_request())
+        compact = json.dumps(
+            envelope,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+
+        self.assertNotIn(b"\n", compact)
+        cam1.validate_exact_bytes(compact, now=NOW)
+
     def test_default_ack_is_complete_fail_closed_and_correlated(self) -> None:
         request = self.build_request()
         raw = cam1.build_ack(
