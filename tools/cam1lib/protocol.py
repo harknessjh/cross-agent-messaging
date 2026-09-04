@@ -439,6 +439,6 @@ def serialize_envelope(envelope: dict[str, Any]) -> bytes:
     return json.dumps(
         envelope,
         ensure_ascii=False,
-        separators=(",", ":"),
+        indent=2,
         allow_nan=False,
     ).encode("utf-8")
