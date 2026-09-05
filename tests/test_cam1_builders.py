@@ -318,6 +318,72 @@ class CamTypedBuilderTests(unittest.TestCase):
             )
         self.assertEqual(context.exception.code, "argument.hello_fixed")
 
+    def test_ack_metadata_follows_root_without_inheriting_work_authority(self) -> None:
+        request = self.build_request()
+        cancel = cam1.build_cancel(
+            request,
+            **self.coordinator,
+            authority="example operator",
+            authorization_reference="cancel approval",
+            authorization_verified_at="2026-08-21T20:04:00Z",
+            authorization_expires_at="2026-08-21T20:09:00Z",
+            now=NOW,
+        )
+        roots = (
+            (fixture("valid-hello.json"), "first_contact"),
+            (challenge_envelope(), "first_contact"),
+            (request, "none"),
+            (cancel, "none"),
+        )
+        for root, basis in roots:
+            statuses = (
+                ("received", "rejected")
+                if json.loads(root)["type"] == "cancel"
+                else ("needs_human_confirmation", "rejected")
+            )
+            for status_value in statuses:
+                with self.subTest(root=json.loads(root)["type"], status=status_value):
+                    ack = cam1.build_ack(
+                        root, **self.worker_reply, status_value=status_value, now=NOW
+                    )
+                    value = json.loads(ack)
+                    self.assertEqual(value["authorization"]["basis"], basis)
+                    self.assertIsNone(value["authorization"]["authority"])
+                    self.assertTrue(
+                        cam1.validate_exact_bytes(
+                            ack, against_raw=root, now=NOW
+                        ).correlated
+                    )
+                    if basis == "none":
+                        self.assertNotIn("first contact", value["intent"])
+                        self.assertNotIn("enrollment", value["body"])
+                        self.assertNotIn("enrollment", value["receipt"]["detail"])
+            late = cam1.build_late_rejection(
+                root, **self.worker_reply, now=NOW + dt.timedelta(hours=2)
+            )
+            self.assertEqual(json.loads(late)["authorization"]["basis"], basis)
+
+    def test_request_ack_overrides_and_legacy_first_contact_remain_valid(self) -> None:
+        root = self.build_request()
+        ack = cam1.build_ack(
+            root,
+            **self.worker_reply,
+            status_value="received",
+            now=NOW,
+            intent="Receipt of review request",
+            detail="Captured",
+            body="Received for consideration.",
+        )
+        value = json.loads(ack)
+        self.assertEqual(value["intent"], "Receipt of review request")
+        self.assertEqual(value["receipt"]["detail"], "Captured")
+        self.assertEqual(value["body"], "Received for consideration.")
+        value["authorization"]["basis"] = "first_contact"
+        legacy = cam1.serialize_envelope(value)
+        self.assertTrue(
+            cam1.validate_exact_bytes(legacy, against_raw=root, now=NOW).correlated
+        )
+
     def test_request_builder_rejects_scope_and_risk_contradictions(self) -> None:
         arguments = {
             **self.coordinator,

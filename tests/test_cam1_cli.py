@@ -29,6 +29,60 @@ CLI_SUBPROCESS_TIMEOUT_SECONDS = 10
 
 
 class CamPublicSurfaceTests(unittest.TestCase):
+    def test_request_ack_cli_uses_generic_defaults(self) -> None:
+        now = dt.datetime.now(dt.UTC)
+        root = cam1.build_request(
+            sender_vendor="codex",
+            sender_name="coordinator",
+            sender_session="00000000-0000-4000-8000-000000000101",
+            recipient_vendor="claude-code",
+            recipient_name="worker",
+            recipient_session="00000000-0000-4000-8000-000000000102",
+            reply_transport="codex_queue",
+            reply_address="00000000-0000-4000-8000-000000000101",
+            risk_class="informational",
+            operation="discuss",
+            intent="Discuss an idea",
+            body="What do you think?",
+            authorization_basis="none",
+            now=now,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "request.json"
+            path.write_bytes(root)
+            path.chmod(0o600)
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "tools" / "cam1.py"),
+                    "build-ack",
+                    "--request",
+                    str(path),
+                    "--sender-vendor",
+                    "claude-code",
+                    "--sender-name",
+                    "worker",
+                    "--sender-session",
+                    "00000000-0000-4000-8000-000000000102",
+                    "--reply-transport",
+                    "claude_send_message",
+                    "--reply-address",
+                    "00000000-0000-4000-8000-000000000102",
+                    "--status",
+                    "received",
+                    "--stdout",
+                ],
+                capture_output=True,
+                timeout=CLI_SUBPROCESS_TIMEOUT_SECONDS,
+                check=False,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        ack = cam1.validate_exact_bytes(
+            result.stdout, against_raw=root, now=now
+        ).envelope
+        self.assertEqual(ack["authorization"]["basis"], "none")
+        self.assertEqual(ack["intent"], "Acknowledge CAM/1 request")
+
     def test_protocol_examples_equal_checked_fixtures(self) -> None:
         protocol = (ROOT / "PROTOCOL.md").read_text(encoding="utf-8")
         section = protocol.split("## 20. Minimal wire-envelope example", 1)[1]

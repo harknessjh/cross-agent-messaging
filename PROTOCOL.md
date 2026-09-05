@@ -404,6 +404,13 @@ Replies of type `ack`, `status`, `result`, or `error` MUST include a non-null `r
 
 Messages of type `hello`, `challenge`, `verify`, `request`, or `cancel` use `receipt: null`. The structured receipt is authoritative for CAM lifecycle correlation; free-text `body` content is explanatory only.
 
+The receipt describes the referenced root. The reply's own `authorization`
+describes authority claimed for its own `action`; replies do not inherit the
+root's work authorization. New reference-builder ACKs for `hello` or
+`challenge` use `first_contact`. ACKs for ordinary `request` or `cancel` roots
+use `none` and generic receipt wording. Existing CAM/1 ACKs using the older
+first-contact defaults remain valid; this change does not reinterpret history.
+
 Sender-supplied identity and authorization fields are claims. The receiver
 MUST separately record the transport facts it actually observes and MUST NOT
 overwrite them with claimed values or invent unavailable product metadata.
@@ -1095,6 +1102,16 @@ receiver's independent authorization check.
 | `delegated_scope` | A trusted operator granted a bounded, expiring delegation that covers the action and scope |
 
 For `operator_confirmation`, `receiver_policy`, and `delegated_scope`, the envelope MUST identify the authority and decision reference and include verification and expiry timestamps. Those sender-supplied fields remain claims until the receiver verifies them. `none` and `first_contact` MUST remain informational and side-effect free.
+
+Local permission to send CAM traffic is distinct from authority conveyed in
+an envelope. `none` means no action authority is claimed for the recipient;
+it does not mean the sender lacks permission to communicate. Ordinary
+discussion and its receipts SHOULD use `none` after first contact. An operator's
+continuing permission to exchange messages does not need to be copied into
+each envelope as `operator_confirmation`, nor does an envelope's TTL expire
+that independent local permission. A request for actual work must carry its
+own risk, scope, and applicable authority claim; bounded expiring delegations
+use `delegated_scope` and remain subject to receiver-owned checks.
 
 The receiving endpoint MUST reject or hold a consequential request whose
 claimed authority it cannot verify through its own policy or trusted operator

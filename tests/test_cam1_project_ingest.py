@@ -32,6 +32,63 @@ else:
 
 
 class ProjectMessageIngestTests(ProjectTestCase):
+    def test_newline_conflict_retains_failed_capture_and_allows_exact_recapture(
+        self,
+    ) -> None:
+        binding = self.initialize()
+        self.bind_ingest_participants(binding)
+        root = builders.build_hello(
+            sender_vendor="codex",
+            sender_name="project-coordinator",
+            sender_session=CODEX_SESSION,
+            recipient_vendor="claude-code",
+            recipient_name="bob-reviewer",
+            recipient_session=CLAUDE_SESSION,
+            reply_transport="codex_queue",
+            reply_address=CODEX_SESSION,
+            now=dt.datetime.now(dt.UTC),
+        )
+        store = state.StateStore(binding)
+        store.lifecycle_root(root, now=dt.datetime.now(dt.UTC))
+        bad_path = self.private_message_file("extra-newline.json", root + b"\n")
+        rejected = self.run_tool(
+            "message",
+            "ingest",
+            "--message",
+            str(bad_path),
+            "--as-participant",
+            "bob-reviewer",
+        )
+        self.assertEqual(rejected.returncode, 2)
+        self.assertEqual(
+            json.loads(rejected.stderr)["error"]["code"], "state.message_conflict"
+        )
+        exact_path = self.private_message_file("recaptured.json", root)
+        accepted = self.run_tool(
+            "message",
+            "ingest",
+            "--message",
+            str(exact_path),
+            "--as-participant",
+            "bob-reviewer",
+        )
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        records = journal.replay_records(binding)
+        observations = [
+            journal.decode_exact_message(record)
+            for record in records
+            if record["event_type"] == "message.inbound.observed"
+        ]
+        self.assertEqual(observations, [root + b"\n", root])
+        self.assertEqual(bad_path.read_bytes(), root + b"\n")
+        self.assertEqual(exact_path.read_bytes(), root)
+        self.assertEqual(
+            store.snapshot()
+            .lifecycle.entries[json.loads(root)["message_id"]]
+            .state.value,
+            "pending",
+        )
+
     def test_message_ingest_retains_malformed_bytes_before_rejection(self) -> None:
         binding = self.initialize()
         raw = b'{"protocol":"CAM/1",not-valid-json\n\xff'
