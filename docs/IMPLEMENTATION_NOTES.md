@@ -22,6 +22,24 @@ signal EOF. ACK defaults distinguish peer correlation from ordinary requests.
 Local authorization to exchange messages is not copied into a discussion
 envelope as a claim of authority over the recipient.
 
+An optional journal-only discussion link now connects fresh request roots to
+already received peer messages. It is deliberately separate from lifecycle
+`in_reply_to` and causal-ordering context. Existing tools can ignore the new
+descriptive attribute without changing enforcement. The implementation uses
+the existing JSON Schema dependency, standard-library UUID handling, and one
+in-memory index of the already bounded journal snapshot. It adds no transport
+framework, persistent index, service, or automatic conversation loop. The
+small domain-specific ancestry walk checks earlier same-session links; a
+general graph or messaging framework would not supply those CAM checks.
+
+Independent review found that an older adapter could omit the link during an
+otherwise eligible exact retry, blocking future linked discussions on the new
+reader. The regression suite now covers that legacy journal shape, multiple
+omitted-link retries, new-adapter dispatch, and unrelated discussions afterward.
+Recovery requires identical bytes and participants plus an explicit chain of
+conclusive pre-dispatch stops; it neither repairs history nor accepts changed
+links. The adapter integration uses fake products, not live delivery evidence.
+
 These notes describe one tested same-host interoperability environment. They
 are not CAM/1 requirements or vendor commitments, and product behavior may
 change. Use current vendor documentation and fresh capability discovery before

@@ -254,6 +254,15 @@ Use this checklist against the exact commit proposed for publication. A green so
 - Verify binary capture with stdin still open, short EOF without mutation,
   multibyte payloads, and retained trailing-newline conflicts. Check generic
   request ACKs and compatibility with older first-contact ACK defaults.
+- For journal conversation links, exercise both transport CLIs, exact received
+  evidence, same-session ancestry, missing/held parents, conflicting links,
+  retry preservation, and backward references. Verify independent lifecycle
+  roots and unchanged causal-ordering scope; no new wire field or authority
+  may appear.
+- Exercise older-writer retries that omit a known conversation link, including
+  multiple omissions, restored metadata on a later retry, and unrelated linked
+  discussions afterward. Reject ambiguous outcomes and conflicting links;
+  preserve the complete historical journal prefix.
 
 ## Git history
 

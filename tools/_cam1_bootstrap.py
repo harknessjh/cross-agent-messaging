@@ -49,6 +49,7 @@ _SOURCE_PATHS = {
     "tools.cam1lib.cli": "cam1lib/cli.py",
     "tools.cam1lib.compatibility": "cam1lib/compatibility.py",
     "tools.cam1lib.compatibility_cli": "cam1lib/compatibility_cli.py",
+    "tools.cam1lib.conversation": "cam1lib/conversation.py",
     "tools.cam1lib.darwin_acl": "cam1lib/darwin_acl.py",
     "tools.cam1lib.errors": "cam1lib/errors.py",
     "tools.cam1lib.enrollment": "cam1lib/enrollment.py",

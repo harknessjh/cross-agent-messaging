@@ -329,6 +329,7 @@ async def send_project_claude(
     retry_after_intent: str | None,
     summary: str | None,
     timeout_seconds: float,
+    continues_message: str | None = None,
     allow_dirty_validator: bool = False,
     expected_validation_profile_sha256: str | None = None,
 ) -> dict[str, Any]:
@@ -426,6 +427,7 @@ async def send_project_claude(
                     attempt,
                     recipient_participant=current,
                     renewal_of=renewal_of,
+                    continues_message=continues_message,
                     retry_after_intent=retry_after_intent,
                     validation_profile=validation_profile,
                     dirty_validator_override=dirty_validator_override,
@@ -497,6 +499,7 @@ def send_project_codex(
     renewal_of: str | None,
     retry_after_intent: str | None,
     timeout_seconds: float,
+    continues_message: str | None = None,
     allow_dirty_validator: bool = False,
     expected_validation_profile_sha256: str | None = None,
 ) -> dict[str, Any]:
@@ -572,6 +575,7 @@ def send_project_codex(
                 attempt,
                 recipient_participant=current,
                 renewal_of=renewal_of,
+                continues_message=continues_message,
                 retry_after_intent=retry_after_intent,
                 validation_profile=validation_profile,
                 dirty_validator_override=dirty_validator_override,
