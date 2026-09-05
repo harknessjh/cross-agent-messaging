@@ -60,6 +60,12 @@ sorted, unique, and limited to 64 canonical UUIDs. The implementation walks
 ancestry iteratively and remains bounded by the existing project-journal size
 and record-count limits.
 
+The optional [discussion link](CONTINUING_COLLABORATION.md#linking-follow-up-questions)
+uses a separate `CAM-CONVERSATION/1` journal attribute. It groups independent
+roots for human review; it does not merge their `CAM-CAUSAL/1` conversations
+or provide cross-root stale-instruction enforcement. The two formats' IDs may
+therefore differ intentionally.
+
 The send adapter derives the frontier only from valid inbound records authored
 by the intended recipient. It does not accept a caller-supplied frontier and
 does not use raw observations, global lifecycle state, or third-party traffic.

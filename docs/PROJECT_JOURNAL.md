@@ -208,6 +208,35 @@ override or repair journal history. See
 [Compatibility upgrades](COMPATIBILITY.md) for the staged plan, readiness, and
 activation workflow.
 
+### Conversation links
+
+A fresh request sent with `--continues-message UUID` records an optional
+`attributes.conversation_link` on its `message.outbound.intent`:
+
+```json
+{
+  "format": "CAM-CONVERSATION/1",
+  "conversation_id": "00000000-0000-4000-8000-000000000101",
+  "parent_message_id": "00000000-0000-4000-8000-000000000102"
+}
+```
+
+The adapter derives the first ID from earlier journal ancestry; the caller
+supplies only the received parent's ID. It requires exact validated inbound
+evidence, not merely an outbound intent or an unparsed observation. Each edge
+must stay within the same two session endpoints and point backward in the
+same project journal. Eligible retries copy the original link unchanged.
+
+This optional audit attribute needs no compatibility gate. Older journal
+readers may ignore it; missing or null links remain ordinary ungrouped history.
+It does not change the wire envelope, hash calculation, lifecycle projection,
+authority checks, or `CAM-CAUSAL/1` context. Generic journal verification checks
+record integrity, not this link's semantic ancestry; the send adapter checks
+that ancestry before extending it. See [Continuing
+collaboration](CONTINUING_COLLABORATION.md#linking-follow-up-questions).
+
+### Inspect lifecycle state
+
 `state status` is a non-mutating replay view. It does not append the aging
 events that a later state mutation records, so a pending or held item whose
 wall-clock deadline has just passed can remain displayed in its last recorded

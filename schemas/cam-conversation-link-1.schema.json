@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Copyright © 2026 John Harkness. Licensed under the PolyForm Noncommercial License 1.0.0; see LICENSE.",
+  "title": "CAM journal-only conversation link",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "conversation_id", "parent_message_id"],
+  "properties": {
+    "format": {"const": "CAM-CONVERSATION/1"},
+    "conversation_id": {"$ref": "#/$defs/uuid"},
+    "parent_message_id": {"$ref": "#/$defs/uuid"}
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    }
+  }
+}

@@ -225,6 +225,10 @@ def build_parser(api: TransportCliApi) -> argparse.ArgumentParser:
         help="exact journal intent UUID for a proven not-attempted prior send",
     )
     send_parser.add_argument("--summary")
+    send_parser.add_argument(
+        "--continues-message",
+        help="journal-only link from a fresh request to a previously received peer message UUID",
+    )
 
     reply_parser = subparsers.add_parser(
         "codex-send",
@@ -257,6 +261,10 @@ def build_parser(api: TransportCliApi) -> argparse.ArgumentParser:
         "--retry-after-intent",
         help="exact journal intent UUID for a proven not-attempted prior send",
     )
+    reply_parser.add_argument(
+        "--continues-message",
+        help="journal-only link from a fresh request to a previously received peer message UUID",
+    )
     return parser
 
 
@@ -267,6 +275,13 @@ def main(
 ) -> int:
     args = build_parser(api).parse_args(argv)
     try:
+        if getattr(args, "continues_message", None) is not None and (
+            args.renewal_of is not None or args.retry_after_intent is not None
+        ):
+            raise api.transport_error(
+                "conversation.argument_conflict",
+                "a continuation cannot also be a retry or renewal",
+            )
         timeout_seconds = api.bounded_timeout(args.timeout_seconds)
         if args.command.startswith("product-"):
             api.require_live_validation_profile(
@@ -438,6 +453,7 @@ def main(
                     against_path=args.against,
                     renewal_of=args.renewal_of,
                     retry_after_intent=args.retry_after_intent,
+                    continues_message=args.continues_message,
                     summary=args.summary,
                     timeout_seconds=timeout_seconds,
                     allow_dirty_validator=args.allow_dirty_validator,
@@ -467,6 +483,7 @@ def main(
                 against_path=args.against,
                 renewal_of=args.renewal_of,
                 retry_after_intent=args.retry_after_intent,
+                continues_message=args.continues_message,
                 timeout_seconds=timeout_seconds,
                 allow_dirty_validator=args.allow_dirty_validator,
                 expected_validation_profile_sha256=(

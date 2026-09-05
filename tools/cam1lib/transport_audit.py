@@ -12,7 +12,15 @@ from typing import Any
 from tools import cam1
 from tools import cam1_transport_native as _native
 from tools import cam1_transport_retry as _retry
-from tools.cam1lib import causal, journal, lifecycle, participants, project, state
+from tools.cam1lib import (
+    causal,
+    conversation,
+    journal,
+    lifecycle,
+    participants,
+    project,
+    state,
+)
 
 TransportError = _native.TransportError
 ValidatedEnvelope = _native.ValidatedEnvelope
@@ -78,6 +86,7 @@ def _intent_attributes(
     dirty_validator_override: bool,
     observed_at: str,
     causal_context: causal.CausalContext | None,
+    conversation_link: conversation.ConversationLink | None = None,
 ) -> dict[str, Any]:
     action = validated.envelope["action"]
     return {
@@ -106,6 +115,9 @@ def _intent_attributes(
         "dirty_validator_override": dirty_validator_override,
         "causal_context": (
             causal_context.as_dict() if causal_context is not None else None
+        ),
+        "conversation_link": (
+            conversation_link.as_dict() if conversation_link is not None else None
         ),
         "observed_at": observed_at,
     }
@@ -254,6 +266,7 @@ def _prepare_and_journal_intent(
     retry_after_intent: str | None,
     validation_profile: dict[str, Any],
     dirty_validator_override: bool,
+    continues_message: str | None = None,
 ) -> None:
     event_now, observed_at = _utc_now()
     try:
@@ -274,7 +287,12 @@ def _prepare_and_journal_intent(
         )
         history_records = journal.replay_records(
             binding,
-            event_types=causal.CAUSAL_JOURNAL_EVENT_TYPES,
+            event_types=(
+                causal.CAUSAL_JOURNAL_EVENT_TYPES
+                | conversation.CONVERSATION_JOURNAL_EVENT_TYPES
+                if continues_message is not None
+                else causal.CAUSAL_JOURNAL_EVENT_TYPES
+            ),
         )
         _require_reply_slot_available(
             binding,
@@ -306,6 +324,15 @@ def _prepare_and_journal_intent(
             renewal_of=plan.preview.renewal_of,
             retry_after_intent=retry_intent_id,
         )
+        conversation_link = conversation.build_outbound_link(
+            history_records,
+            validated.envelope,
+            sender_participant_id=sender_participant.participant_id,
+            recipient_participant_id=recipient_participant.participant_id,
+            continues_message=continues_message,
+            renewal_of=plan.preview.renewal_of,
+            retry_after_intent=retry_intent_id,
+        )
         if validated.envelope["type"] in lifecycle.ROOT_TYPES and (
             plan.preview.state != lifecycle.LifecycleState.PENDING
         ):
@@ -329,6 +356,7 @@ def _prepare_and_journal_intent(
                 dirty_validator_override=dirty_validator_override,
                 observed_at=observed_at,
                 causal_context=causal_context,
+                conversation_link=conversation_link,
             ),
             now=event_now,
             transaction=transaction,
