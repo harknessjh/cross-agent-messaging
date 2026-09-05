@@ -55,7 +55,7 @@ def received(raw, sequence, *, reverse=False):
         "sequence": sequence + 1,
         "attributes": {
             "observed_record_id": observation["record_id"],
-            "message_id": _message_id(raw),
+            "message_id": str(uuid.UUID(_message_id(raw))),
             "sender_participant_id": RECIPIENT if reverse else SENDER,
             "recipient_participant_id": SENDER if reverse else RECIPIENT,
             "assessment": "validated",
@@ -133,6 +133,18 @@ class ConversationLinkTests(unittest.TestCase):
             self.assertEqual(error.exception.code, "conversation.identifier")
         link = self.link(continues_message=_message_id(self.parent).upper())
         self.assertEqual(link.parent_message_id, _message_id(self.parent))
+
+    def test_uppercase_wire_id_matches_canonical_inbound_metadata(self):
+        envelope = protocol.parse_exact_bytes(self.parent)
+        envelope["message_id"] = "ABCDEF00-ABCD-4000-8000-ABCDEF000001"
+        self.parent = protocol.serialize_envelope(envelope)
+        self.records = [
+            intent(self.parent, 1, reverse=True),
+            *received(self.parent, 2, reverse=True),
+        ]
+        link = self.link(continues_message=envelope["message_id"])
+        self.assertEqual(link.parent_message_id, envelope["message_id"].lower())
+        self.assertEqual(link.conversation_id, envelope["message_id"].lower())
 
     def test_new_roots_and_lifecycle_replies_derive_same_audit_group(self):
         link = self.link(continues_message=_message_id(self.parent))

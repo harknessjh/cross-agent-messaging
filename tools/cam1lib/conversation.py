@@ -132,6 +132,7 @@ def _require_received(
     sender_participant_id: str,
     recipient_participant_id: str,
 ) -> None:
+    parent_id = _uuid(parent.envelope["message_id"])
     observations = {
         record["record_id"]: record
         for record in records
@@ -141,8 +142,10 @@ def _require_received(
         if record["event_type"] != "message.inbound.validated":
             continue
         attributes = record["attributes"]
+        validated_id = attributes.get("message_id")
         if (
-            attributes.get("message_id") != parent.envelope["message_id"]
+            not isinstance(validated_id, str)
+            or validated_id.lower() != parent_id
             or attributes.get("recipient_participant_id") != sender_participant_id
             or attributes.get("sender_participant_id") != recipient_participant_id
             or attributes.get("assessment") != "validated"
