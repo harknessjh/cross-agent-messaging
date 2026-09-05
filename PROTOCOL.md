@@ -1413,6 +1413,39 @@ missing rather than be inferred from sender claims.
 Malformed and expired messages therefore remain auditable without becoming
 valid or actionable.
 
+### Optional discussion grouping
+
+The reference adapter MAY record a `CAM-CONVERSATION/1` object under an
+outbound intent's `conversation_link` attribute. Its schema is
+[cam-conversation-link-1.schema.json](schemas/cam-conversation-link-1.schema.json).
+It contains `conversation_id` (the derived first message UUID) and
+`parent_message_id` (the earlier peer message being continued).
+
+The `--continues-message` option applies only to a fresh `request` root and
+MUST NOT be combined with a renewal or retry request. The parent MUST have
+exact, validated, non-held inbound evidence for the new sender in the same
+project journal. Its ancestry MUST retain the same two session endpoints and
+point to earlier messages. The adapter MUST derive the starting UUID rather
+than accepting a caller's asserted conversation ID, and an eligible exact
+retry MUST preserve its original link.
+
+When an older writer omits the link on a retry, the reference adapter MAY
+recover the uniquely established original link from the append-only history.
+Each omitted-link attempt MUST preserve exact bytes and participants, name the
+immediately preceding attempt, and follow that attempt's single conclusive
+`not_attempted` outcome. It MUST NOT infer a link across an unproven retry,
+add one to an originally unlinked message, accept contradictory non-null links,
+or rewrite any journal record. Later eligible retries preserve the recovered
+link rather than copying the most recent omission.
+
+This is descriptive audit metadata, not wire data or an enforcement feature.
+It MUST NOT change lifecycle correlation, completion, expiry, recipient
+authority, or the scope of `CAM-CAUSAL/1`. Old readers MAY ignore it and old
+records need no backfill. Generic journal verification proves the containing
+record's integrity; it does not by itself certify this attribute's ancestry.
+The adapter checks that ancestry before extending it. See [Continuing
+collaboration](docs/CONTINUING_COLLABORATION.md#linking-follow-up-questions).
+
 Provenance MUST be captured by the journal tooling rather than copied from a
 message body. Failure to obtain required Git provenance MUST fail the append
 instead of producing an unbound evidence record. Provenance binds an event to a
