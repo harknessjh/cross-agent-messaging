@@ -231,6 +231,11 @@ def _parser() -> argparse.ArgumentParser:
         help="absolute new owner-only file required with --stdin",
     )
     ingest_parser.add_argument(
+        "--stdin-byte-count",
+        type=int,
+        help="capture exactly this many binary stdin bytes without waiting for EOF",
+    )
+    ingest_parser.add_argument(
         "--as-participant",
         required=True,
         help="active local roster participant that received these exact bytes",
@@ -258,6 +263,12 @@ def _validate_arguments(
     if args.domain != "message" or args.message_command != "ingest":
         return
     if args.stdin:
+        if args.stdin_byte_count is not None and not (
+            1 <= args.stdin_byte_count <= journal.MAX_EXACT_MESSAGE_BYTES
+        ):
+            parser.error(
+                f"--stdin-byte-count must be between 1 and {journal.MAX_EXACT_MESSAGE_BYTES}"
+            )
         if args.capture_to is None:
             parser.error("--capture-to is required with --stdin")
         if not Path(args.capture_to).is_absolute():
@@ -265,9 +276,11 @@ def _validate_arguments(
         return
     if args.capture_to is not None:
         parser.error("--capture-to is valid only with --stdin")
+    if args.stdin_byte_count is not None:
+        parser.error("--stdin-byte-count is valid only with --stdin")
 
 
-def _read_exact_stdin(*, max_bytes: int) -> bytes:
+def _read_exact_stdin(*, max_bytes: int, byte_count: int | None = None) -> bytes:
     """Read one bounded binary stdin payload without text transcoding."""
 
     stream = getattr(sys.stdin, "buffer", None)
@@ -275,6 +288,19 @@ def _read_exact_stdin(*, max_bytes: int) -> bytes:
         raise project.ProjectError(
             "message.stdin_binary", "binary stdin is unavailable"
         )
+    if byte_count is not None:
+        chunks: list[bytes] = []
+        remaining = byte_count
+        while remaining:
+            chunk = stream.read(remaining)
+            if not chunk:
+                raise project.ProjectError(
+                    "message.stdin_short",
+                    f"stdin ended after {byte_count - remaining} of {byte_count} bytes",
+                )
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
     raw = stream.read(max_bytes + 1)
     if not raw:
         raise project.ProjectError(
@@ -625,7 +651,10 @@ def _handle_message(args: argparse.Namespace, binding: project.ProjectBinding) -
     message_path = args.message
     observed_source = "owner_only_file"
     if args.stdin:
-        exact_message = _read_exact_stdin(max_bytes=journal.MAX_EXACT_MESSAGE_BYTES)
+        exact_message = _read_exact_stdin(
+            max_bytes=journal.MAX_EXACT_MESSAGE_BYTES,
+            byte_count=args.stdin_byte_count,
+        )
         project.create_private_bytes(Path(args.capture_to), exact_message)
         message_path = None
         observed_source = "binary_stdin_capture"

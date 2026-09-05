@@ -251,6 +251,9 @@ Use this checklist against the exact commit proposed for publication. A green so
   other or new `WARN` as a release failure.
 - Review dependency licenses and vulnerability status.
 - Obtain an independent technical and security review of the exact staged tree.
+- Verify binary capture with stdin still open, short EOF without mutation,
+  multibyte payloads, and retained trailing-newline conflicts. Check generic
+  request ACKs and compatibility with older first-contact ACK defaults.
 
 ## Git history
 
