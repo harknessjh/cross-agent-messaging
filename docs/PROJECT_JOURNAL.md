@@ -565,6 +565,13 @@ A successful ingest reports `status: validated`, lifecycle state,
 `authorization_evaluated: false`, and `action_authorized: false`. Validation is
 not a recipient acceptance decision and never authorizes the message body.
 
+For direct binary stdin capture, use `--stdin --capture-to ABSOLUTE_NEW_FILE`.
+If that channel cannot close stdin, add `--stdin-byte-count N` using the known
+complete UTF-8 payload length. The capture preserves exactly those bytes,
+creates an exclusive mode-`0600` file, and then ingests it. A short EOF creates
+neither a file nor an observation. This frames the local capture only; it does
+not change the CAM envelope or remove transport-visible whitespace.
+
 When the optional `causal.ordering/1` compatibility gate is active, the
 project-aware sender derives non-wire `CAM-CAUSAL/1` context from this same
 journal. Ingest holds a post-activation request or cancel that omits potentially

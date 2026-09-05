@@ -343,7 +343,9 @@ def _parser() -> argparse.ArgumentParser:
         default="needs_human_confirmation",
     )
     ack_parser.add_argument("--detail")
-    ack_parser.add_argument("--intent", default="Acknowledge CAM/1 first contact")
+    ack_parser.add_argument(
+        "--intent", help="override the root-specific acknowledgment intent"
+    )
     ack_parser.add_argument("--body")
 
     status_parser = subparsers.add_parser(

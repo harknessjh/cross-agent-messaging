@@ -278,7 +278,11 @@ def _base_response(
             "idempotency_key": message_id,
         },
         "authorization": _authorization(
-            basis="first_contact" if message_type == "ack" else "none",
+            basis=(
+                "first_contact"
+                if message_type == "ack" and request["type"] in {"hello", "challenge"}
+                else "none"
+            ),
             authority=None,
             reference=None,
             verified_at=None,
@@ -607,7 +611,7 @@ def build_ack(
     sender_host_id: str | None = None,
     status_value: str = "needs_human_confirmation",
     detail: str | None = None,
-    intent: str = "Acknowledge CAM/1 first contact",
+    intent: str | None = None,
     body: str | None = None,
     expires_in: int = DEFAULT_TTL_SECONDS,
     now: dt.datetime | None = None,
@@ -623,15 +627,27 @@ def build_ack(
             "argument.status",
             "status is not a legal acknowledgment for the request type",
         )
+    first_contact = request["type"] in {"hello", "challenge"}
+    if intent is None:
+        intent = (
+            "Acknowledge CAM/1 first contact"
+            if first_contact
+            else "Acknowledge CAM/1 request"
+        )
+    confirmation_detail = (
+        "Operator verification is required before peer correlation."
+        if first_contact
+        else "Receiver-side confirmation is required before acting on this request."
+    )
     if detail is None:
         detail = (
-            "Operator verification is required before enrollment."
+            confirmation_detail
             if status_value == "needs_human_confirmation"
             else "Message received; no additional action is established by this acknowledgment."
         )
     if body is None:
         body = (
-            "received; no action taken; operator verification required before enrollment"
+            f"No action taken. {confirmation_detail}"
             if status_value == "needs_human_confirmation"
             else f"{status_value}; no additional action established"
         )

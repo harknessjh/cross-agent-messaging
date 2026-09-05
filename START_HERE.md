@@ -278,6 +278,7 @@ Separately, CAM records account-wide product executable approvals in the owner-p
 | When you need… | Read… |
 | --- | --- |
 | Exact commands or troubleshooting | [Detailed Codex-to-Claude procedure](docs/CODEX_TO_CLAUDE.md) |
+| Continue a conversation after the first hello/ACK | [Continuing collaboration](docs/CONTINUING_COLLABORATION.md) |
 | Journal, roster, or retention details | [Project journal guide](docs/PROJECT_JOURNAL.md) |
 | Compatibility upgrades or causal ordering | [Compatibility gates](docs/COMPATIBILITY.md) and [causal ordering](docs/CAUSAL_ORDERING.md) |
 | The security model or private reporting route | [Security policy](SECURITY.md) |

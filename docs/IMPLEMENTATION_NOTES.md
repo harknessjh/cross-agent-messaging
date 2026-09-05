@@ -7,6 +7,21 @@
 - Status: non-normative compatibility notes
 - Reference snapshot: 2026-08-31
 
+### Capture and ACK follow-up (2026-09-05)
+
+A disposable formatting test delivered indented JSON successfully. The first
+receiver file capture added one trailing LF, causing `state.message_conflict`
+against the already recorded serialization. A separate exact recapture passed.
+This was a capture-boundary change, not evidence of transport corruption.
+Trailing LF is valid JSON whitespace; it is a conflict only when a known
+message ID has different preserved bytes. The regression suite retains both
+observations and never trims or rewrites the rejected file.
+
+Counted binary stdin now supports tools that can write a frame but cannot
+signal EOF. ACK defaults distinguish peer correlation from ordinary requests.
+Local authorization to exchange messages is not copied into a discussion
+envelope as a claim of authority over the recipient.
+
 These notes describe one tested same-host interoperability environment. They
 are not CAM/1 requirements or vendor commitments, and product behavior may
 change. Use current vendor documentation and fresh capability discovery before

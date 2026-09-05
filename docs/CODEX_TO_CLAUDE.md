@@ -422,6 +422,17 @@ channel and then close stdin. The command reads bounded binary input, refuses
 an empty or oversized payload, exclusively creates the new mode-`0600` file,
 and journals those identical bytes before parsing them.
 
+When the process-stdin channel cannot signal EOF, add `--stdin-byte-count N`.
+Supply the UTF-8 byte count of the complete product-visible payload, determined
+before writing; a character count is not a byte count. CAM reads exactly that
+frame and returns without waiting for EOF. Use a dedicated process for one
+payload: bytes beyond the declared frame are not part of the capture. An early
+EOF fails with `message.stdin_short` before creating a file or journal entry.
+If the producer stays open without supplying the declared bytes, stop the
+capture process; counted framing does not provide a delivery timeout.
+Never choose a shorter count to remove whitespace, infer the count from a
+reserialized object, or use this option to repair a previously rejected capture.
+
 If the product has no direct process-stdin channel, use its literal file-write
 capability once inside the private working directory, set that new file to mode
 `0600`, and run the same command with `--message ABSOLUTE_NEW_FILE` instead of
@@ -429,6 +440,13 @@ capability once inside the private working directory, set that new file to mode
 boundary. Never retype fields, reconstruct UUIDs, or pass the envelope through
 shell interpolation. In either form, a nonzero result means stop without
 repairing the peer envelope.
+
+File-write tools may append a newline. Confirm that the chosen tool preserves
+the complete serialization, including its final byte. A trailing newline is
+legal JSON whitespace, but adding it changes the exact message bytes. Retain
+a failed capture unchanged; recapture from the original product-visible input
+into a new file only when that input is still available. Do not trim the file
+or replace it with a sender-side journal copy and call that received evidence.
 
 ## 5. Self-enroll the participant roster
 

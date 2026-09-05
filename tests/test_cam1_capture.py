@@ -9,6 +9,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import unicodedata
 import unittest
 from pathlib import Path
 
@@ -194,6 +195,122 @@ class StdinCaptureTests(unittest.TestCase):
         self.assertTrue(link.is_symlink())
         self.assertEqual(target.read_bytes(), b"target")
         self.assertEqual(journal.verify_journal(self.binding).record_count, 0)
+
+    def test_counted_capture_finishes_with_stdin_still_open(self) -> None:
+        raw = b'{"body":"caf\xc3\xa9 \\n"}\r\n'
+        capture_path = self.capture_dir / "counted.cam1.json"
+        with subprocess.Popen(
+            self.command(
+                "message",
+                "ingest",
+                "--stdin",
+                "--stdin-byte-count",
+                str(len(raw)),
+                "--capture-to",
+                str(capture_path),
+                "--as-participant",
+                "reviewer",
+            ),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        ) as process:
+            try:
+                assert process.stdin is not None
+                for chunk in (raw[:14], raw[14:15], raw[15:]):
+                    process.stdin.write(chunk)
+                    process.stdin.flush()
+                self.assertEqual(process.wait(timeout=30), 2)
+                self.assertFalse(process.stdin.closed)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait()
+        self.assertEqual(capture_path.read_bytes(), raw)
+        self.assertEqual(stat.S_IMODE(capture_path.stat().st_mode), 0o600)
+        self.assertEqual(
+            journal.decode_exact_message(journal.replay_records(self.binding)[0]), raw
+        )
+
+    def test_counted_short_input_and_invalid_counts_leave_no_artifacts(self) -> None:
+        for count in (
+            "0",
+            "-1",
+            str(journal.MAX_EXACT_MESSAGE_BYTES + 1),
+            "wrong",
+            "5",
+        ):
+            with self.subTest(count=count):
+                capture_path = self.capture_dir / f"count-{count}.json"
+                result = self.run_tool(
+                    "message",
+                    "ingest",
+                    "--stdin",
+                    "--stdin-byte-count",
+                    count,
+                    "--capture-to",
+                    str(capture_path),
+                    "--as-participant",
+                    "reviewer",
+                    input_bytes=b"four",
+                )
+                self.assertEqual(result.returncode, 2)
+                if count == "5":
+                    self.assertEqual(
+                        json.loads(result.stderr)["error"]["code"],
+                        "message.stdin_short",
+                    )
+                self.assertFalse(capture_path.exists())
+        result = self.run_tool(
+            "message",
+            "ingest",
+            "--message",
+            str(self.capture_dir / "absent.json"),
+            "--stdin-byte-count",
+            "5",
+            "--as-participant",
+            "reviewer",
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(journal.verify_journal(self.binding).record_count, 0)
+
+    def test_capture_preserves_byte_distinct_serializations(self) -> None:
+        # Invalid envelopes must also be preserved before validation rejects them.
+        baseline = '{"body":"café/a","n":1}'.encode()
+        variants = (
+            baseline,
+            baseline + b"\n",
+            baseline + b"\r\n",
+            b"\xef\xbb\xbf" + baseline,
+            unicodedata.normalize("NFD", baseline.decode()).encode(),
+            b'{"n":1,"body":"caf\\u00e9/a"}',
+            baseline.replace(b"/", b"\\/"),
+            baseline.replace(b"1}", b"1.0}"),
+            b'{"body":"\\ud800"}',
+        )
+        for index, raw in enumerate(variants):
+            with self.subTest(index=index):
+                path = self.capture_dir / f"variant-{index}.json"
+                result = self.run_tool(
+                    "message",
+                    "ingest",
+                    "--stdin",
+                    "--stdin-byte-count",
+                    str(len(raw)),
+                    "--capture-to",
+                    str(path),
+                    "--as-participant",
+                    "reviewer",
+                    input_bytes=raw,
+                )
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual(path.read_bytes(), raw)
+        observed = [
+            journal.decode_exact_message(record)
+            for record in journal.replay_records(self.binding)
+            if record["event_type"] == "message.inbound.observed"
+        ]
+        self.assertEqual(observed, list(variants))
 
     def test_capture_rejects_symlinked_ancestor_without_redirecting_output(
         self,
