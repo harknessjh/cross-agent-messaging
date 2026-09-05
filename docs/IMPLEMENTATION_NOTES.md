@@ -32,6 +32,14 @@ framework, persistent index, service, or automatic conversation loop. The
 small domain-specific ancestry walk checks earlier same-session links; a
 general graph or messaging framework would not supply those CAM checks.
 
+Independent review found that an older adapter could omit the link during an
+otherwise eligible exact retry, blocking future linked discussions on the new
+reader. The regression suite now covers that legacy journal shape, multiple
+omitted-link retries, new-adapter dispatch, and unrelated discussions afterward.
+Recovery requires identical bytes and participants plus an explicit chain of
+conclusive pre-dispatch stops; it neither repairs history nor accepts changed
+links. The adapter integration uses fake products, not live delivery evidence.
+
 These notes describe one tested same-host interoperability environment. They
 are not CAM/1 requirements or vendor commitments, and product behavior may
 change. Use current vendor documentation and fresh capability discovery before

@@ -259,6 +259,10 @@ Use this checklist against the exact commit proposed for publication. A green so
   retry preservation, and backward references. Verify independent lifecycle
   roots and unchanged causal-ordering scope; no new wire field or authority
   may appear.
+- Exercise older-writer retries that omit a known conversation link, including
+  multiple omissions, restored metadata on a later retry, and unrelated linked
+  discussions afterward. Reject ambiguous outcomes and conflicting links;
+  preserve the complete historical journal prefix.
 
 ## Git history
 

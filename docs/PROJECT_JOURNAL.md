@@ -228,7 +228,13 @@ must stay within the same two session endpoints and point backward in the
 same project journal. Eligible retries copy the original link unchanged.
 
 This optional audit attribute needs no compatibility gate. Older journal
-readers may ignore it; missing or null links remain ordinary ungrouped history.
+readers may ignore it. An originally missing or null link remains ungrouped.
+If an older writer omits a known link on an exact retry, new readers recover it
+only through the explicit byte- and participant-identical retry chain, with
+one conclusive `not_attempted` outcome before each retry. Conflicting non-null
+links and unproven omissions remain errors. Recovery is an in-memory view:
+historical records are unchanged, and later eligible retries copy the original
+link even when the latest legacy attempt omitted it.
 It does not change the wire envelope, hash calculation, lifecycle projection,
 authority checks, or `CAM-CAUSAL/1` context. Generic journal verification checks
 record integrity, not this link's semantic ancestry; the send adapter checks

@@ -17,6 +17,7 @@ if __package__:
         SENDER,
         _intent,
         _message_id,
+        _not_attempted,
         _request,
     )
 else:
@@ -27,6 +28,7 @@ else:
         SENDER,
         _intent,
         _message_id,
+        _not_attempted,
         _request,
     )
 
@@ -187,6 +189,119 @@ class ConversationLinkTests(unittest.TestCase):
                     **{field: str(uuid.uuid4())},
                 )
             self.assertEqual(error.exception.code, "conversation.argument_conflict")
+
+    def legacy_retry_history(self, *, second_retry=False):
+        oldest = _request()
+        link = conversation.ConversationLink(_message_id(oldest), _message_id(oldest))
+        original = intent(self.parent, 4, reverse=True, link=link)
+        retry = intent(self.parent, 6, reverse=True)
+        retry["attributes"].pop("conversation_link")
+        retry["attributes"]["retry_after_intent"] = original["record_id"]
+        self.records = [
+            intent(oldest, 1),
+            *received(oldest, 2),
+            original,
+            _not_attempted(original, sequence=5),
+            retry,
+        ]
+        if second_retry:
+            later = intent(self.parent, 8, reverse=True)
+            later["attributes"]["retry_after_intent"] = retry["record_id"]
+            self.records.extend([_not_attempted(retry, sequence=7), later])
+            retry = later
+        self.records.extend(received(self.parent, retry["sequence"] + 1, reverse=True))
+        return link, original, retry
+
+    def test_legacy_retry_omissions_preserve_links_and_unrelated_discussions(self):
+        for second_retry in (False, True):
+            with self.subTest(second_retry=second_retry):
+                expected, _original, _retry = self.legacy_retry_history(
+                    second_retry=second_retry
+                )
+                exact_history = copy.deepcopy(self.records)
+                link = self.link(continues_message=_message_id(self.parent))
+                self.assertEqual(link.conversation_id, expected.conversation_id)
+                self.assertEqual(link.parent_message_id, _message_id(self.parent))
+                self.assertEqual(self.records, exact_history)
+
+                unrelated = _request(reverse=True)
+                self.records.extend(
+                    [
+                        intent(unrelated, 20, reverse=True),
+                        *received(unrelated, 21, reverse=True),
+                    ]
+                )
+                other = self.link(continues_message=_message_id(unrelated))
+                self.assertEqual(other.conversation_id, _message_id(unrelated))
+
+    def test_new_retry_recovers_link_from_legacy_retry_lineage(self):
+        expected, _original, latest = self.legacy_retry_history(second_retry=True)
+        self.records = self.records[:-2]
+        self.records.append(_not_attempted(latest, sequence=9))
+        self.assertEqual(self.link(retry_after_intent=latest["record_id"]), expected)
+
+    def test_retry_link_resolution_does_not_validate_unrelated_links(self):
+        original = self.records[0]
+        unrelated = intent(_request(), 10)
+        unrelated["attributes"]["conversation_link"] = {"format": "unknown"}
+        self.records.append(unrelated)
+        self.assertIsNone(self.link(retry_after_intent=original["record_id"]))
+
+    def test_legacy_omission_requires_exact_conclusive_retry_lineage(self):
+        for variant in (
+            "no_reference",
+            "wrong_reference",
+            "no_outcome",
+            "accepted",
+            "unknown",
+            "duplicate_outcome",
+            "late_outcome",
+            "early_outcome",
+            "different_bytes",
+            "different_participant",
+            "different_link",
+        ):
+            with self.subTest(variant=variant):
+                expected, original, retry = self.legacy_retry_history()
+                outcome = self.records[4]
+                if variant == "no_reference":
+                    retry["attributes"].pop("retry_after_intent")
+                elif variant == "wrong_reference":
+                    retry["attributes"]["retry_after_intent"] = self.records[0][
+                        "record_id"
+                    ]
+                elif variant == "no_outcome":
+                    self.records.remove(outcome)
+                elif variant == "accepted":
+                    outcome["event_type"] = "transport.accepted"
+                elif variant == "unknown":
+                    outcome["attributes"]["delivery_state"] = "unknown"
+                elif variant == "duplicate_outcome":
+                    self.records.append(copy.deepcopy(outcome))
+                elif variant == "late_outcome":
+                    outcome["sequence"] = retry["sequence"] + 1
+                elif variant == "early_outcome":
+                    outcome["sequence"] = original["sequence"]
+                elif variant == "different_bytes":
+                    retry["message"] = journal._encoded_message(self.parent + b"\n")
+                elif variant == "different_participant":
+                    retry["attributes"]["recipient_participant_id"] = str(uuid.uuid4())
+                else:
+                    retry["attributes"]["conversation_link"] = (
+                        conversation.ConversationLink(
+                            str(uuid.uuid4()), expected.parent_message_id
+                        ).as_dict()
+                    )
+                with self.assertRaises(conversation.ConversationError) as error:
+                    self.link(continues_message=_message_id(self.parent))
+                self.assertEqual(error.exception.code, "conversation.message_conflict")
+
+    def test_legacy_retry_cannot_skip_the_latest_attempt(self):
+        _expected, original, latest = self.legacy_retry_history(second_retry=True)
+        latest["attributes"]["retry_after_intent"] = original["record_id"]
+        with self.assertRaises(conversation.ConversationError) as error:
+            self.link(continues_message=_message_id(self.parent))
+        self.assertEqual(error.exception.code, "conversation.message_conflict")
 
     def test_unknown_self_and_non_root_links_are_rejected(self):
         for target, code in (

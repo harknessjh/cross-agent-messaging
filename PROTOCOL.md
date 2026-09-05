@@ -1429,6 +1429,15 @@ point to earlier messages. The adapter MUST derive the starting UUID rather
 than accepting a caller's asserted conversation ID, and an eligible exact
 retry MUST preserve its original link.
 
+When an older writer omits the link on a retry, the reference adapter MAY
+recover the uniquely established original link from the append-only history.
+Each omitted-link attempt MUST preserve exact bytes and participants, name the
+immediately preceding attempt, and follow that attempt's single conclusive
+`not_attempted` outcome. It MUST NOT infer a link across an unproven retry,
+add one to an originally unlinked message, accept contradictory non-null links,
+or rewrite any journal record. Later eligible retries preserve the recovered
+link rather than copying the most recent omission.
+
 This is descriptive audit metadata, not wire data or an enforcement feature.
 It MUST NOT change lifecycle correlation, completion, expiry, recipient
 authority, or the scope of `CAM-CAUSAL/1`. Old readers MAY ignore it and old
