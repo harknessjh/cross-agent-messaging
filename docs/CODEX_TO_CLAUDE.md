@@ -238,8 +238,9 @@ never makes a product executable eligible to run.
 The full content hash is checked once per executable in a one-shot operation.
 The helper then rechecks the approval registry and the bound non-content file
 identity immediately before each product subprocess; if the registry changed,
-it is fully replayed before reuse. Path or fingerprint drift fails closed and
-requires guarded replacement of the old approval. If `product-discover` reports
+it is fully replayed before reuse. Path or fingerprint drift fails closed;
+a changed fingerprint at the same canonical path requires guarded replacement
+of its approval. If `product-discover` reports
 `replacement_approval_required`, follow its exact recovery sequence: inspect
 `product-status`; directly confirm the returned `product-revoke` command, which
 includes the active record ID and old fingerprint as guards; run
@@ -254,10 +255,14 @@ This is causal audit evidence, not proof of product authorship or trust.
 Approvals follow the canonical resolved target, not a `PATH` entry or symlink
 alias. If `PATH` starts selecting another executable, or an alias is retargeted,
 the old canonical-path approval remains visible history but does not approve the
-new target. Run `product-status --vendor VENDOR` to find the old active record,
-use its canonical path, record ID, and fingerprint in a directly confirmed
-guarded `product-revoke`, then discover and approve the new target. Do not assume
-that approving a new canonical path revokes an old one.
+new target. Discover and directly approve the new target, then separately
+review whether the old approval should be retired: another participant may
+still use it. A retirement uses `product-status --vendor VENDOR` and a directly
+confirmed `product-revoke` guarded by the old path, record ID, and fingerprint.
+Approving a new canonical path does not revoke an old one. For existing
+participants, [product update recovery](PRODUCT_UPDATES.md) adds read-only
+roster comparison and an exact metadata-update command to discovery; it does
+not require re-enrollment of an unchanged session.
 
 Existing projects can perform one automatic migration only when an explicitly
 supplied absolute roster path comes from a directly confirmed enrollment made

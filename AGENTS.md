@@ -87,7 +87,12 @@ For every cross-session message:
    directly confirmed descriptive or executable change with the
    `participant update-metadata` command, including `--participant`,
    `--expected-revision`, and `--operator-reference`; it appends
-   `state.participant.metadata_updated`. Obtain operator correlation for the
+   `state.participant.metadata_updated`. After a Codex or Claude Code update,
+   use `product-discover --vendor VENDOR --participant COMMON_NAME` in the
+   existing project for read-only old/new-path and guarded update guidance.
+   Follow [product update recovery](docs/PRODUCT_UPDATES.md); an executable
+   change alone does not require session re-enrollment. Obtain operator
+   correlation for the
    full Claude `/status` UUID, intended project-local name, current product
    session label and kind, and intended CAM project when that stable identity
    mapping is new, stale, missing, or ambiguous. Use `/status` cwd as
