@@ -55,8 +55,11 @@ def _require_approved_product_executable(
     if supplied_path != approved:
         raise TransportError(
             "roster.product_executable_mismatch",
-            "live transport executable does not match the operator-approved roster "
-            "path",
+            f"participant {participant.common_name!r} expects {approved!r}; "
+            f"supplied canonical executable is {supplied_path!r}. "
+            "After a product update, run product-discover with --vendor and "
+            "--participant to review approval and roster-update guidance; "
+            "do not re-enroll the session",
         )
 
 
@@ -76,6 +79,15 @@ def resolve_product_binary(
         )
         return resolved
     except product_approvals.ProductApprovalError as error:
+        if error.code == "product_approval.not_found":
+            raise TransportError(
+                error.code,
+                f"{vendor} executable {value!r} could not be resolved. "
+                "An update may have moved or removed the recorded version. "
+                f"Run product-discover --vendor {vendor} "
+                "(with --participant NAME for a project) to inspect a current "
+                "candidate without executing it; no fallback was attempted",
+            ) from error
         if (
             error.code
             not in {
@@ -176,8 +188,93 @@ def _legacy_product_confirmation(
 
 
 def discover_product_executable(
-    *, vendor: str, product_bin: str | None
+    *,
+    vendor: str,
+    product_bin: str | None,
+    binding: project.ProjectBinding | None = None,
+    participant_selector: str | None = None,
 ) -> dict[str, Any]:
+    """Inspect a candidate and optionally plan a roster update without mutation."""
+
+    participant = None
+    if participant_selector is not None:
+        if binding is None:
+            raise TransportError(
+                "argument.project_required",
+                "participant discovery requires a CAM project",
+            )
+        snapshot = state.StateStore(binding).snapshot()
+        participant = snapshot.roster.select(participant_selector)
+        if participant.vendor != vendor:
+            raise TransportError(
+                "roster.vendor_mismatch", "candidate vendor does not match participant"
+            )
+        if (
+            participant.binding is None
+            or participant.status != participants.ParticipantStatus.BOUND
+        ):
+            raise TransportError(
+                "roster.participant_stale", "participant must be active and bound"
+            )
+
+    card = _discover_product_card(vendor=vendor, product_bin=product_bin)
+    if participant is not None:
+        assert binding is not None
+        card["participant_update"] = _participant_update_guidance(
+            binding, participant, card["candidate"]["canonical_path"]
+        )
+    return card
+
+
+def _participant_update_guidance(
+    binding: project.ProjectBinding,
+    participant: participants.Participant,
+    candidate_path: str,
+) -> dict[str, Any]:
+    """Return a revision-guarded command, never apply it or infer approval."""
+
+    changed = participant.approved_product_executable != candidate_path
+    result: dict[str, Any] = {
+        "status": "metadata_update_required" if changed else "roster_path_current",
+        "participant_id": participant.participant_id,
+        "common_name": participant.common_name,
+        "metadata_revision": participant.metadata_revision,
+        "recorded_path": participant.approved_product_executable,
+        "candidate_path": candidate_path,
+        "next_step": (
+            "Complete the candidate's account approval steps first. Then obtain "
+            "direct operator confirmation of any roster update and run its exact "
+            "command with a truthful operator reference. No session re-enrollment "
+            "is needed. A current roster path alone is not product approval."
+        ),
+    }
+    if changed:
+        command = [
+            sys.executable,
+            str(Path(__file__).resolve().with_name("cam1_project.py")),
+            "--project-root",
+            str(binding.git_top_level),
+            "--state-root",
+            str(binding.state_root),
+            "--git-bin",
+            binding.git_bin,
+            "participant",
+            "update-metadata",
+            "--participant",
+            participant.participant_id,
+            "--expected-revision",
+            str(participant.metadata_revision),
+            "--product-bin",
+            candidate_path,
+            "--operator-reference",
+            "DIRECT_OPERATOR_REFERENCE",
+        ]
+        result["command"] = command
+        result["command_text"] = shlex.join(command)
+    return result
+
+
+def _discover_product_card(*, vendor: str, product_bin: str | None) -> dict[str, Any]:
     try:
         card = product_executables.candidate_card(
             product_executables.discover_candidate(vendor, product_bin)

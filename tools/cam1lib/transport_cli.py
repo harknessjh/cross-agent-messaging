@@ -117,6 +117,10 @@ def build_parser(api: TransportCliApi) -> argparse.ArgumentParser:
         "--vendor", choices=("codex", "claude-code"), required=True
     )
     discovery_parser.add_argument("--product-bin")
+    discovery_parser.add_argument(
+        "--participant",
+        help="also show read-only executable update guidance for a project participant",
+    )
 
     approval_parser = subparsers.add_parser(
         "product-approve", help="approve one unchanged reviewed executable candidate"
@@ -290,7 +294,14 @@ def main(
             )
             if args.command == "product-discover":
                 result = api.discover_product_executable(
-                    vendor=args.vendor, product_bin=args.product_bin
+                    vendor=args.vendor,
+                    product_bin=args.product_bin,
+                    binding=(
+                        api.resolve_project(args)
+                        if args.participant is not None
+                        else None
+                    ),
+                    participant_selector=args.participant,
                 )
             elif args.command == "product-approve":
                 result = api.approve_product_executable(

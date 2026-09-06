@@ -480,6 +480,7 @@ After that operator selection:
    generation, enrollment proposal, and prior direct operator reference before
    product I/O. It MUST NOT apply to new enrollments, metadata-only bindings,
    unknown profiles, changed files, or bare product names. A changed fingerprint
+   at an already approved canonical path
    MUST require an explicitly guarded revocation, rediscovery, and new approval;
    the implementation MUST NOT replace or revoke an approval automatically.
    Any approval establishes product-I/O eligibility only and MUST NOT be treated
@@ -540,6 +541,16 @@ subprocess. `PATH` resolution MUST NOT select a live target. A legacy null path
 is preserved for audit but is not live-ready until the exact executable is
 approved at account scope and a directly confirmed metadata event associates
 that absolute path with the participant.
+
+Product updates do not themselves change participant identity. A reader MAY
+provide read-only, participant-aware executable discovery that reports the
+recorded and candidate canonical paths and a revision-guarded metadata update
+command. It MUST NOT infer approval or mutate the roster as part of discovery.
+A new canonical path needs its own account approval; the old path's approval
+remains independent and MUST NOT be revoked automatically. Updating only the
+executable association MUST preserve the existing session binding. The
+[product-update runbook](docs/PRODUCT_UPDATES.md) describes the reference flow
+for both supported vendors.
 
 A mutual challenge is optional reachability evidence, not a second enrollment
 or authentication layer. The reference quick start uses the confirmed roster

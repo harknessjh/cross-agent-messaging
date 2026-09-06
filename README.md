@@ -160,6 +160,7 @@ Only the first row is required for a new user.
 | Install CAM/1 and send the first message | **[START HERE](START_HERE.md)** |
 | See the agent command reference or troubleshoot | [Detailed Codex-to-Claude procedure](docs/CODEX_TO_CLAUDE.md) |
 | Inspect the roster or audit journal | [Project journal guide](docs/PROJECT_JOURNAL.md) |
+| Refresh CAM after Codex or Claude Code updates | [Product executable updates](docs/PRODUCT_UPDATES.md) |
 | Roll out a reader upgrade or understand causal holds | [Compatibility gates](docs/COMPATIBILITY.md) and [causal ordering](docs/CAUSAL_ORDERING.md) |
 | Understand risks or report a vulnerability | [Security policy](SECURITY.md) |
 | Implement or evaluate protocol conformance | [Protocol specification](PROTOCOL.md) and [wire schema](cam-1.schema.json) |
