@@ -38,6 +38,89 @@ message body or project action. A legacy roster path alone cannot approve the
 bytes currently installed there. Historical approvals remain readable and
 unchanged, but missing approvals require the normal candidate-card confirmation.
 
+## How messages travel
+
+CAM is a set of tools the agents call, not a continuously running messaging
+service. After both sessions enroll in the same CAM project, either can send a
+message. **The recipient's product determines the delivery route**, regardless
+of which product the sender uses.
+
+![CAM message flow: either sender uses CAM's helper, which delivers through Claude MCP SendMessage or Codex CLI queue according to the recipient. A separate shared journal records send and receive events; it does not deliver messages.](docs/assets/message-flow.png)
+
+[Open the full-size diagram](docs/assets/message-flow.png) · [Vector version](docs/assets/message-flow.svg)
+
+Solid arrows show message delivery; dotted arrows show audit recording. All
+sessions and transports shown here are local to one computer and OS account.
+
+### Finding the right agent
+
+The project **roster is an address book**: it connects a participant's common
+name, such as `reviewer`, to its product and operator-confirmed full session
+UUID. Each agent enrolls itself; the human confirms its identity card in that
+session. A name alone is not enough to identify a peer.
+
+- **For a Codex recipient**, CAM takes the full thread UUID from the roster;
+  that UUID is also the queue address.
+- **For a Claude Code recipient**, CAM looks up the bound full UUID in fresh
+  `claude agents --json` output, checks that the session belongs to the intended
+  Git project, and correlates it with MCP `ListAgents`. That supplies the
+  current `name [ref]` address for `SendMessage`. CAM repeats discovery before
+  every send rather than relying on a remembered name or short ref.
+
+The operator confirms stable, human-visible identity information—not a
+transient MCP ref or socket path. Missing, ambiguous, or conflicting discovery
+stops the send instead of silently selecting another session. See the
+[roster and routing reference](docs/PROJECT_JOURNAL.md#participant-roster).
+
+### Sending and replying in all four directions
+
+| Sender | Recipient | Delivery used by CAM's helper |
+| --- | --- | --- |
+| Codex | Claude Code | Claude Code MCP `SendMessage` to the freshly resolved peer |
+| Claude Code | Claude Code | Claude Code MCP `SendMessage` to the freshly resolved peer |
+| Claude Code | Codex | Codex CLI `queue` to the enrolled thread UUID |
+| Codex | Codex | Codex CLI `queue` to the enrolled thread UUID |
+
+For Claude delivery, the helper briefly starts the installed `claude mcp serve`
+process and calls its tools over local process input/output. This is how Codex
+can reach Claude's session messaging without having a native Claude tool.
+For Codex delivery, the helper invokes the installed `codex queue` command.
+Agents use CAM's project-aware helpers for both paths, so the roster checks,
+validation, and journal recording are not skipped.
+
+The sender builds a JSON envelope containing the message body, identities,
+expiry, and reply information. CAM validates it and records the exact outbound
+bytes before dispatch, then records the transport outcome. The receiving
+product surfaces the message in the recipient's conversation; its scheduling
+and permission rules still apply. Codex queues messages, so a callback may not
+appear until a later turn boundary. Send acceptance alone does not prove the
+recipient saw or handled it.
+
+Once the message appears, the receiving agent uses CAM to preserve and validate
+it before deciding how to respond under its own permissions. An acknowledgment
+or substantive reply is another envelope, linked to the original message and
+sent through the appropriate route above in reverse. The peer receives that
+message, not the sender's entire conversation history.
+
+### The journal is history, not an inbox
+
+**Agents do not watch or poll the journal for incoming messages.** Claude Code
+and Codex deliver messages; appending a journal record does not deliver one or
+wake an agent. CAM reads journal state during send and receive checks to
+correlate replies, detect duplicates, and enforce message lifecycle rules.
+
+All enrolled participants share one private project history at
+`~/CAM/Journals/<project-slug>--<project-uuid>/journal.jsonl`. It records send
+intents, transport outcomes, received messages, validation outcomes, and
+replies. An unanswered send remains distinguishable from an acknowledged one;
+a record is not proof that a reported claim is true or that work is authorized.
+The append-only hash chain makes alterations detectable within the retained
+history, but does not authenticate authors or make the file tamper-proof.
+
+Humans can [inspect the journal](docs/PROJECT_JOURNAL.md#inspecting-the-record)
+to review the exchange without searching every agent's terminal. It stays
+outside the application worktree and is not committed to that repository.
+
 ## Deliberate limits
 
 CAM/1 supports sessions running on one host under the same operating-system
@@ -92,22 +175,6 @@ creating another CAM clone or project journal.
 
 Follow [START HERE](START_HERE.md) for installation and the complete
 first-contact workflow.
-
-## Identity and routing in one minute
-
-- A Codex thread's stable identity is its full thread UUID.
-- A Claude Code session's stable identity is its full session UUID.
-- Human-readable names and Claude MCP short references are routing aids, not
-  stable identity.
-- Each session proposes its own identity card. The human confirms that exact
-  card directly in the same session.
-- Before every Claude send, CAM freshly correlates the bound full UUID through
-  Claude's current discovery surfaces and verifies that the live session still
-  belongs to the intended Git project.
-
-The operator confirms stable, human-visible information. CAM does not ask the
-operator to recognize a transient MCP short reference that Claude `/status`
-does not normally show.
 
 ## Where CAM stores project state
 

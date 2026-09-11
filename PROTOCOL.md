@@ -1404,11 +1404,19 @@ canonical `CAM-JOURNAL/1` record containing:
 - bounded event attributes; and
 - a SHA-256 digest of the complete record excluding that digest field.
 
-Before every append, the implementation MUST verify the complete existing
-chain, record schema, sequence, project identity, message digest, and record
-digest. It MUST fail closed on a partial final line, malformed record, altered
-digest, missing link, or inconsistent project. It MUST NOT truncate, repair,
-rewrite, or delete history automatically.
+At the first journal read or append in each locked project transaction, the
+implementation MUST verify the complete existing chain, record schema,
+sequence, project identity, message digest, and record digest. It MAY reuse a
+transaction-scoped verified view for later operations in that same transaction,
+provided it reopens and revalidates the locked journal before each operation,
+checking device, inode, size, mtime, and ctime against that view. It MUST fail
+closed on an unexpected change and MUST advance that view only from the exact
+validated record bytes it successfully appends. A new transaction MUST perform
+a new complete verification.
+
+The implementation MUST fail closed on a partial final line, malformed record,
+altered digest, missing link, or inconsistent project. It MUST NOT truncate,
+repair, rewrite, or delete history automatically.
 
 An implementation MAY expose an explicit operator-only recovery for a single
 incomplete EOF record after a completely verified prefix. Before replacing the
@@ -1648,7 +1656,7 @@ Remote Control, cloud sessions, cross-host delivery, and locally observed Codex 
 
 - Resolve the absolute `claude` executable path.
 - Keep stdout exclusively for newline-delimited JSON-RPC and treat stderr as logs.
-- Prefer direct child-process stdio. If an orchestration tool closes non-TTY stdin, change clients or consult the non-normative fallback in [Implementation Notes](docs/IMPLEMENTATION_NOTES.md).
+- Use a maintained MCP client over direct child-process stdio, as described in [server startup](#start-the-server). If an orchestration tool closes non-TTY stdin, use the supported one-shot adapter or a client that keeps the child process's stdin writable. Do not switch to a pseudo-terminal, raw socket, or hand-written JSON-RPC bridge.
 - Wait for the initialization response.
 - Validate the negotiated MCP version.
 - Call `tools/list` and inspect the live schemas.

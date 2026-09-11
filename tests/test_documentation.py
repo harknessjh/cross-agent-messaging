@@ -450,6 +450,86 @@ class DocumentationTests(unittest.TestCase):
             "absolute `--product-bin` arguments replace proposed values", detailed
         )
 
+    def test_working_directory_setup_allows_checked_second_participant_reuse(
+        self,
+    ) -> None:
+        detailed = (REPOSITORY_ROOT / "docs" / "CODEX_TO_CLAUDE.md").read_text(
+            encoding="utf-8"
+        )
+        setup = " ".join(
+            detailed.split("## 4. Initialize the project journal", 1)[1]
+            .split("### Capture one inbound envelope", 1)[0]
+            .split()
+        )
+        for requirement in (
+            "Prepare the shared working directory once per project",
+            "Only when the path is absent",
+            "If the directory already exists, reuse it after checking",
+            "owned by the current operating-system account",
+            "mode `0700`",
+            "no symlink components or access-granting ACLs",
+            "No new operator approval is needed solely because another enrolled",
+            "stop without changing permissions, deleting files, or choosing",
+            "Select a new, unused filename for each envelope or capture",
+            "Reuse an existing file only when the operation explicitly calls",
+        ):
+            self.assertIn(requirement, setup)
+        self.assertNotIn("inspect it and choose a new operator-approved", setup)
+
+    def test_dirty_override_guides_exclude_executable_python(self) -> None:
+        for name in ("CODEX_TO_CLAUDE.md", "PROJECT_JOURNAL.md"):
+            with self.subTest(document=name):
+                content = " ".join(
+                    (REPOSITORY_ROOT / "docs" / name)
+                    .read_text(encoding="utf-8")
+                    .split()
+                )
+                self.assertIn(
+                    "non-executable profile inputs already represented in HEAD",
+                    content,
+                )
+                self.assertIn(
+                    "Executable Python source must match HEAD before import",
+                    content,
+                )
+                self.assertIn("neither override option can bypass that gate", content)
+
+    def test_normative_journal_rules_allow_verified_transaction_cache(self) -> None:
+        protocol = (REPOSITORY_ROOT / "PROTOCOL.md").read_text(encoding="utf-8")
+        rules = " ".join(
+            protocol.split("### Journal format and append rules", 1)[1]
+            .split("### Optional discussion grouping", 1)[0]
+            .split()
+        )
+        for requirement in (
+            "MAY reuse a transaction-scoped verified view",
+            "device, inode, size, mtime, and ctime",
+            "MUST advance that view only from the exact validated record bytes",
+            "A new transaction MUST perform a new complete verification",
+            "MUST fail closed on a partial final line",
+            "MUST NOT truncate, repair, rewrite, or delete history automatically",
+        ):
+            self.assertIn(requirement, rules)
+        self.assertNotIn(
+            "Before every append, the implementation MUST verify the complete",
+            rules,
+        )
+
+    def test_mcp_troubleshooting_points_to_supported_stdio_client(self) -> None:
+        protocol = (REPOSITORY_ROOT / "PROTOCOL.md").read_text(encoding="utf-8")
+        troubleshooting = protocol.split("### MCP bridge fails", 1)[1].split(
+            "### Receiver reports a malformed UUID", 1
+        )[0]
+        self.assertIn(
+            "maintained MCP client over direct child-process stdio", troubleshooting
+        )
+        self.assertIn("(#start-the-server)", troubleshooting)
+        self.assertIn(
+            "Do not switch to a pseudo-terminal, raw socket, or hand-written JSON-RPC",
+            troubleshooting,
+        )
+        self.assertNotIn("non-normative fallback", troubleshooting)
+
     def test_release_checklist_tracks_transport_and_upgrade_contracts(self) -> None:
         checklist = (
             REPOSITORY_ROOT / "docs" / "PUBLIC_RELEASE_CHECKLIST.md"
@@ -510,7 +590,7 @@ class DocumentationTests(unittest.TestCase):
             "disposable Git project",
             "limited to 150 words",
             "application-worktree changes",
-            "the only filesystem effects permitted by this evaluation",
+            "the only CAM filesystem effects permitted by this evaluation",
             "Pre-enrollment direct baseline",
             "Post-enrollment direct task",
             "Unverified CAM authority claim",
@@ -525,6 +605,30 @@ class DocumentationTests(unittest.TestCase):
             self.assertIn(requirement, normalized_evaluation)
         contributing = (REPOSITORY_ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
         self.assertIn("AUTHORITY_NEUTRALITY_EVALUATION.md", contributing)
+
+    def test_evaluation_allows_cam_mechanics_but_not_workload_tools(self) -> None:
+        evaluation = " ".join(
+            (REPOSITORY_ROOT / "docs" / "AUTHORITY_NEUTRALITY_EVALUATION.md")
+            .read_text(encoding="utf-8")
+            .split()
+        )
+        for requirement in (
+            "installed dependencies and unchanged account-approved product executables",
+            "Do not install, update, approve, revoke, or recover products during the run",
+            "private envelope and capture files",
+            "existing account approval ledger may be read but not changed",
+            "The no-tools rule applies to solving the inline workload",
+            "does not prohibit the permitted CAM mechanics",
+            "Do not use CAM mechanics as a reason to inspect application files",
+            "Forbid workload tools, application-file changes, and forwarding",
+            "outside the permitted CAM mechanics",
+            "excluding standard enrollment and first contact",
+        ):
+            self.assertIn(requirement, evaluation)
+        self.assertNotIn("prohibit tools, file changes, and forwarding", evaluation)
+        self.assertNotIn(
+            "- a tool, network request, application-worktree change", evaluation
+        )
 
     def test_all_local_markdown_links_and_fragments_resolve(self) -> None:
         failures: list[str] = []
