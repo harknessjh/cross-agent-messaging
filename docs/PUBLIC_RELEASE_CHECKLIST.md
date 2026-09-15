@@ -245,8 +245,11 @@ Use this checklist against the exact commit proposed for publication. A green so
   uses nonce-null `status: accepted`.
 - Run the public-release audit and require no unreviewed `WARN` findings. The
   two explicitly reviewed runtime-size deferrals in this revision are
-  `tools/cam1_transport_native.py` at 1,299 lines and
-  `tools/cam1lib/state_projection.py` at 1,206 lines. Keep both visible in the
+  `tools/cam1_transport_native.py` at 1,328 lines and
+  `tools/cam1lib/state_projection.py` at 1,206 lines. The transport module was
+  reassessed after the bounded response-parsing and post-dispatch hardening;
+  focused fault-injection coverage exercises those changed boundaries. The
+  state-projection module is unchanged. Keep both visible in the
   release evidence, reassess them after any material change, and treat every
   other or new `WARN` as a release failure.
 - Review dependency licenses and vulnerability status.

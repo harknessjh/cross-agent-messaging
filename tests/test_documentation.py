@@ -565,7 +565,7 @@ class DocumentationTests(unittest.TestCase):
             "conversations remain grandfathered",
             "`delivery_state: not_attempted`",
             "no unreviewed `WARN` findings",
-            "`tools/cam1_transport_native.py` at 1,299 lines",
+            "`tools/cam1_transport_native.py` at 1,328 lines",
             "`tools/cam1lib/state_projection.py` at 1,206 lines",
         )
         for requirement in required_contracts:
