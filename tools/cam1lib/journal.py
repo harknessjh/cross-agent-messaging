@@ -25,6 +25,7 @@ from typing import Any, TypeAlias, cast
 
 from jsonschema import Draft202012Validator, FormatChecker
 
+from .errors import ProjectError
 from .journal_recovery import (
     _create_recovery_archive,
     _inspect_partial_tail_locked,
@@ -889,20 +890,65 @@ def recover_partial_tail(
     if transaction is None:
         transaction = current_project_transaction(project)
     if transaction is None:
-        with project_transaction(project) as acquired:
-            return recover_partial_tail(
-                project,
-                expected_journal_sha256=expected_journal_sha256,
-                confirm_project_id=confirm_project_id,
-                reason=normalized_reason,
-                operator_reference=normalized_reference,
-                now=now,
-                transaction=acquired,
-            )
+        recovered: PartialTailRecovery | None = None
+        operation_failure: ProjectError | OSError | None = None
+        try:
+            with project_transaction(project) as acquired:
+                try:
+                    recovered = recover_partial_tail(
+                        project,
+                        expected_journal_sha256=expected_journal_sha256,
+                        confirm_project_id=confirm_project_id,
+                        reason=normalized_reason,
+                        operator_reference=normalized_reference,
+                        now=now,
+                        transaction=acquired,
+                    )
+                except (ProjectError, OSError) as error:
+                    operation_failure = error
+                    raise
+        except (ProjectError, OSError) as error:
+            if operation_failure is not None:
+                if error is not operation_failure:
+                    if (
+                        isinstance(operation_failure, ProjectError)
+                        and operation_failure.audit is not None
+                    ):
+                        operation_failure.audit.setdefault("cleanup_errors", []).append(
+                            "project_transaction"
+                        )
+                    raise operation_failure from error
+                raise
+            if recovered is not None:
+                raise JournalError(
+                    "journal.recovery_installed_uncertain",
+                    "journal recovery was installed and verified, but outer transaction "
+                    "cleanup failed; preserve the archive, run journal verify, and do not repeat recovery",
+                    audit={
+                        "mutation_state": "installed",
+                        "durability_confirmed": True,
+                        "verification_confirmed": True,
+                        "archive_path": recovered.archive_path,
+                        "original_sha256": recovered.original_sha256,
+                        "intended_record_id": recovered.recovered_record["record_id"],
+                        "intended_record_sha256": recovered.recovered_record[
+                            "record_sha256"
+                        ],
+                        "cleanup_errors": ["project_transaction"],
+                        "reconciliation_arguments": ["journal", "verify"],
+                    },
+                ) from error
+            raise
+        assert recovered is not None
+        return recovered
     require_project_transaction(project, transaction)
     descriptor, handle = _open_locked_journal(project, exclusive=True)
     archive_path: str | None = None
     recovery_record: dict[str, Any] | None = None
+    recovery_audit: dict[str, Any] = {}
+    replacement_installed = False
+    failure: ProjectError | OSError | None = None
+    cleanup_errors: list[str] = []
     try:
         source_metadata = os.fstat(descriptor)
         report = _inspect_partial_tail_locked(
@@ -955,24 +1001,77 @@ def recover_partial_tail(
         generated_record = {**unsigned, "record_sha256": _record_digest(unsigned)}
         recovery_record_raw = _serialized_record(generated_record)
         recovery_record = _parse_record(recovery_record_raw)
-        _replace_partial_journal(
-            project,
-            source_descriptor=descriptor,
-            source_metadata=source_metadata,
-            report=report,
-            recovery_record_raw=recovery_record_raw,
-        )
-        # Atomic replacement changes the journal inode and canonical history.
-        # Discard every projection derived from the old descriptor; the
-        # verification below reseeds the journal view from the installed file.
-        _transaction_cache(project, transaction).clear()
+        recovery_audit = {
+            "archive_path": str(project.project_dir / archive_path),
+            "original_sha256": report.journal_sha256,
+            "intended_record_id": recovery_record["record_id"],
+            "intended_record_sha256": recovery_record["record_sha256"],
+            "reconciliation_arguments": ["journal", "verify"],
+        }
+        try:
+            _replace_partial_journal(
+                project,
+                source_descriptor=descriptor,
+                source_metadata=source_metadata,
+                report=report,
+                recovery_record_raw=recovery_record_raw,
+            )
+            replacement_installed = True
+        finally:
+            # Replacement may have happened even when a later fsync fails.
+            # Never reuse projections derived from the original descriptor.
+            _transaction_cache(project, transaction).clear()
+    except (ProjectError, OSError) as error:
+        failure = error
+        if isinstance(error, ProjectError) and error.audit is not None:
+            error.audit = {**recovery_audit, **error.audit}
     finally:
-        handle.close()
-        fcntl.flock(descriptor, fcntl.LOCK_UN)
-        os.close(descriptor)
+        for label, close in (
+            ("handle_close", handle.close),
+            ("journal_unlock", lambda: fcntl.flock(descriptor, fcntl.LOCK_UN)),
+            ("journal_close", lambda: os.close(descriptor)),
+        ):
+            try:
+                close()
+            except OSError as error:
+                failure = failure or error
+                cleanup_errors.append(label)
+    if failure is not None:
+        if isinstance(failure, ProjectError) and failure.audit is not None:
+            if cleanup_errors:
+                failure.audit.setdefault("cleanup_errors", []).extend(cleanup_errors)
+            raise failure
+        if replacement_installed:
+            raise JournalError(
+                "journal.recovery_installed_uncertain",
+                "journal replacement was installed but cleanup was not confirmed; "
+                "preserve the archive, run journal verify, and do not repeat recovery",
+                audit={
+                    **recovery_audit,
+                    "mutation_state": "installed",
+                    "durability_confirmed": True,
+                    "verification_confirmed": False,
+                    "cleanup_errors": cleanup_errors,
+                },
+            ) from failure
+        raise failure
     if archive_path is None or recovery_record is None:
         raise JournalError("journal.recovery_failed", "journal recovery did not finish")
-    verification = verify_journal(project)
+    try:
+        verification = verify_journal(project)
+    except (OSError, ProjectError) as error:
+        _transaction_cache(project, transaction).clear()
+        raise JournalError(
+            "journal.recovery_verification_uncertain",
+            "journal replacement was installed and synced but verification failed; "
+            "preserve the archive, run journal verify, and do not repeat recovery",
+            audit={
+                **recovery_audit,
+                "mutation_state": "installed",
+                "durability_confirmed": True,
+                "verification_confirmed": False,
+            },
+        ) from error
     return PartialTailRecovery(
         archive_path=str(project.project_dir / archive_path),
         original_sha256=expected_journal_sha256,

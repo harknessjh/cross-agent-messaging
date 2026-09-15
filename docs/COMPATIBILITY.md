@@ -66,9 +66,14 @@ placeholder and use the same absolute project root throughout.
 
 Inspect staged plans, readiness, active gates, and any required reader upgrade:
 
+Use the confirmed absolute CAM paths shown below. For literal path and
+operator-reference handling, follow the [safe command guidance](PROJECT_JOURNAL.md#where-project-state-lives);
+do not interpolate those values into shell templates.
+
 ```bash
-.venv/bin/python tools/cam1_project.py \
-  --project-root /ABSOLUTE/PATH/TO/PROJECT \
+"/CONFIRMED/CAM/REPO/.venv/bin/python" \
+  "/CONFIRMED/CAM/REPO/tools/cam1_project.py" \
+  --project-root "/ABSOLUTE/PATH/TO/PROJECT" \
   compatibility status
 ```
 
@@ -76,8 +81,9 @@ Create one inert plan. The command generates a plan UUID unless `--plan-id` is
 supplied:
 
 ```bash
-.venv/bin/python tools/cam1_project.py \
-  --project-root /ABSOLUTE/PATH/TO/PROJECT \
+"/CONFIRMED/CAM/REPO/.venv/bin/python" \
+  "/CONFIRMED/CAM/REPO/tools/cam1_project.py" \
+  --project-root "/ABSOLUTE/PATH/TO/PROJECT" \
   compatibility plan \
   --feature-id compatibility.kernel \
   --feature-version 1 \
@@ -85,7 +91,7 @@ supplied:
   --operator-reference "HOW THE OPERATOR APPROVED THIS PLAN"
 ```
 
-Use `--feature-config-file /ABSOLUTE/PRIVATE/CONFIG.json` for a bounded JSON
+Use `--feature-config-file "/ABSOLUTE/PRIVATE/CONFIG.json"` for a bounded JSON
 configuration object. Supply a fresh RFC 3339 UTC expiry in
 `YYYY-MM-DDTHH:MM:SSZ` form. It must be later than the plan record and no more
 than seven days after it. If staging cannot finish in that window, create a new
@@ -97,8 +103,9 @@ capabilities are always included.
 Record readiness once for each participant frozen in the plan:
 
 ```bash
-.venv/bin/python tools/cam1_project.py \
-  --project-root /ABSOLUTE/PATH/TO/PROJECT \
+"/CONFIRMED/CAM/REPO/.venv/bin/python" \
+  "/CONFIRMED/CAM/REPO/tools/cam1_project.py" \
+  --project-root "/ABSOLUTE/PATH/TO/PROJECT" \
   compatibility ready \
   --plan-id PLAN_UUID \
   --participant PARTICIPANT_COMMON_NAME \
@@ -109,8 +116,9 @@ Record readiness once for each participant frozen in the plan:
 After every frozen participant is ready, activate the plan exactly once:
 
 ```bash
-.venv/bin/python tools/cam1_project.py \
-  --project-root /ABSOLUTE/PATH/TO/PROJECT \
+"/CONFIRMED/CAM/REPO/.venv/bin/python" \
+  "/CONFIRMED/CAM/REPO/tools/cam1_project.py" \
+  --project-root "/ABSOLUTE/PATH/TO/PROJECT" \
   compatibility activate \
   --plan-id PLAN_UUID \
   --operator-reference "HOW THE OPERATOR APPROVED ACTIVATION"

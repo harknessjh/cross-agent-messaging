@@ -470,16 +470,13 @@ After that operator selection:
    this candidate-discovery operation MAY consult `PATH`. If the exact
    canonical path and fingerprint do not already have an active account-scoped
    approval, the implementation MUST display a concise candidate card and wait
-   for direct operator approval before appending an approval, except for the
-   one-time legacy migration defined below. A reserved placeholder is not an
-   operator reference. The legacy migration MUST require an explicitly supplied
-   absolute roster path from a directly confirmed enrollment proposal, an
-   unchanged fingerprint, an explicitly supported clean pre-feature validation
-   profile, and no prior approval history for that path. It MUST append a normal
-   `grandfathered_roster` approval with the source project, participant, binding
-   generation, enrollment proposal, and prior direct operator reference before
-   product I/O. It MUST NOT apply to new enrollments, metadata-only bindings,
-   unknown profiles, changed files, or bare product names. A changed fingerprint
+   for direct operator approval before appending an approval. A reserved
+   placeholder is not an operator reference. A legacy roster pathname MUST NOT
+   be used to approve current bytes automatically: it supplies no historical
+   fingerprint comparison. Historical `grandfathered_roster` approval records
+   remain readable and MUST NOT be rewritten or revoked automatically. Missing
+   approvals require the normal candidate-card confirmation, without
+   re-enrolling an unchanged participant. A changed fingerprint
    at an already approved canonical path
    MUST require an explicitly guarded revocation, rediscovery, and new approval;
    the implementation MUST NOT replace or revoke an approval automatically.
@@ -896,6 +893,13 @@ evidence. A fresh short ref by itself is normal route churn.
 
 Through the locally verified MCP interface, the `ListAgents` payload is nested under `result.content[0].text`; that text contains a JSON object whose `listing` field is human-readable. Inspect the live result rather than assuming this nesting will never change.
 
+The reference adapter compares all recognized listing representations and
+rejects contradictions, duplicate JSON keys, non-finite numbers, and missing
+kind/state columns. Agent View and ListAgents must agree on session kind;
+activity may change between observations. This consistency check does not
+authenticate a UUID-to-ref mapping. The adapter cannot recover duplicate-key
+information already discarded by an upstream SDK.
+
 ### Send
 
 ```text
@@ -1301,6 +1305,14 @@ both artifacts remain. The manifest's prefix guards make the final state
 reconcilable after a crash. A complete earlier primary-ledger record is never
 edited or deleted.
 
+Normal approval/revocation append failures MUST preserve any appended bytes
+rather than automatically truncating them. They MUST report uncertain mutation
+and the intended record identity, invalidate cached approvals, and require
+read-only reconciliation before another operator decision. A failed fsync
+does not establish that the approval or revocation is absent.
+Post-append checks and cleanup MUST preserve known committed state or the
+original uncertainty; cleanup errors MUST NOT mask the mutation evidence.
+
 Every mutating recovery result MUST classify primary-ledger mutation as
 `not_attempted`, `committed`, or `unknown`. An error after `ftruncate` begins
 MUST NOT claim the registry was unchanged. A post-fsync verification failure
@@ -1392,11 +1404,19 @@ canonical `CAM-JOURNAL/1` record containing:
 - bounded event attributes; and
 - a SHA-256 digest of the complete record excluding that digest field.
 
-Before every append, the implementation MUST verify the complete existing
-chain, record schema, sequence, project identity, message digest, and record
-digest. It MUST fail closed on a partial final line, malformed record, altered
-digest, missing link, or inconsistent project. It MUST NOT truncate, repair,
-rewrite, or delete history automatically.
+At the first journal read or append in each locked project transaction, the
+implementation MUST verify the complete existing chain, record schema,
+sequence, project identity, message digest, and record digest. It MAY reuse a
+transaction-scoped verified view for later operations in that same transaction,
+provided it reopens and revalidates the locked journal before each operation,
+checking device, inode, size, mtime, and ctime against that view. It MUST fail
+closed on an unexpected change and MUST advance that view only from the exact
+validated record bytes it successfully appends. A new transaction MUST perform
+a new complete verification.
+
+The implementation MUST fail closed on a partial final line, malformed record,
+altered digest, missing link, or inconsistent project. It MUST NOT truncate,
+repair, rewrite, or delete history automatically.
 
 An implementation MAY expose an explicit operator-only recovery for a single
 incomplete EOF record after a completely verified prefix. Before replacing the
@@ -1636,7 +1656,7 @@ Remote Control, cloud sessions, cross-host delivery, and locally observed Codex 
 
 - Resolve the absolute `claude` executable path.
 - Keep stdout exclusively for newline-delimited JSON-RPC and treat stderr as logs.
-- Prefer direct child-process stdio. If an orchestration tool closes non-TTY stdin, change clients or consult the non-normative fallback in [Implementation Notes](docs/IMPLEMENTATION_NOTES.md).
+- Use a maintained MCP client over direct child-process stdio, as described in [server startup](#start-the-server). If an orchestration tool closes non-TTY stdin, use the supported one-shot adapter or a client that keeps the child process's stdin writable. Do not switch to a pseudo-terminal, raw socket, or hand-written JSON-RPC bridge.
 - Wait for the initialization response.
 - Validate the negotiated MCP version.
 - Call `tools/list` and inspect the live schemas.

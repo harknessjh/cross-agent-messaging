@@ -8,16 +8,12 @@ import json
 import os
 import subprocess
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from tools import cam1_transport
 from tools.cam1lib import (
-    compatibility,
-    onboarding,
-    participants,
     product_approvals,
     product_executables,
     project,
@@ -28,42 +24,13 @@ APPROVAL_PROCESS_HELPER = (
 )
 
 
-class ProductApprovalTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temporary.cleanup)
-        self.home = Path(self.temporary.name) / "account"
-        self.home.mkdir(mode=0o700)
-        self.home.chmod(0o700)
-        self.bin_dir = self.home / "bin"
-        self.bin_dir.mkdir(mode=0o700)
-        self.marker = self.home / "executed"
-        self.executable = self.bin_dir / "claude"
-        self.executable.write_text(
-            "#!/bin/sh\nprintf executed > " + str(self.marker) + "\n",
-            encoding="utf-8",
-        )
-        self.executable.chmod(0o700)
-        self.account_home_patch = mock.patch.object(
-            product_approvals, "account_home", return_value=self.home
-        )
-        self.account_home_patch.start()
-        self.addCleanup(self.account_home_patch.stop)
+if __package__:
+    from ._product_approval_test_case import ProductApprovalTestCase
+else:
+    from _product_approval_test_case import ProductApprovalTestCase
 
-    def discover(self) -> product_executables.ExecutableCandidate:
-        return product_executables.discover_candidate(
-            "claude-code", str(self.executable), allow_path_lookup=False
-        )
 
-    def approve(self) -> dict[str, object]:
-        candidate = self.discover()
-        return product_approvals.approve_candidate(
-            vendor="claude-code",
-            product_bin=str(self.executable),
-            expected_fingerprint_sha256=candidate.fingerprint_sha256,
-            operator_reference="direct test operator confirmation",
-        )
-
+class ProductApprovalTests(ProductApprovalTestCase):
     def test_discovery_approval_status_and_require_never_execute_candidate(
         self,
     ) -> None:
@@ -547,7 +514,7 @@ class ProductApprovalTests(unittest.TestCase):
                 operation()
             self.assertEqual(error.exception.code, "product_approval.path")
 
-    def test_failed_append_removes_partial_record(self) -> None:
+    def test_failed_append_retains_partial_record(self) -> None:
         candidate = self.discover()
         original_write = product_approvals._write_all
 
@@ -566,587 +533,156 @@ class ProductApprovalTests(unittest.TestCase):
                 operator_reference="direct test operator confirmation",
             )
         self.assertEqual(context.exception.code, "product_approval.write")
-        self.assertEqual(product_approvals.approval_status()["record_count"], 0)
+        self.assertEqual(context.exception.audit["mutation_state"], "unknown")
+        self.assertEqual(product_approvals.registry_path().stat().st_size, 17)
+        with self.assertRaises(product_approvals.ProductApprovalError):
+            product_approvals.approval_status()
 
-
-class ProductApprovalTransportTests(unittest.TestCase):
-    def setUp(self) -> None:
-        ProductApprovalTests.setUp(self)
-        self.codex = self.bin_dir / "codex"
-        self.codex.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-        self.codex.chmod(0o700)
-
-    def approve_both(self) -> None:
-        for vendor, executable in (
-            ("claude-code", self.executable),
-            ("codex", self.codex),
-        ):
-            candidate = product_executables.discover_candidate(
-                vendor, str(executable), allow_path_lookup=False
-            )
-            product_approvals.approve_candidate(
-                vendor=vendor,
-                product_bin=str(executable),
-                expected_fingerprint_sha256=candidate.fingerprint_sha256,
-                operator_reference="direct test operator confirmation",
-            )
-
-    def invoke_product_cli(self, *arguments: str) -> tuple[int, dict[str, object]]:
-        emitted: list[dict[str, object]] = []
-
-        def capture(payload: dict[str, object], **_kwargs: object) -> None:
-            emitted.append(payload)
-
-        with (
-            mock.patch.object(
-                cam1_transport,
-                "_require_live_validation_profile",
-                return_value=({}, False),
-            ),
-            mock.patch.object(
-                cam1_transport,
-                "_with_validation_profile",
-                side_effect=lambda payload: payload,
-            ),
-            mock.patch.object(cam1_transport, "_emit", side_effect=capture),
-        ):
-            returncode = cam1_transport.main(list(arguments))
-        self.assertTrue(emitted)
-        return returncode, emitted[-1]
-
-    def test_claude_onboarding_rechecks_metadata_immediately_before_product(
-        self,
-    ) -> None:
-        events: list[str] = []
-        discovered = mock.sentinel.discovered
-
-        def full_approval(**_kwargs: object) -> tuple[str, dict[str, object]]:
-            events.append("full")
-            return str(self.executable), {}
-
-        def metadata_approval(**_kwargs: object) -> tuple[str, dict[str, object]]:
-            events.append("metadata")
-            return str(self.executable), {}
-
-        def run(*_args: object, **_kwargs: object) -> mock.Mock:
-            events.append("product")
-            return mock.Mock(returncode=0, stdout=b"{}")
-
-        with (
-            mock.patch.object(
-                product_approvals,
-                "require_approved_executable",
-                side_effect=full_approval,
-            ),
-            mock.patch.object(
-                product_approvals,
-                "require_approved_metadata",
-                side_effect=metadata_approval,
-            ),
-            mock.patch.object(onboarding.subprocess, "run", side_effect=run),
-            mock.patch.object(onboarding.routing, "parse_agent_view_sessions"),
-            mock.patch.object(
-                onboarding.routing,
-                "select_agent_view_identity_session",
-                return_value=discovered,
-            ),
-        ):
-            result = onboarding._claude_agent_view(
-                str(self.executable),
-                "00000000-0000-4000-8000-000000000101",
-            )
-        self.assertIs(result, discovered)
-        self.assertEqual(events, ["full", "metadata", "product"])
-
-    def test_codex_onboarding_requires_account_approval_before_proposal_data(
-        self,
-    ) -> None:
-        binding = mock.Mock()
-        binding.project_id = "00000000-0000-4000-8000-000000000301"
-        binding.display_name = "test"
-        binding.git_top_level = self.home
-        binding.git_common_dir = self.home / ".git"
-        binding.worktree_id = "main"
-        binding.git_bin = "/usr/bin/git"
-        source_profile = mock.Mock(validation_profile_sha256="b" * 64)
-        git_context = mock.Mock(
-            top_level=binding.git_top_level,
-            common_dir=binding.git_common_dir,
-        )
-        with (
-            mock.patch.object(
-                onboarding,
-                "require_trusted_source",
-                return_value=source_profile,
-            ),
-            mock.patch.object(
-                onboarding,
-                "_session_identifier",
-                return_value=(
-                    "00000000-0000-4000-8000-000000000101",
-                    "explicit_session_id",
-                ),
-            ),
-            mock.patch.object(
-                onboarding,
-                "_resolved_executable",
-                return_value=(str(self.codex), "explicit_candidate"),
-            ),
-            mock.patch.object(
-                product_approvals,
-                "require_approved_executable",
-                side_effect=product_approvals.ProductApprovalError(
-                    "product_approval.required",
-                    "approval required",
-                ),
-            ) as require_approval,
-            mock.patch.object(
-                onboarding.project,
-                "discover_git_context",
-                return_value=git_context,
-            ) as discover_git,
-            self.assertRaises(onboarding.CamUsageError) as error,
-        ):
-            onboarding.inspect_self(
-                binding,
-                vendor="codex",
-                session_id="00000000-0000-4000-8000-000000000101",
-            )
-        self.assertEqual(error.exception.code, "product_approval.required")
-        require_approval.assert_called_once()
-        discover_git.assert_not_called()
-
-    def test_doctor_hashes_each_product_once_then_uses_metadata_rechecks(self) -> None:
-        self.approve_both()
-        successful_probe = {"ok": True, "exit_code": 0, "output": "test"}
-        with (
-            mock.patch.object(
-                product_executables,
-                "_fingerprint_opened",
-                wraps=product_executables._fingerprint_opened,
-            ) as fingerprint,
-            mock.patch.object(
-                product_approvals,
-                "_metadata_opened",
-                wraps=product_approvals._metadata_opened,
-            ) as metadata,
-            mock.patch.object(
-                product_approvals,
-                "_verify",
-                wraps=product_approvals._verify,
-            ) as verify,
-            mock.patch.object(
-                cam1_transport,
-                "_require_live_validation_profile",
-                return_value=({}, False),
-            ),
-            mock.patch.object(
-                cam1_transport,
-                "_resolve_project",
-                side_effect=project.ProjectError("project.missing", "test"),
-            ),
-            mock.patch.object(
-                cam1_transport, "_run_probe_before", return_value=successful_probe
-            ),
-            mock.patch.object(
-                cam1_transport,
-                "_agent_view_probe_before",
-                return_value={"ok": True, "sessions": 1},
-            ),
-            mock.patch.object(
-                cam1_transport, "_mcp_sdk_check", return_value=(True, "2.1.0")
-            ),
-            mock.patch.object(
-                cam1_transport,
-                "_with_validation_profile",
-                side_effect=lambda payload: payload,
-            ),
-            mock.patch.object(cam1_transport, "_emit") as emit,
-        ):
-            returncode = cam1_transport.main(
-                [
-                    "--claude-bin",
-                    str(self.executable),
-                    "--codex-bin",
-                    str(self.codex),
-                    "doctor",
-                ]
-            )
-        self.assertEqual(returncode, 0)
-        self.assertEqual(fingerprint.call_count, 2)
-        self.assertEqual(verify.call_count, 2)
-        # Native doctor re-establishes both approval attestations from the
-        # operation-local cache, then performs five immediate pre-probe checks.
-        self.assertEqual(metadata.call_count, 7)
-        payload = emit.call_args.args[0]
-        self.assertTrue(payload["ok"])
-        for label in ("claude", "codex"):
-            approval = payload["checks"][label]["approval"]
-            expected_vendor = "claude-code" if label == "claude" else "codex"
-            self.assertEqual(approval["vendor"], expected_vendor)
-            self.assertIn("record_id", approval)
-            self.assertIn("record_sha256", approval)
-            self.assertIn("fingerprint_sha256", approval)
-        self.assertFalse(self.marker.exists())
-
-    def test_each_product_command_fails_before_product_io_when_unapproved(self) -> None:
-        cases = (
-            ("doctor", ["doctor"], "doctor"),
-            ("claude-list", ["claude-list"], "list_local_peers"),
-            (
-                "claude-preflight",
-                ["claude-preflight", "--participant", "worker"],
-                "preflight_project_claude",
-            ),
-            (
-                "claude-send",
-                [
-                    "claude-send",
-                    "--participant",
-                    "worker",
-                    "--envelope",
-                    "/not/read.json",
-                ],
-                "send_project_claude",
-            ),
-            (
-                "codex-send",
-                [
-                    "codex-send",
-                    "--participant",
-                    "worker",
-                    "--envelope",
-                    "/not/read.json",
-                ],
-                "send_project_codex",
-            ),
-        )
-        for name, arguments, endpoint in cases:
-            with (
-                self.subTest(command=name),
-                mock.patch.object(
-                    cam1_transport,
-                    "_require_live_validation_profile",
-                    return_value=({}, False),
-                ),
-                mock.patch.object(
-                    cam1_transport,
-                    "_resolve_project",
-                    return_value=mock.sentinel.binding,
-                ),
-                mock.patch.object(
-                    cam1_transport,
-                    "resolve_product_binary",
-                    side_effect=cam1_transport.TransportError(
-                        "product_approval.required", "approval required"
-                    ),
-                ),
-                mock.patch.object(cam1_transport, endpoint) as product_operation,
-                mock.patch.object(
-                    cam1_transport,
-                    "_with_validation_profile",
-                    side_effect=lambda payload: payload,
-                ),
-                mock.patch.object(cam1_transport, "_emit"),
+    def test_approve_and_revoke_faults_retain_bytes_and_invalidate_cache(self) -> None:
+        for operation in ("approve", "revoke"):
+            for fault in (
+                "zero",
+                "partial",
+                "fsync",
+                "verification",
+                "cache",
+                "unlock",
+                "close",
+                "partial_cleanup",
             ):
-                returncode = cam1_transport.main(arguments)
-            self.assertEqual(returncode, 2)
-            product_operation.assert_not_called()
+                if operation == "revoke" and fault == "cache":
+                    continue
+                with self.subTest(operation=operation, fault=fault):
+                    self._assert_approval_append_fault(operation, fault)
 
-    def test_product_discover_cli_emits_card_without_execution(self) -> None:
-        returncode, payload = self.invoke_product_cli(
-            "product-discover",
-            "--vendor",
-            "claude-code",
-            "--product-bin",
-            str(self.executable),
-        )
-        self.assertEqual(returncode, 0)
-        self.assertEqual(payload["status"], "approval_candidate")
-        self.assertEqual(payload["approval_arguments"][0], "product-approve")
-        self.assertFalse(self.marker.exists())
-
-    def test_product_cli_rejects_unreplaced_operator_reference_without_mutation(
-        self,
-    ) -> None:
-        returncode, discovered = self.invoke_product_cli(
-            "product-discover",
-            "--vendor",
-            "claude-code",
-            "--product-bin",
-            str(self.executable),
-        )
-        self.assertEqual(returncode, 0)
-        returncode, rejected = self.invoke_product_cli(
-            *discovered["approval_arguments"]
-        )
-        self.assertEqual(returncode, 2)
-        self.assertEqual(
-            rejected["error"]["code"],
-            "product_approval.operator_reference_reserved",
-        )
-        self.assertFalse((self.home / "CAM").exists())
-
-        candidate = product_executables.discover_candidate(
-            "claude-code", str(self.executable), allow_path_lookup=False
-        )
-        approved = product_approvals.approve_candidate(
-            vendor="claude-code",
-            product_bin=str(self.executable),
-            expected_fingerprint_sha256=candidate.fingerprint_sha256,
-            operator_reference="direct test operator confirmation",
-        )
-        approval = approved["approval"]
-        returncode, rejected = self.invoke_product_cli(
-            "product-revoke",
-            "--vendor",
-            "claude-code",
-            "--product-bin",
-            str(self.executable),
-            "--approval-record-id",
-            approval["record_id"],
-            "--expected-fingerprint-sha256",
-            approval["attributes"]["fingerprint_sha256"],
-            "--operator-reference",
-            "DIRECT_OPERATOR_REFERENCE",
-        )
-        self.assertEqual(returncode, 2)
-        self.assertEqual(
-            rejected["error"]["code"],
-            "product_approval.operator_reference_reserved",
-        )
-        status = product_approvals.approval_status(vendor="claude-code")
-        self.assertEqual(status["record_count"], 1)
-        self.assertEqual(len(status["active"]), 1)
-
-    def test_product_cli_guides_guarded_reapproval_after_path_drift(self) -> None:
-        returncode, discovered = self.invoke_product_cli(
-            "product-discover",
-            "--vendor",
-            "claude-code",
-            "--product-bin",
-            str(self.executable),
-        )
-        self.assertEqual(returncode, 0)
-        approval_arguments = list(discovered["approval_arguments"])
-        approval_arguments[-1] = "direct initial executable approval"
-        returncode, approved = self.invoke_product_cli(*approval_arguments)
-        self.assertEqual(returncode, 0)
-        self.assertEqual(approved["status"], "approved")
-
-        self.executable.write_text("#!/bin/sh\nexit 17\n", encoding="utf-8")
-        self.executable.chmod(0o700)
-        returncode, replacement = self.invoke_product_cli(
-            "product-discover",
-            "--vendor",
-            "claude-code",
-            "--product-bin",
-            str(self.executable),
-        )
-        self.assertEqual(returncode, 0)
-        self.assertEqual(replacement["status"], "replacement_approval_required")
-        self.assertEqual(
-            replacement["existing_approval"]["record_id"],
-            approved["approval"]["record_id"],
-        )
-
-        replacement_approval = list(replacement["approval_arguments"])
-        replacement_approval[-1] = "direct replacement executable approval"
-        returncode, drift = self.invoke_product_cli(*replacement_approval)
-        self.assertEqual(returncode, 2)
-        self.assertEqual(drift["error"]["code"], "product_approval.drift")
-
-        revocation_arguments = list(replacement["revocation_arguments"])
-        revocation_arguments[-1] = "direct superseded executable revocation"
-        returncode, revoked = self.invoke_product_cli(*revocation_arguments)
-        self.assertEqual(returncode, 0)
-        self.assertEqual(revoked["status"], "revoked")
-
-        returncode, rediscovered = self.invoke_product_cli(
-            "product-discover",
-            "--vendor",
-            "claude-code",
-            "--product-bin",
-            str(self.executable),
-        )
-        self.assertEqual(returncode, 0)
-        self.assertEqual(rediscovered["status"], "approval_candidate")
-        replacement_approval = list(rediscovered["approval_arguments"])
-        replacement_approval[-1] = "direct replacement executable approval"
-        returncode, reapproved = self.invoke_product_cli(*replacement_approval)
-        self.assertEqual(returncode, 0)
-        self.assertEqual(reapproved["status"], "approved")
-
-        returncode, status = self.invoke_product_cli(
-            "product-status",
-            "--vendor",
-            "claude-code",
-            "--product-bin",
-            str(self.executable),
-        )
-        self.assertEqual(returncode, 0)
-        self.assertEqual(len(status["active"]), 1)
-        self.assertEqual(
-            status["active"][0]["attributes"]["fingerprint_sha256"],
-            rediscovered["candidate"]["fingerprint_sha256"],
-        )
-        self.assertFalse(self.marker.exists())
-
-    def test_legacy_roster_path_is_grandfathered_once_and_reused_cross_project(
-        self,
-    ) -> None:
-        canonical_executable = product_executables.discover_candidate(
-            "claude-code", str(self.executable), allow_path_lookup=False
-        ).canonical_path
-        participant = participants.Participant(
-            participant_id="00000000-0000-4000-8000-000000000201",
-            common_name="legacy-claude",
-            display_name="Legacy Claude",
-            role=None,
-            vendor="claude-code",
-            approved_product_executable=canonical_executable,
-            status=participants.ParticipantStatus.BOUND,
-            binding=participants.SessionBinding(
-                generation=3,
-                session_id="00000000-0000-4000-8000-000000000101",
-                session_label="legacy-claude",
-                session_kind="interactive",
-                operator_reference="direct historical operator confirmation",
-                bound_at="2026-09-01T00:00:00Z",
-            ),
-        )
-        binding = mock.Mock()
-        binding.project_id = "00000000-0000-4000-8000-000000000301"
-        store = mock.Mock()
-        snapshot = store.snapshot.return_value
-        snapshot.roster.participants = {participant.participant_id: participant}
-        proposal = mock.Mock()
-        proposal.participant_id = participant.participant_id
-        proposal.status.value = "confirmed"
-        proposal.operator_reference = "direct historical product confirmation"
-        proposal.execution_context.product_executable = canonical_executable
-        proposal.execution_context.validation_profile_sha256 = next(
-            iter(cam1_transport.LEGACY_PRODUCT_APPROVAL_PROFILES)
-        )
-        proposal.confirmed_at = "2026-09-01T00:00:01Z"
-        proposal.proposal_id = "00000000-0000-4000-8000-000000000401"
-        snapshot.enrollment.proposals = {proposal.proposal_id: proposal}
-        with (
-            mock.patch.object(cam1_transport.state, "StateStore", return_value=store),
-            mock.patch.object(
-                product_executables,
-                "_fingerprint_opened",
-                wraps=product_executables._fingerprint_opened,
-            ) as fingerprint,
+    def _assert_approval_append_fault(self, operation: str, fault: str) -> None:
+        original_write = product_approvals._write_all
+        original_fsync = os.fsync
+        original_fstat = os.fstat
+        original_identity = product_approvals._registry_identity
+        original_flock = product_approvals.fcntl.flock
+        original_close = os.close
+        isolated = self.home / f"{operation}-{fault}"
+        isolated.mkdir(mode=0o700)
+        with mock.patch.object(
+            product_approvals, "account_home", return_value=isolated
         ):
-            resolved = cam1_transport.resolve_product_binary(
-                str(self.executable), vendor="claude-code", binding=binding
-            )
-        self.assertEqual(resolved, canonical_executable)
-        self.assertEqual(fingerprint.call_count, 1)
-        status = product_approvals.approval_status(vendor="claude-code")
-        self.assertEqual(status["record_count"], 1)
-        approval = status["active"][0]
-        self.assertEqual(approval["attributes"]["basis"], "grandfathered_roster")
-        self.assertEqual(
-            approval["attributes"]["migration"],
-            {
-                "project_id": binding.project_id,
-                "participant_id": participant.participant_id,
-                "binding_generation": 3,
-                "source": "confirmed_enrollment",
-                "source_reference": proposal.proposal_id,
-            },
-        )
+            approval = self.approve()["approval"] if operation == "revoke" else None
+            registry = isolated / "CAM" / "Approvals" / product_approvals.REGISTRY_NAME
+            before = registry.read_bytes() if registry.exists() else b""
+            candidate = self.discover()
+            written = b""
+            append_fd = None
+            synced = False
+            partial = fault in {"partial", "partial_cleanup"}
 
-        other_binding = mock.Mock()
-        other_binding.project_id = "00000000-0000-4000-8000-000000000302"
-        with mock.patch.object(cam1_transport.state, "StateStore") as state_store:
-            reused = cam1_transport.resolve_product_binary(
-                str(self.executable), vendor="claude-code", binding=other_binding
-            )
-        self.assertEqual(reused, canonical_executable)
-        state_store.assert_not_called()
-        self.assertEqual(product_approvals.approval_status()["record_count"], 1)
+            def write_fault(descriptor, raw):
+                nonlocal written, append_fd
+                append_fd = descriptor
+                written = raw
+                if fault == "zero":
+                    raise OSError("synthetic zero-progress fault")
+                original_write(descriptor, raw[:17] if partial else raw)
+                if partial:
+                    raise project.ProjectError("state.write", "synthetic partial write")
 
-        product_approvals.revoke_approval(
-            vendor="claude-code",
-            product_bin=canonical_executable,
-            approval_record_id=approval["record_id"],
-            expected_fingerprint_sha256=approval["attributes"]["fingerprint_sha256"],
-            operator_reference="direct revocation after migration test",
-        )
-        with (
-            mock.patch.object(cam1_transport.state, "StateStore", return_value=store),
-            self.assertRaises(cam1_transport.TransportError) as migration_reuse,
-        ):
-            cam1_transport.resolve_product_binary(
-                str(self.executable),
-                vendor="claude-code",
-                binding=binding,
-            )
-        self.assertEqual(
-            migration_reuse.exception.code,
-            "product_approval.grandfather_used",
-        )
+            def sync_fault(descriptor):
+                nonlocal synced
+                if descriptor == append_fd:
+                    if fault == "fsync":
+                        raise OSError("synthetic sync fault")
+                    synced = True
+                return original_fsync(descriptor)
 
-    def test_new_or_unknown_profile_cannot_use_legacy_grandfathering(self) -> None:
-        canonical_executable = product_executables.resolve_candidate_path(
-            "claude-code",
-            str(self.executable),
-            allow_path_lookup=False,
-        )[0]
-        participant = participants.Participant(
-            participant_id="00000000-0000-4000-8000-000000000211",
-            common_name="new-claude",
-            display_name="New Claude",
-            role=None,
-            vendor="claude-code",
-            approved_product_executable=canonical_executable,
-            status=participants.ParticipantStatus.BOUND,
-            binding=participants.SessionBinding(
-                generation=1,
-                session_id="00000000-0000-4000-8000-000000000111",
-                session_label="new-claude",
-                session_kind="interactive",
-                operator_reference="direct recent operator confirmation",
-                bound_at="2026-09-02T00:00:00Z",
-            ),
-        )
-        binding = mock.Mock()
-        binding.project_id = "00000000-0000-4000-8000-000000000311"
-        store = mock.Mock()
-        snapshot = store.snapshot.return_value
-        snapshot.roster.participants = {participant.participant_id: participant}
-        proposal = mock.Mock()
-        proposal.participant_id = participant.participant_id
-        proposal.status.value = "confirmed"
-        proposal.operator_reference = "direct recent product confirmation"
-        proposal.execution_context.product_executable = canonical_executable
-        proposal.execution_context.validation_profile_sha256 = "a" * 64
-        proposal.confirmed_at = "2026-09-02T00:00:01Z"
-        proposal.proposal_id = "00000000-0000-4000-8000-000000000411"
-        snapshot.enrollment.proposals = {proposal.proposal_id: proposal}
-        with (
-            mock.patch.object(cam1_transport.state, "StateStore", return_value=store),
-            self.assertRaises(cam1_transport.TransportError) as error,
-        ):
-            cam1_transport.resolve_product_binary(
-                str(self.executable),
-                vendor="claude-code",
-                binding=binding,
-            )
-        self.assertEqual(error.exception.code, "product_approval.required")
-        self.assertEqual(product_approvals.approval_status()["active"], [])
+            def stat_fault(descriptor):
+                if descriptor == append_fd and synced and fault == "verification":
+                    raise OSError("synthetic verification fault")
+                return original_fstat(descriptor)
 
-    def test_capability_is_a_local_prerequisite_not_an_active_gate(self) -> None:
-        capability = compatibility.PRODUCT_EXECUTABLE_PREAPPROVAL_CAPABILITY
-        self.assertIn(capability, compatibility.SUPPORTED_READER_CAPABILITIES)
-        self.assertIsNone(
-            compatibility.CompatibilityProjection().active_gate(
-                compatibility.PRODUCT_EXECUTABLE_PREAPPROVAL_FEATURE_ID
+            def identity_fault(descriptor):
+                if descriptor == append_fd and fault == "cache":
+                    raise OSError("synthetic post-append cache verification fault")
+                return original_identity(descriptor)
+
+            def unlock_fault(descriptor, operation):
+                original_flock(descriptor, operation)
+                if (
+                    descriptor == append_fd
+                    and operation == product_approvals.fcntl.LOCK_UN
+                    and fault in {"unlock", "partial_cleanup"}
+                ):
+                    raise OSError("synthetic post-append unlock fault")
+
+            def close_fault(descriptor):
+                original_close(descriptor)
+                if descriptor == append_fd and fault == "close":
+                    raise OSError("synthetic post-append close fault")
+
+            with (
+                mock.patch.object(
+                    product_approvals, "_write_all", side_effect=write_fault
+                ),
+                mock.patch.object(
+                    product_approvals.os, "fsync", side_effect=sync_fault
+                ),
+                mock.patch.object(
+                    product_approvals.os, "fstat", side_effect=stat_fault
+                ),
+                mock.patch.object(
+                    product_approvals, "_registry_identity", side_effect=identity_fault
+                ),
+                mock.patch.object(
+                    product_approvals.fcntl, "flock", side_effect=unlock_fault
+                ),
+                mock.patch.object(
+                    product_approvals.os, "close", side_effect=close_fault
+                ),
+                mock.patch.object(product_approvals.os, "ftruncate") as truncate,
+                self.assertRaises(cam1_transport.TransportError) as context,
+            ):
+                if approval is None:
+                    cam1_transport.approve_product_executable(
+                        vendor="claude-code",
+                        product_bin=str(self.executable),
+                        expected_fingerprint_sha256=candidate.fingerprint_sha256,
+                        operator_reference="direct synthetic approval",
+                    )
+                else:
+                    cam1_transport.revoke_product_executable(
+                        vendor="claude-code",
+                        product_bin=str(self.executable),
+                        approval_record_id=approval["record_id"],
+                        expected_fingerprint_sha256=candidate.fingerprint_sha256,
+                        operator_reference="direct synthetic revocation",
+                    )
+            truncate.assert_not_called()
+            committed = fault in {"cache", "unlock", "close"}
+            self.assertEqual(
+                context.exception.code,
+                "product_approval.committed_uncertain"
+                if committed
+                else "product_approval.write",
             )
-        )
+            self.assertEqual(
+                context.exception.audit["mutation_state"],
+                "committed" if committed else "unknown",
+            )
+            self.assertEqual(
+                context.exception.audit["durability_confirmed"],
+                fault == "verification" or committed,
+            )
+            appended = b"" if fault == "zero" else written[:17] if partial else written
+            self.assertEqual(registry.read_bytes(), before + appended)
+            self.assertEqual(product_approvals._VERIFIED_APPROVALS, {})
+            if partial:
+                with self.assertRaises(product_approvals.ProductApprovalError):
+                    product_approvals.approval_status()
+            else:
+                status = product_approvals.approval_status()
+                self.assertEqual(
+                    status["record_count"],
+                    int(approval is not None) + int(fault != "zero"),
+                )
 
 
 if __name__ == "__main__":

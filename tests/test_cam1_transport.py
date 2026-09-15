@@ -685,6 +685,146 @@ class PeerParsingTests(unittest.TestCase):
         self.assertFalse(cam1_transport._supports_notify_when_idle({}))
 
 
+class ProductResponseParsingTests(unittest.TestCase):
+    listing = "Peer sessions (1):\n  worker [abcdef] · interactive · idle\n"
+    receipt_id = "00000000-0000-4000-8000-000000000901"
+
+    def response(self, *text, structured=None):
+        return cam1_transport_native.ClaudeToolResponse(
+            protocol_version=None,
+            is_error=False,
+            structured_content=structured,
+            text_content=text,
+        )
+
+    def test_equivalent_representations_and_supplemental_prose_work(self) -> None:
+        receipt = {"success": True, "msg_id": self.receipt_id}
+        response = self.response(
+            "Message accepted",
+            json.dumps(receipt, indent=2),
+            json.dumps(dict(reversed(list(receipt.items())))),
+            structured=receipt,
+        )
+        self.assertEqual(
+            cam1_transport_native._accepted_claude_message_id(response), self.receipt_id
+        )
+        self.assertEqual(
+            cam1_transport_native._listing_text(
+                self.response(
+                    self.listing,
+                    json.dumps({"listing": self.listing}),
+                    structured={"listing": self.listing},
+                )
+            ),
+            self.listing,
+        )
+
+    def test_discovery_rejects_conflicting_and_duplicate_listings(self) -> None:
+        other = self.listing.replace("abcdef", "ffffff")
+        duplicate = (
+            '{"listing":'
+            + json.dumps(self.listing)
+            + ',"listing":'
+            + json.dumps(self.listing)
+            + "}"
+        )
+        for response in (
+            self.response(duplicate),
+            self.response(self.listing, other),
+            self.response(
+                json.dumps({"listing": self.listing}), structured={"listing": other}
+            ),
+            self.response(
+                json.dumps({"listing": self.listing}), structured={"listing": None}
+            ),
+        ):
+            with (
+                self.subTest(response=response),
+                self.assertRaises(cam1_transport.TransportError) as error,
+            ):
+                cam1_transport_native._listing_text(response)
+            self.assertEqual(error.exception.code, "claude.list_format")
+
+    def test_receipts_reject_duplicate_keys_and_invalid_json_numbers(self) -> None:
+        valid = json.dumps({"success": True, "msg_id": self.receipt_id})
+        cases = [
+            '{"success":false,"success":true,"msg_id":'
+            + json.dumps(self.receipt_id)
+            + "}",
+            valid[:-1] + ',"msg_id":' + json.dumps(self.receipt_id) + "}",
+            valid[:-1] + ',"extra":NaN}',
+            valid[:-1] + ',"extra":Infinity}',
+            valid[:-1] + ',"extra":1e309}',
+            '{"extra":' + "[" * 1100 + "0" + "]" * 1100 + "}",
+            '{"success":true',
+        ]
+        for text in cases:
+            with (
+                self.subTest(text=text[:80]),
+                self.assertRaises(cam1_transport.TransportError) as error,
+            ):
+                cam1_transport_native._accepted_claude_message_id(
+                    self.response(text, valid)
+                )
+            self.assertEqual(error.exception.code, "claude.receipt_unrecognized")
+            self.assertIn("unknown", error.exception.detail)
+
+    def test_structured_receipt_numbers_and_disagreement_fail_closed(self) -> None:
+        receipt = {"success": True, "msg_id": self.receipt_id}
+        for structured in (
+            {**receipt, "success": False},
+            {**receipt, "extra": float("inf")},
+            {**receipt, "extra": float("nan")},
+        ):
+            with (
+                self.subTest(structured=structured),
+                self.assertRaises(cam1_transport.TransportError),
+            ):
+                cam1_transport_native._accepted_claude_message_id(
+                    self.response(json.dumps(receipt), structured=structured)
+                )
+
+    def test_empty_required_metadata_columns_cannot_shift_a_route(self) -> None:
+        for row in (
+            "worker [abcdef] · · interactive · idle",
+            "worker [abcdef] · interactive · · idle",
+            "worker [abcdef] · interactive",
+        ):
+            with (
+                self.subTest(row=row),
+                self.assertRaises(cam1_transport.TransportError) as error,
+            ):
+                cam1_transport.parse_peers("Peer sessions (1):\n" + row)
+            self.assertEqual(error.exception.code, "claude.list_format")
+
+    def test_route_kind_must_agree_but_activity_state_may_change(self) -> None:
+        session = routing.AgentViewSession(
+            session_id=CLAUDE_SESSION,
+            agent_view_id=None,
+            product_name="worker",
+            cwd="/example/project",
+            kind="interactive",
+            state="busy",
+            started_at_ms=1,
+            process_id=42,
+        )
+        peer = routing.parse_list_agents_peers(self.listing)[0]
+        self.assertEqual(routing.correlate_route(session, (peer,)).peer, peer)
+        for kind in ("background", "headless"):
+            with (
+                self.subTest(kind=kind),
+                self.assertRaises(routing.RoutingError) as error,
+            ):
+                routing.correlate_route(session, (replace(peer, kind=kind),))
+            self.assertEqual(error.exception.code, "claude.route_kind_mismatch")
+            self.assertEqual(
+                routing.correlate_route(
+                    replace(session, kind=kind), (replace(peer, kind=kind),)
+                ).peer.kind,
+                kind,
+            )
+
+
 class ProjectBoundTransportTestCase(unittest.TestCase):
     """Exercise the supported journal-first live transport commands."""
 

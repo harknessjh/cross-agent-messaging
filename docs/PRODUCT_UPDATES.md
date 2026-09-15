@@ -12,9 +12,14 @@ CAM itself is a separate [reader-upgrade procedure](COMPATIBILITY.md).
 From the confirmed, clean CAM checkout, select the existing project and
 participant. Use `--vendor codex` for Codex or `--vendor claude-code` for Claude:
 
+Use the confirmed absolute CAM paths shown below. For literal path and
+operator-reference handling, follow the [safe command guidance](PROJECT_JOURNAL.md#where-project-state-lives);
+do not interpolate those values into shell templates.
+
 ```bash
-.venv/bin/python tools/cam1_transport.py \
-  --project-root /absolute/path/to/target/project \
+"/CONFIRMED/CAM/REPO/.venv/bin/python" \
+  "/CONFIRMED/CAM/REPO/tools/cam1_transport.py" \
+  --project-root "/absolute/path/to/target/project" \
   product-discover --vendor claude-code --participant COMMON_NAME
 ```
 
@@ -22,7 +27,7 @@ Discovery resolves the current `PATH` candidate without executing it, even for
 `--version`. It does not install, approve, revoke, update the roster, or send a
 message. It does not establish that the candidate is the newest release or the
 binary running an existing session. To select a managed installation explicitly,
-add `--product-bin /absolute/path/to/launcher-or-executable`. A launcher symlink
+add `--product-bin "/absolute/path/to/launcher-or-executable"`. A launcher symlink
 is resolved to its canonical target; approval never covers all future targets.
 Supply any existing `--state-root` or `--git-bin` overrides consistently.
 
@@ -54,9 +59,11 @@ replacement requires explicit replacement approval even if its filename or
 reported version is unchanged. Fingerprint metadata drift also needs review;
 a matching content hash alone is insufficient.
 
-After approval, directly confirm any proposed roster change and run
-`participant_update.command_text`, replacing `DIRECT_OPERATOR_REFERENCE` with
-the actual confirmation reference. This uses the existing
+After approval, directly confirm any proposed roster change and use the returned
+`participant_update.command` argument array, replacing the
+`DIRECT_OPERATOR_REFERENCE` element with the literal confirmation reference.
+Pass the array without a shell, or regenerate shell text with `shlex.join`;
+do not substitute untrusted text into `command_text`. This uses the existing
 `participant update-metadata` operation; it does not change the participant's
 session UUID, binding generation, role, or display name. Repeat the read-only
 discovery for each affected participant/project, reusing the account approval.
@@ -67,6 +74,12 @@ review the new proposal. Do not discard the guards. After the refresh, use the
 approved canonical paths for `doctor` and subsequent transport calls. Product
 permission prompts remain under the host product's control. A successful
 approval does not prove interface compatibility, delivery, or action authority.
+
+If approval or revocation reports `product_approval.write` or
+`product_approval.committed_uncertain`, bytes may already have changed. The tool
+retains them and reports mutation evidence even if final checks or cleanup fail; do not
+repeat the command or truncate the ledger. Inspect `product-status`, or
+`product-recovery-status` if ordinary replay reports an incomplete final record.
 
 ## Update behavior and limits
 

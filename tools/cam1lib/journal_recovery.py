@@ -17,6 +17,7 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
+from .errors import ProjectError
 from .journal_types import (
     MAX_JOURNAL_BYTES,
     JournalError,
@@ -311,6 +312,10 @@ def _replace_partial_journal(
     temporary_descriptor: int | None = None
     temporary_exists = False
     temporary_identity: tuple[int, int] | None = None
+    replacement_installed = False
+    durability_confirmed = False
+    failure: OSError | ProjectError | None = None
+    cleanup_errors: list[str] = []
     try:
         try:
             temporary_descriptor = os.open(
@@ -387,12 +392,43 @@ def _replace_partial_journal(
                 "recovery replacement could not be installed atomically",
             ) from None
         temporary_exists = False
+        replacement_installed = True
         os.fsync(directory_descriptor)
+        durability_confirmed = True
+    except (OSError, ProjectError) as error:
+        failure = error
     finally:
         if temporary_descriptor is not None:
-            os.close(temporary_descriptor)
+            try:
+                os.close(temporary_descriptor)
+            except OSError as error:
+                failure = failure or error
+                cleanup_errors.append("replacement_close")
         if temporary_exists and temporary_identity is not None:
-            _unlink_matching_entry(
-                directory_descriptor, temporary_name, temporary_identity
-            )
-        os.close(directory_descriptor)
+            try:
+                _unlink_matching_entry(
+                    directory_descriptor, temporary_name, temporary_identity
+                )
+            except (OSError, ProjectError) as error:
+                failure = failure or error
+                cleanup_errors.append("temporary_cleanup")
+        try:
+            os.close(directory_descriptor)
+        except OSError as error:
+            failure = failure or error
+            cleanup_errors.append("directory_close")
+    if failure is not None:
+        if replacement_installed:
+            raise JournalError(
+                "journal.recovery_installed_uncertain",
+                "journal replacement was installed, but durability or cleanup was "
+                "not confirmed; preserve the archive, run journal verify, and do "
+                "not repeat recovery automatically",
+                audit={
+                    "mutation_state": "installed",
+                    "durability_confirmed": durability_confirmed,
+                    "verification_confirmed": False,
+                    "cleanup_errors": cleanup_errors,
+                },
+            ) from failure
+        raise failure

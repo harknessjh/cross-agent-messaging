@@ -12,6 +12,7 @@ import uuid
 from pathlib import Path
 from unittest import mock
 
+from tools import cam1_project
 from tools.cam1lib import journal, journal_recovery, project, state
 
 if __package__:
@@ -419,6 +420,210 @@ class ProjectJournalTests(ProjectTestCase):
                 store.snapshot(transaction=transaction).journal_sequence,
                 2,
             )
+
+    def test_installed_recovery_faults_preserve_archive_and_invalidate_caches(
+        self,
+    ) -> None:
+        binding = self.initialize()
+        journal.append_record(binding, event_type="note.before-recovery", now=NOW)
+        for fault in ("fsync", "directory_close", "journal_unlock", "verification"):
+            with self.subTest(fault=fault):
+                self._assert_installed_recovery_fault(binding, fault)
+
+    def _assert_installed_recovery_fault(self, binding, fault: str) -> None:
+        store = state.StateStore(binding)
+        original_replace = os.replace
+        original_sync = os.fsync
+        original_close = os.close
+        original_flock = journal.fcntl.flock
+        original_verify = journal.verify_journal
+        with project.project_transaction(binding) as transaction:
+            count = store.snapshot(transaction=transaction).journal_sequence
+            damaged = binding.journal_path.read_bytes() + b'{"partial"'
+            binding.journal_path.write_bytes(damaged)
+            binding.journal_path.chmod(0o600)
+            installed = False
+            replacement_directory = None
+            fault_raised = False
+
+            def replace(*args, **kwargs):
+                nonlocal installed, replacement_directory
+                original_replace(*args, **kwargs)
+                installed = True
+                replacement_directory = kwargs["dst_dir_fd"]
+
+            def sync(descriptor):
+                nonlocal fault_raised
+                if installed and fault == "fsync" and not fault_raised:
+                    fault_raised = True
+                    raise OSError("synthetic directory durability fault")
+                return original_sync(descriptor)
+
+            def close(descriptor):
+                nonlocal fault_raised
+                original_close(descriptor)
+                if (
+                    installed
+                    and descriptor == replacement_directory
+                    and fault == "directory_close"
+                    and not fault_raised
+                ):
+                    fault_raised = True
+                    raise OSError("synthetic cleanup fault after close")
+
+            def flock(descriptor, operation):
+                nonlocal fault_raised
+                original_flock(descriptor, operation)
+                if (
+                    installed
+                    and operation == journal.fcntl.LOCK_UN
+                    and fault == "journal_unlock"
+                    and not fault_raised
+                ):
+                    fault_raised = True
+                    raise OSError("synthetic unlock cleanup fault")
+
+            def verify(*args, **kwargs):
+                nonlocal fault_raised
+                if installed and fault == "verification" and not fault_raised:
+                    fault_raised = True
+                    raise journal.JournalError(
+                        "journal.read", "synthetic final verification fault"
+                    )
+                return original_verify(*args, **kwargs)
+
+            with (
+                mock.patch.object(journal_recovery.os, "replace", side_effect=replace),
+                mock.patch.object(journal_recovery.os, "fsync", side_effect=sync),
+                mock.patch.object(journal_recovery.os, "close", side_effect=close),
+                mock.patch.object(journal.fcntl, "flock", side_effect=flock),
+                mock.patch.object(journal, "verify_journal", side_effect=verify),
+                self.assertRaises(journal.JournalError) as context,
+            ):
+                journal.recover_partial_tail(
+                    binding,
+                    expected_journal_sha256=hashlib.sha256(damaged).hexdigest(),
+                    confirm_project_id=binding.project_id,
+                    reason="Synthetic recovery fault",
+                    operator_reference="Direct synthetic operator approval",
+                    now=NOW,
+                    transaction=transaction,
+                )
+            self.assertTrue(fault_raised)
+            audit = context.exception.audit
+            self.assertEqual(audit["mutation_state"], "installed")
+            self.assertEqual(audit["durability_confirmed"], fault != "fsync")
+            self.assertFalse(audit["verification_confirmed"])
+            self.assertEqual(Path(audit["archive_path"]).read_bytes(), damaged)
+            self.assertEqual(audit["reconciliation_arguments"], ["journal", "verify"])
+            self.assertEqual(project._transaction_cache(binding, transaction), {})
+            self.assertEqual(journal.verify_journal(binding).record_count, count + 1)
+            self.assertEqual(
+                store.snapshot(transaction=transaction).journal_sequence, count + 1
+            )
+            self.assertEqual(
+                journal.replay_records(binding)[-1]["record_id"],
+                audit["intended_record_id"],
+            )
+
+    def test_cli_recovery_preserves_evidence_across_outer_transaction_cleanup(
+        self,
+    ) -> None:
+        binding = self.initialize()
+        journal.append_record(binding, event_type="note.before-recovery", now=NOW)
+        for fault in ("unlock", "close", "fsync_and_unlock"):
+            with self.subTest(fault=fault):
+                self._assert_outer_recovery_fault(binding, fault)
+
+    def _assert_outer_recovery_fault(self, binding, fault: str) -> None:
+        damaged = binding.journal_path.read_bytes() + b'{"partial"'
+        binding.journal_path.write_bytes(damaged)
+        identity = binding.transaction_lock_path.stat()
+        original_flock, original_close = project.fcntl.flock, os.close
+        original_replace, original_sync = os.replace, os.fsync
+        installed = False
+        sync_failed = False
+        cleanup_failed = False
+        emitted = []
+
+        def is_transaction(descriptor):
+            metadata = os.fstat(descriptor)
+            return (metadata.st_dev, metadata.st_ino) == (
+                identity.st_dev,
+                identity.st_ino,
+            )
+
+        def replace(*args, **kwargs):
+            nonlocal installed
+            original_replace(*args, **kwargs)
+            installed = True
+
+        def sync(descriptor):
+            nonlocal sync_failed
+            if installed and fault == "fsync_and_unlock" and not sync_failed:
+                sync_failed = True
+                raise OSError("synthetic directory fsync fault")
+            original_sync(descriptor)
+
+        def flock(descriptor, operation):
+            nonlocal cleanup_failed
+            original_flock(descriptor, operation)
+            if (
+                installed
+                and operation == project.fcntl.LOCK_UN
+                and is_transaction(descriptor)
+                and fault != "close"
+            ):
+                cleanup_failed = True
+                raise OSError("synthetic outer transaction unlock fault")
+
+        def close(descriptor):
+            nonlocal cleanup_failed
+            selected = installed and fault == "close" and is_transaction(descriptor)
+            original_close(descriptor)
+            if selected:
+                cleanup_failed = True
+                raise OSError("synthetic outer transaction close fault")
+
+        with (
+            mock.patch.object(cam1_project, "_resolve", return_value=binding),
+            mock.patch.object(
+                cam1_project,
+                "_emit",
+                side_effect=lambda value, **_: emitted.append(value),
+            ),
+            mock.patch.object(project.fcntl, "flock", side_effect=flock),
+            mock.patch.object(project.os, "close", side_effect=close),
+            mock.patch.object(journal_recovery.os, "replace", side_effect=replace),
+            mock.patch.object(journal_recovery.os, "fsync", side_effect=sync),
+        ):
+            code = cam1_project.main(
+                [
+                    "journal",
+                    "recover-partial-tail",
+                    "--expected-journal-sha256",
+                    hashlib.sha256(damaged).hexdigest(),
+                    "--confirm-project-id",
+                    binding.project_id,
+                    "--reason",
+                    "Synthetic outer cleanup fault",
+                    "--operator-reference",
+                    "Direct synthetic operator confirmation",
+                ]
+            )
+        self.assertTrue(cleanup_failed)
+        self.assertEqual(code, 2, emitted)
+        audit = emitted[-1]["audit"]
+        self.assertEqual(audit["mutation_state"], "installed")
+        self.assertEqual(audit["durability_confirmed"], not sync_failed)
+        self.assertEqual(audit["verification_confirmed"], not sync_failed)
+        self.assertEqual(Path(audit["archive_path"]).read_bytes(), damaged)
+        self.assertEqual(audit["reconciliation_arguments"], ["journal", "verify"])
+        self.assertEqual(
+            journal.replay_records(binding)[-1]["record_id"],
+            audit["intended_record_id"],
+        )
+        self.assertIsNone(project.current_project_transaction(binding))
 
     def test_partial_tail_recovery_refuses_wrong_digest_and_complete_corruption(
         self,

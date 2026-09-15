@@ -422,12 +422,16 @@ def _journal_failed_attempt(
             now=event_now,
             transaction=transaction,
         )
-    except project.ProjectError as journal_error:
+    except (project.ProjectError, OSError) as journal_error:
         raise TransportError(
             "transport.outcome_unjournaled",
             "a send was attempted but its outcome could not be journaled; inspect "
             "the project journal and do not retry automatically",
-            audit={"intent_record": _record_summary(attempt.intent_record)},
+            audit={
+                "delivery_state": delivery_state,
+                "transport_error_code": error.code,
+                "intent_record": _record_summary(attempt.intent_record),
+            },
         ) from journal_error
     error.audit = {
         "delivery_state": delivery_state,
@@ -570,13 +574,14 @@ def _accepted_state_incomplete_error(
             now=event_now,
             transaction=transaction,
         )
-    except project.ProjectError:
+    except (project.ProjectError, OSError):
         accepted_record = None
     return TransportError(
         "transport.accepted_state_incomplete",
         "transport accepted the message but canonical lifecycle state could not "
         "be committed; inspect the journal and do not retry automatically",
         audit={
+            "delivery_state": "accepted",
             "intent_record": _record_summary(intent_record),
             "transport_receipt_id": receipt_identifier,
             "accepted_record": (
@@ -613,8 +618,10 @@ def _journal_committed_acceptance(
             now=event_now,
             transaction=transaction,
         )
-    except project.ProjectError as error:
+    except (project.ProjectError, OSError) as error:
         audit: dict[str, Any] = {
+            "delivery_state": "accepted",
+            "transport_receipt_id": receipt_identifier,
             "intent_record": _record_summary(intent_record),
             "lifecycle_state_committed": True,
         }
@@ -625,7 +632,7 @@ def _journal_committed_acceptance(
             }
         raise TransportError(
             "transport.acceptance_unjournaled",
-            "transport and lifecycle acceptance were recorded, but the separate "
+            "transport acceptance is known and lifecycle state was recorded, but the separate "
             "transport receipt record failed; do not retry automatically",
             audit=audit,
         ) from error
@@ -666,7 +673,12 @@ def _finalize_accepted_attempt(
         lifecycle_entry, projection_error = _settle_accepted_lifecycle(
             store, transaction, attempt, plan
         )
-    except (cam1.CamUsageError, cam1.CamValidationError, project.ProjectError) as error:
+    except (
+        cam1.CamUsageError,
+        cam1.CamValidationError,
+        project.ProjectError,
+        OSError,
+    ) as error:
         raise _accepted_state_incomplete_error(
             binding,
             transaction,

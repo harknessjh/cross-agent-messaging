@@ -24,9 +24,14 @@ The compatibility kernel must already be active. From one clean CAM checkout,
 create a plan for `causal.ordering` version `1`, record readiness for every
 participant frozen by that plan, and activate it:
 
+Use the confirmed absolute CAM paths shown below. For literal path and
+operator-reference handling, follow the [safe command guidance](PROJECT_JOURNAL.md#where-project-state-lives);
+do not interpolate those values into shell templates.
+
 ```bash
-.venv/bin/python tools/cam1_project.py \
-  --project-root /ABSOLUTE/PATH/TO/PROJECT \
+"/CONFIRMED/CAM/REPO/.venv/bin/python" \
+  "/CONFIRMED/CAM/REPO/tools/cam1_project.py" \
+  --project-root "/ABSOLUTE/PATH/TO/PROJECT" \
   compatibility plan \
   --feature-id causal.ordering \
   --feature-version 1 \

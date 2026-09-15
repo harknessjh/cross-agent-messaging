@@ -415,15 +415,12 @@ permits CAM to invoke that unchanged executable for product I/O. It does not
 cover dependencies, authenticate a vendor or session, authorize a message or
 workload action, or establish that the program is trustworthy.
 
-To preserve already adopted local projects without repeating approval prompts,
-automatic grandfathering is limited to unchanged roster paths from confirmed
-enrollment proposals carrying one of an explicit set of clean pre-feature
-validation-profile digests. The migration writes a normal approval record with
-its project, participant, binding generation, source proposal, and prior direct
-operator reference. Unversioned metadata updates and proposals from any newer
-or unknown profile cannot qualify; they must use `product-discover` and direct
-`product-approve`. Grandfathering is available only once for a path with no
-prior approval history.
+Earlier readers could create a `grandfathered_roster` approval from a confirmed
+legacy roster pathname. That shortcut has been removed: the old pathname did
+not provide historical executable bytes to compare with the current candidate.
+Missing approvals now use `product-discover` and direct `product-approve`.
+Historical records still replay unchanged; this does not retrospectively
+certify them, revoke them, or require already-approved users to re-enroll.
 
 An executable update at the same canonical path does not overwrite its active
 approval. Discovery reports `replacement_approval_required` with the exact
@@ -435,6 +432,21 @@ the append-only account ledger.
 The approval registry uses bounded monotonic advisory-lock waits for both reads
 and writes. A lock timeout reports contention without weakening the transaction
 or guessing whether another operation completed.
+
+An approval or revocation append that fails during writing, fsync, or final
+size verification retains all bytes and invalidates cached approvals. Its
+`product_approval.write` diagnostic reports `mutation_state: unknown`, intended
+record identity, original/intended lengths, and whether fsync completed. It
+does not truncate as rollback. Inspect `product-status`; use
+`product-recovery-status` only if a partial tail prevents ordinary replay.
+A complete record may already be present, including a revocation. Do not
+retry the mutation automatically.
+
+Post-append cache checks and cleanup preserve the same evidence. A completed,
+synced append followed by a check or cleanup failure reports
+`product_approval.committed_uncertain` with its record identity; an additional
+cleanup failure never replaces the original partial-write diagnostic. Cached
+approvals are invalidated in either case. Reconcile with `product-status`.
 
 Crash-tail repair is isolated in `cam1lib.product_approval_recovery`. The normal
 approval path never invokes it. `product-recovery-status` takes a shared lock

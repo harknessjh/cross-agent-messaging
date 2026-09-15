@@ -720,8 +720,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
     except (project.ProjectError, CamUsageError) as error:
+        payload = {"ok": False, "error": {"code": error.code, "detail": error.detail}}
+        if getattr(error, "audit", None) is not None:
+            payload["audit"] = error.audit
         _emit(
-            {"ok": False, "error": {"code": error.code, "detail": error.detail}},
+            payload,
             stream=sys.stderr,
         )
         return 2

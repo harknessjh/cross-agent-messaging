@@ -55,8 +55,6 @@ _send_to_codex_queue = _native._send_to_codex_queue
 _utc_now = _native._utc_now
 _uuid_values_equal = _native._uuid_values_equal
 
-LEGACY_PRODUCT_APPROVAL_PROFILES = _products.LEGACY_PRODUCT_APPROVAL_PROFILES
-
 
 def doctor(
     *,
@@ -134,7 +132,6 @@ def _require_complete_claude_binding(
 
 _require_approved_product_executable = _products._require_approved_product_executable
 resolve_product_binary = _products.resolve_product_binary
-_legacy_product_confirmation = _products._legacy_product_confirmation
 discover_product_executable = _products.discover_product_executable
 approve_product_executable = _products.approve_product_executable
 product_executable_status = _products.product_executable_status
@@ -464,7 +461,7 @@ async def send_project_claude(
                         attempt,
                         error,
                     )
-            except project.ProjectError as lock_error:
+            except (project.ProjectError, OSError) as lock_error:
                 raise _post_attempt_lock_failure(
                     attempt,
                     accepted=False,
@@ -480,7 +477,7 @@ async def send_project_claude(
                 attempt,
                 result,
             )
-    except project.ProjectError as lock_error:
+    except (project.ProjectError, OSError) as lock_error:
         raise _post_attempt_lock_failure(
             attempt,
             accepted=True,
@@ -604,7 +601,7 @@ def send_project_codex(
                         attempt,
                         error,
                     )
-            except project.ProjectError as lock_error:
+            except (project.ProjectError, OSError) as lock_error:
                 raise _post_attempt_lock_failure(
                     attempt,
                     accepted=False,
@@ -620,7 +617,7 @@ def send_project_codex(
                 attempt,
                 result,
             )
-    except project.ProjectError as lock_error:
+    except (project.ProjectError, OSError) as lock_error:
         raise _post_attempt_lock_failure(
             attempt,
             accepted=True,

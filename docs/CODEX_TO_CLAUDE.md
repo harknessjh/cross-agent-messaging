@@ -264,15 +264,11 @@ participants, [product update recovery](PRODUCT_UPDATES.md) adds read-only
 roster comparison and an exact metadata-update command to discovery; it does
 not require re-enrollment of an unchanged session.
 
-Existing projects can perform one automatic migration only when an explicitly
-supplied absolute roster path comes from a directly confirmed enrollment made
-by a known clean pre-feature reader. For example, a project-aware
-`--claude-bin /EXACT/LEGACY/ROSTER/PATH claude-list` invokes that migration before
-Claude I/O. The resulting approval has basis `grandfathered_roster` and records
-the source project, participant, binding generation, and enrollment proposal.
-New enrollments, metadata-only bindings, unknown validation profiles, changed
-files, and bare product names never qualify; use the candidate-card approval
-flow instead.
+A legacy roster path does not establish which executable bytes the operator
+previously reviewed. If account approval is missing, use `product-discover`,
+review the candidate card, and directly approve it before product I/O.
+Historical `grandfathered_roster` records remain readable and unchanged;
+already-approved, unchanged executables need no new confirmation or enrollment.
 
 The fingerprint covers the executable file and its canonical path metadata.
 Approval permits CAM to invoke that unchanged executable for product I/O. It
@@ -295,9 +291,9 @@ validate "at" a commit when the reported checkout is dirty: the commit does
 not identify the uncommitted rules that actually ran. Both successful and
 rejected offline validations report the profile that produced their verdict.
 
-A deliberate development-only `doctor` check or send from modified CAM source
-must repeat the exact reported digest with both global options before the
-subcommand:
+A deliberate development-only `doctor` check or send with modified
+non-executable profile inputs already represented in HEAD must repeat the exact
+reported digest with both global options before the subcommand:
 
 ```text
 --allow-dirty-validator \
@@ -307,10 +303,10 @@ subcommand:
 `doctor` reports the selected profile and whether live use is blocked but does
 not append a journal event. An actual send records the profile and whether the
 override was used. The override does not make the source clean or suitable for
-a reproducible release. It may cover ordinary edits to profile files already
-tracked in HEAD, but not a missing HEAD, a changed profile path set, or
-concealed/sparse index state. New-user onboarding should use a clean checkout
-and neither option.
+a reproducible release. Executable Python source must match HEAD before import;
+neither override option can bypass that gate. The override also cannot cover a
+missing HEAD, a changed profile path set, or concealed/sparse index state.
+New-user onboarding should use a clean checkout and neither option.
 
 The reference tools use the mature `jsonschema` library and the official
 Python MCP SDK. They do not connect to raw Claude sockets. All results are
@@ -318,6 +314,12 @@ machine-readable JSON on stdout; diagnostics use stderr and failures return
 nonzero. The live adapters accept complete envelopes of at most 65,536 UTF-8
 bytes; use an operator-approved local path plus digest for a larger artifact
 that both sessions are separately authorized to access.
+
+Malformed or conflicting product receipts do not establish acceptance.
+Decoding failures after product invocation leave delivery **unknown**. The
+adapter records that outcome when storage permits; if outcome journaling also
+fails, it reports the preserved intent and a reconciliation diagnostic. Do not
+retry automatically or interpret an error as proof that nothing was sent.
 
 Run every standalone `cam1.py validate` invocation as its own unpiped command
 and require both its successful exit and its complete verdict. Never use a
@@ -383,18 +385,32 @@ This walkthrough uses the default state root. An explicitly managed
 consistently to every later project and transport command. It cannot be used to
 select a copied or alternate history.
 
-Record the literal `project.project_dir` returned by `project status`. Create
-one owner-private child for the envelope files used by this walkthrough:
+Record the literal `project.project_dir` returned by `project status`. Prepare
+the shared working directory once per project, not once per participant. Only
+when the path is absent, create this owner-private child for envelope files:
 
 ```bash
 mkdir -m 700 -- "/ABSOLUTE/PROJECT_DIR/working"
 ```
 
-If that path already exists, inspect it and choose a new operator-approved
-owner-private child; do not overwrite unknown files. Builder outputs are
-mode-`0600` working copies. The journal, not those working copies, is the
-durable record. The tools do not delete working copies automatically; retain
-or remove them only under the operator's explicit local retention policy.
+If the directory already exists, reuse it after checking that it is a real
+directory directly below the verified `project.project_dir`, owned by the
+current operating-system account, with mode `0700` and no symlink components or
+access-granting ACLs. Apply the same checks if another participant creates it
+between inspection and `mkdir`. No new operator approval is needed solely
+because another enrolled participant already prepared this private directory.
+If a check fails, stop without changing permissions, deleting files, or choosing
+an alternate location automatically; ask the operator to resolve the mismatch.
+
+Select a new, unused filename for each envelope or capture; the filenames below
+are examples, not permission to overwrite earlier files. Carry each selected
+path through its build, validation, send, or ingest commands. Reuse an existing
+file only when the operation explicitly calls for that exact preserved root or
+envelope, after verifying its identity. Directory reuse does not establish
+message delivery. Builder outputs are mode-`0600` working copies. The journal,
+not those working copies, is the durable record. The tools do not delete working
+copies automatically; retain or remove them only under the operator's explicit
+local retention policy.
 
 Every build, validation, send, and ingest command must name the exact artifact
 path selected for that operation. Never discover an envelope or diagnostic
