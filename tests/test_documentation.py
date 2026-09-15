@@ -3,7 +3,12 @@
 
 from __future__ import annotations
 
+import json
 import re
+import shlex
+import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
@@ -76,6 +81,69 @@ def _copyable_prompts(content: str) -> dict[str, str]:
 
 
 class DocumentationTests(unittest.TestCase):
+    def test_advanced_commands_select_absolute_cam_tools_and_literal_arguments(
+        self,
+    ) -> None:
+        documents = (
+            "PROJECT_JOURNAL.md",
+            "COMPATIBILITY.md",
+            "CAUSAL_ORDERING.md",
+            "PRODUCT_UPDATES.md",
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            checkout = root / "CAM space ' quote $NOT_EXPANDED; literal"
+            application = root / "application space ' quote $NOT_EXPANDED; literal"
+            application.mkdir()
+            (checkout / "tools").mkdir(parents=True)
+            (checkout / ".venv" / "bin").mkdir(parents=True)
+            (checkout / ".venv" / "bin" / "python").symlink_to(sys.executable)
+            for name in ("cam1_project.py", "cam1_transport.py"):
+                (checkout / "tools" / name).write_text(
+                    "import json, sys\nprint(json.dumps(sys.argv))\n", encoding="utf-8"
+                )
+            (application / "tools").mkdir()
+            (application / "tools" / "cam1_project.py").write_text(
+                "raise AssertionError('application-local tool was selected')\n",
+                encoding="utf-8",
+            )
+            count = 0
+            for name in documents:
+                text = (REPOSITORY_ROOT / "docs" / name).read_text(encoding="utf-8")
+                for block in re.findall(r"```bash\n(.*?)```", text, re.DOTALL):
+                    for line in block.replace("\\\n", " ").splitlines():
+                        arguments = shlex.split(line)
+                        if not arguments:
+                            continue
+                        with self.subTest(document=name, command=arguments):
+                            self.assertEqual(
+                                arguments[0], "/CONFIRMED/CAM/REPO/.venv/bin/python"
+                            )
+                            self.assertTrue(
+                                arguments[1].startswith("/CONFIRMED/CAM/REPO/tools/")
+                            )
+                            literal = [
+                                value.replace("/CONFIRMED/CAM/REPO", str(checkout))
+                                .replace(
+                                    "/absolute/path/to/target/project", str(application)
+                                )
+                                .replace("/ABSOLUTE/PATH/TO/PROJECT", str(application))
+                                for value in arguments
+                            ]
+                            # The documented shell path is generated from argv,
+                            # never by inserting path text into shell syntax.
+                            result = subprocess.run(
+                                ["/bin/sh", "-c", shlex.join(literal)],
+                                cwd=application,
+                                capture_output=True,
+                                text=True,
+                                check=True,
+                                timeout=5,
+                            )
+                            self.assertEqual(json.loads(result.stdout), literal[1:])
+                            count += 1
+            self.assertGreater(count, 20)
+
     def test_readme_first_screen_points_to_start_here(self) -> None:
         first_screen = (
             (REPOSITORY_ROOT / "README.md")
@@ -311,20 +379,19 @@ class DocumentationTests(unittest.TestCase):
             prompt,
         )
 
-    def test_public_executable_policy_discloses_the_legacy_exception(self) -> None:
+    def test_public_executable_policy_discloses_legacy_approval_limits(self) -> None:
         readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
         security = (REPOSITORY_ROOT / "SECURITY.md").read_text(encoding="utf-8")
         protocol = (REPOSITORY_ROOT / "PROTOCOL.md").read_text(encoding="utf-8")
         normalized_readme = " ".join(readme.split())
         normalized_security = " ".join(security.split())
 
-        self.assertIn("one-time migration", readme)
-        self.assertIn("directly confirmed legacy CAM enrollment", normalized_readme)
+        self.assertIn("legacy roster path alone cannot approve", normalized_readme)
         self.assertIn(
-            "one-time migration of an unchanged roster path", normalized_security
+            "New approvals require direct operator confirmation", normalized_security
         )
-        self.assertIn("fixed, clean pre-feature reader", normalized_security)
-        self.assertIn("one-time legacy migration", protocol)
+        self.assertIn("no new path-only approval is created", normalized_security)
+        self.assertNotIn("one-time legacy migration", protocol)
         self.assertIn("`grandfathered_roster` approval", protocol)
         self.assertIn("`product-discover` is the sole exception", normalized_security)
         self.assertIn("For offline operations only", protocol)

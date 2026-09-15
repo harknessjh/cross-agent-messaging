@@ -351,6 +351,8 @@ def _risk_constraint_problems(envelope: dict[str, Any]) -> list[Problem]:
     if not isinstance(action, dict) or not isinstance(constraints, dict):
         return []
     risk_class = action.get("risk_class")
+    if not isinstance(risk_class, str):
+        return []  # The schema reports the malformed scalar.
     problems: list[Problem] = []
     if constraints.get("no_repository_changes") is False and risk_class in {
         "informational",
@@ -385,10 +387,13 @@ def _callback_problems(envelope: dict[str, Any]) -> list[Problem]:
     if not isinstance(reply_to, dict) or not isinstance(sender, dict):
         return problems
 
+    vendor = sender.get("vendor")
+    if not isinstance(vendor, str):
+        return problems  # The schema reports the malformed scalar.
     expected_transport = {
         "codex": "codex_queue",
         "claude-code": "claude_send_message",
-    }.get(sender.get("vendor"))
+    }.get(vendor)
     if expected_transport is None:
         return problems
     if reply_to.get("transport") != expected_transport:

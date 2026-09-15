@@ -6,11 +6,12 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import json
+import sys
 import unittest
 from unittest import mock
 
 from tools import cam1, cam1_transport, cam1_transport_native
-from tools.cam1lib import journal, state, transport_audit
+from tools.cam1lib import journal, project, state, transport_audit
 
 if __package__:
     from .test_cam1_transport import (
@@ -33,6 +34,250 @@ else:
 
 
 class ProjectTransportOutcomeTests(ProjectBoundTransportTestCase):
+    def test_invalid_codex_output_is_unknown_and_never_retried(self) -> None:
+        self.add_codex_participant()
+        self.add_claude_participant()
+        for descriptor in (1, 2):
+            with self.subTest(descriptor=descriptor):
+                raw = cam1.build_hello(
+                    sender_vendor="claude-code",
+                    sender_name="local-worker",
+                    sender_session=CLAUDE_SESSION,
+                    recipient_vendor="codex",
+                    recipient_name="example-coordinator",
+                    recipient_session=CODEX_THREAD,
+                    reply_transport="claude_send_message",
+                    reply_address=CLAUDE_SESSION,
+                )
+                envelope = self.private_envelope(f"bad-output-{descriptor}.json", raw)
+                marker = self.base / f"bad-output-{descriptor}.called"
+                self.approved_codex_bin.write_text(
+                    f"#!{sys.executable}\nimport os\nfrom pathlib import Path\n"
+                    f"with Path({str(marker)!r}).open('a') as handle: handle.write('called\\n')\n"
+                    f"os.write({descriptor}, b'\\xff')\n",
+                    encoding="utf-8",
+                )
+                self.approved_codex_bin.chmod(0o700)
+                arguments = (
+                    "codex-send",
+                    "--participant",
+                    "example-coordinator",
+                    "--envelope",
+                    str(envelope),
+                )
+                result = self.run_transport(
+                    *arguments, codex_bin=self.approved_codex_bin
+                )
+                self.assertEqual(result.returncode, 2, result.stderr)
+                payload = json.loads(result.stderr)
+                self.assertEqual(payload["error"]["code"], "codex.queue_encoding")
+                self.assertEqual(payload["audit"]["delivery_state"], "unknown")
+                records = journal.replay_records(self.binding)
+                self.assertEqual(journal.decode_exact_message(records[-3]), raw)
+                self.assertEqual(records[-1]["event_type"], "transport.not_accepted")
+                self.assertEqual(records[-1]["attributes"]["delivery_state"], "unknown")
+                repeated = self.run_transport(
+                    *arguments,
+                    "--retry-after-intent",
+                    records[-3]["record_id"],
+                    codex_bin=self.approved_codex_bin,
+                )
+                self.assertEqual(
+                    json.loads(repeated.stderr)["error"]["code"],
+                    "transport.retry_unsafe",
+                )
+                self.assertEqual(marker.read_text().splitlines(), ["called"])
+
+    def test_failed_outcome_append_preserves_unknown_delivery_evidence(self) -> None:
+        self.add_codex_participant()
+        self.add_claude_participant()
+        raw = cam1.build_hello(
+            sender_vendor="claude-code",
+            sender_name="local-worker",
+            sender_session=CLAUDE_SESSION,
+            recipient_vendor="codex",
+            recipient_name="example-coordinator",
+            recipient_session=CODEX_THREAD,
+            reply_transport="claude_send_message",
+            reply_address=CLAUDE_SESSION,
+        )
+        envelope = self.private_envelope("unknown-write-fault.json", raw)
+        original_append = journal.append_record
+
+        def fail_outcome(*args, **kwargs):
+            if kwargs.get("event_type") == "transport.not_accepted":
+                raise OSError("synthetic outcome disk fault")
+            return original_append(*args, **kwargs)
+
+        def failed_send(**arguments):
+            validated = cam1_transport._validate_envelope(
+                arguments["envelope_path"], None
+            )
+            arguments["before_send"](validated)
+            arguments["before_dispatch"]()
+            raise cam1_transport.TransportError(
+                "codex.queue_encoding", "unknown delivery"
+            )
+
+        with (
+            mock.patch.object(journal, "append_record", side_effect=fail_outcome),
+            mock.patch.object(
+                cam1_transport, "_send_to_codex_queue", side_effect=failed_send
+            ) as dispatch,
+            mock.patch.object(cam1_transport, "_require_current_product_approval"),
+            self.assertRaises(cam1_transport.TransportError) as context,
+        ):
+            cam1_transport.send_project_codex(
+                self.binding,
+                codex_bin=str(self.approved_codex_bin),
+                participant_selector="example-coordinator",
+                thread_guard=CODEX_THREAD,
+                envelope_path=str(envelope),
+                against_path=None,
+                renewal_of=None,
+                retry_after_intent=None,
+                timeout_seconds=1,
+                **live_validation_arguments(),
+            )
+        self.assertEqual(dispatch.call_count, 1)
+        self.assertEqual(context.exception.code, "transport.outcome_unjournaled")
+        self.assertEqual(context.exception.audit["delivery_state"], "unknown")
+        self.assertEqual(
+            context.exception.audit["transport_error_code"], "codex.queue_encoding"
+        )
+        records = journal.replay_records(self.binding)
+        self.assertEqual(journal.decode_exact_message(records[-2]), raw)
+        self.assertEqual(records[-1]["event_type"], state.LIFECYCLE_ROOT_REGISTERED)
+        entry = (
+            state.StateStore(self.binding)
+            .snapshot()
+            .lifecycle.entries[json.loads(raw)["message_id"]]
+        )
+        self.assertEqual(entry.state.value, "pending")
+
+    def test_cli_keeps_known_acceptance_on_outcome_or_cleanup_io_failure(self) -> None:
+        self.add_codex_participant()
+        self.add_claude_participant()
+        for fault in ("outcome", "state_and_outcome", "transaction_unlock"):
+            with self.subTest(fault=fault):
+                self._assert_accepted_io_fault(fault)
+
+    def _assert_accepted_io_fault(self, fault: str) -> None:
+        raw = cam1.build_hello(
+            sender_vendor="claude-code",
+            sender_name="local-worker",
+            sender_session=CLAUDE_SESSION,
+            recipient_vendor="codex",
+            recipient_name="example-coordinator",
+            recipient_session=CODEX_THREAD,
+            reply_transport="claude_send_message",
+            reply_address=CLAUDE_SESSION,
+        )
+        envelope = self.private_envelope(f"accepted-{fault}.json", raw)
+        receipt_id = "00000000-0000-4000-8000-000000000901"
+        original_write = journal._write_all
+        original_settle = transport_audit._settle_accepted_lifecycle
+        original_flock = project.fcntl.flock
+        emitted = []
+        dispatched = False
+
+        def accepted_send(**arguments):
+            nonlocal dispatched
+            validated = cam1_transport._validate_envelope(
+                arguments["envelope_path"], None
+            )
+            arguments["before_send"](validated)
+            arguments["before_dispatch"]()
+            dispatched = True
+            return {
+                "ok": True,
+                "status": "transport_accepted",
+                "application_ack": False,
+                "message_id": validated.envelope["message_id"],
+                "transport_receipt": {"queue_id": receipt_id},
+            }
+
+        def write(descriptor, value):
+            if (
+                fault != "transaction_unlock"
+                and json.loads(value)["event_type"] == "transport.accepted"
+            ):
+                raise OSError("synthetic acceptance write fault")
+            return original_write(descriptor, value)
+
+        def settle(*args, **kwargs):
+            if fault == "state_and_outcome":
+                raise cam1.CamUsageError(
+                    "state.synthetic", "synthetic lifecycle failure"
+                )
+            return original_settle(*args, **kwargs)
+
+        def flock(descriptor, operation):
+            original_flock(descriptor, operation)
+            if (
+                dispatched
+                and fault == "transaction_unlock"
+                and operation == project.fcntl.LOCK_UN
+            ):
+                raise OSError("synthetic post-dispatch unlock fault")
+
+        with (
+            mock.patch.object(
+                cam1_transport, "_resolve_project", return_value=self.binding
+            ),
+            mock.patch.object(
+                cam1_transport,
+                "resolve_product_binary",
+                return_value=str(self.approved_codex_bin),
+            ),
+            mock.patch.object(
+                cam1_transport,
+                "_require_live_validation_profile",
+                return_value=({}, False),
+            ),
+            mock.patch.object(
+                cam1_transport,
+                "_with_validation_profile",
+                side_effect=lambda value: value,
+            ),
+            mock.patch.object(
+                cam1_transport,
+                "_emit",
+                side_effect=lambda value, **_: emitted.append(value),
+            ),
+            mock.patch.object(cam1_transport, "_require_current_product_approval"),
+            mock.patch.object(
+                cam1_transport, "_send_to_codex_queue", side_effect=accepted_send
+            ) as dispatch,
+            mock.patch.object(journal, "_write_all", side_effect=write),
+            mock.patch.object(
+                transport_audit, "_settle_accepted_lifecycle", side_effect=settle
+            ),
+            mock.patch.object(project.fcntl, "flock", side_effect=flock),
+        ):
+            code = cam1_transport.main(
+                [
+                    "codex-send",
+                    "--participant",
+                    "example-coordinator",
+                    "--envelope",
+                    str(envelope),
+                ]
+            )
+        self.assertEqual(dispatch.call_count, 1)
+        self.assertEqual(code, 2, emitted)
+        audit = emitted[-1]["audit"]
+        self.assertEqual(audit["delivery_state"], "accepted")
+        self.assertEqual(audit["transport_receipt_id"], receipt_id)
+        records = journal.replay_records(self.binding)
+        intent = next(
+            record
+            for record in records
+            if record["record_id"] == audit["intent_record"]["record_id"]
+        )
+        self.assertEqual(journal.decode_exact_message(intent), raw)
+        self.assertIn("do not retry", emitted[-1]["error"]["detail"])
+
     def test_legacy_agent_view_shape_reaches_project_preflight(self) -> None:
         self.add_claude_participant()
         claude_bin = self.fake_claude(

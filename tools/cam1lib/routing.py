@@ -309,12 +309,14 @@ def parse_list_agents_peers(listing: str) -> tuple[Peer, ...]:
     qualified_addresses: set[str] = set()
     for raw_line in listing.splitlines():
         parts = tuple(part.strip() for part in raw_line.strip().split("·"))
-        if len(parts) < 3:
-            continue
         matched = PEER_NAME_PATTERN.fullmatch(parts[0])
         if matched is None:
             continue
-        metadata = tuple(part for part in parts[1:] if part)
+        if len(parts) < 3 or not parts[1] or not parts[2]:
+            raise RoutingError(
+                "claude.list_format", "Claude ListAgents row lacks kind or state"
+            )
+        metadata = parts[1:]
         if any(len(part) > 512 for part in metadata):
             raise RoutingError(
                 "claude.list_format", "Claude ListAgents metadata is too long"
@@ -459,6 +461,11 @@ def correlate_route(
             "selected full sessionId does not map to one unique fresh ListAgents name/ref",
         )
     peer = matching[0]
+    if peer.kind.lower() != session.kind.lower():
+        raise RoutingError(
+            "claude.route_kind_mismatch",
+            "Agent View and ListAgents disagree on the selected session kind",
+        )
     if requested_target is not None and peer.qualified_address != requested_target:
         raise RoutingError(
             "claude.target_session_mismatch",

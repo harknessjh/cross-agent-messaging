@@ -21,13 +21,20 @@ uses the current-directory default:
   "/CONFIRMED/CAM/REPO/tools/cam1_project.py" project status
 ```
 
+Every example below uses the operator-confirmed absolute CAM checkout, not
+tools found relative to the application directory. The paths shown are
+illustrative. Agents should pass literal values as an argument list without a
+shell. If a shell command is needed, generate it with `shlex.join` from that
+list; do not substitute untrusted paths or message text into a quoted command
+template, use `eval`, or rely on quoting alone to prevent expansion.
+
 From a different working directory or in automation, select the worktree
 explicitly:
 
 ```bash
 "/CONFIRMED/CAM/REPO/.venv/bin/python" \
   "/CONFIRMED/CAM/REPO/tools/cam1_project.py" \
-  --project-root /absolute/path/to/target/project \
+  --project-root "/absolute/path/to/target/project" \
   project status
 ```
 
@@ -132,8 +139,9 @@ If a crash or storage failure leaves exactly one incomplete EOF record after a
 fully verified prefix, the operator can inspect the bounded recovery evidence:
 
 ```bash
-.venv/bin/python tools/cam1_project.py \
-  --project-root /absolute/path/to/target/project \
+"/CONFIRMED/CAM/REPO/.venv/bin/python" \
+  "/CONFIRMED/CAM/REPO/tools/cam1_project.py" \
+  --project-root "/absolute/path/to/target/project" \
   journal recovery-status
 ```
 
@@ -141,8 +149,9 @@ After independently confirming the reported full journal SHA-256 and project
 UUID, the operator may recover that one damage class explicitly:
 
 ```bash
-.venv/bin/python tools/cam1_project.py \
-  --project-root /absolute/path/to/target/project \
+"/CONFIRMED/CAM/REPO/.venv/bin/python" \
+  "/CONFIRMED/CAM/REPO/tools/cam1_project.py" \
+  --project-root "/absolute/path/to/target/project" \
   journal recover-partial-tail \
   --expected-journal-sha256 FULL_REPORTED_SHA256 \
   --confirm-project-id PROJECT_UUID \
@@ -156,6 +165,13 @@ unchanged verified prefix plus a hash-chained recovery record that identifies
 the archive and discarded partial suffix. It never deletes the archive. It
 refuses a clean journal and any complete record with invalid JSON, schema,
 sequence, chain, or digest. Do not edit or remove a partial tail manually.
+
+An error after atomic replacement reports `mutation_state: installed` with
+archive and intended-record identifiers. Durability or final verification may
+still be unconfirmed; this is not an unchanged failure. Preserve the evidence
+and run `journal verify` with the same project options before deciding what to
+do. Do not repeat recovery automatically. A complete installed journal is no
+longer eligible for `recovery-status`'s partial-tail workflow.
 
 The current reference implementation accepts at most 100,000 records and 128
 MiB of journal bytes. It fails closed at either limit and does not yet provide
@@ -253,12 +269,14 @@ checks before committing protocol state.
 Inspect or rebuild it from the canonical journal with:
 
 ```bash
-.venv/bin/python tools/cam1_project.py \
-  --project-root /absolute/path/to/target/project \
+"/CONFIRMED/CAM/REPO/.venv/bin/python" \
+  "/CONFIRMED/CAM/REPO/tools/cam1_project.py" \
+  --project-root "/absolute/path/to/target/project" \
   state status
 
-.venv/bin/python tools/cam1_project.py \
-  --project-root /absolute/path/to/target/project \
+"/CONFIRMED/CAM/REPO/.venv/bin/python" \
+  "/CONFIRMED/CAM/REPO/tools/cam1_project.py" \
+  --project-root "/absolute/path/to/target/project" \
   state rebuild
 ```
 
@@ -363,17 +381,19 @@ variable expected to expand in another session.
 Prepare one self-enrollment card from each actual product session:
 
 ```bash
-.venv/bin/python tools/cam1_project.py \
-  --project-root /absolute/path/to/target/project \
+"/CONFIRMED/CAM/REPO/.venv/bin/python" \
+  "/CONFIRMED/CAM/REPO/tools/cam1_project.py" \
+  --project-root "/absolute/path/to/target/project" \
   onboarding prepare \
   --vendor codex \
-  --product-bin /account/approved/absolute/path/to/codex
+  --product-bin "/account/approved/absolute/path/to/codex"
 
-.venv/bin/python tools/cam1_project.py \
-  --project-root /absolute/path/to/target/project \
+"/CONFIRMED/CAM/REPO/.venv/bin/python" \
+  "/CONFIRMED/CAM/REPO/tools/cam1_project.py" \
+  --project-root "/absolute/path/to/target/project" \
   onboarding prepare \
   --vendor claude-code \
-  --product-bin /account/approved/absolute/path/to/claude
+  --product-bin "/account/approved/absolute/path/to/claude"
 ```
 
 For an already initialized project, replace `prepare` with `inspect-self` to
@@ -395,8 +415,9 @@ response directly in that same session. The session then supplies the card's
 exact values to:
 
 ```bash
-.venv/bin/python tools/cam1_project.py \
-  --project-root /absolute/path/to/target/project \
+"/CONFIRMED/CAM/REPO/.venv/bin/python" \
+  "/CONFIRMED/CAM/REPO/tools/cam1_project.py" \
+  --project-root "/absolute/path/to/target/project" \
   onboarding confirm \
   --proposal-id PROPOSAL_UUID_FROM_CARD \
   --confirmation-code CONFIRMATION_CODE_FROM_CARD \
@@ -414,12 +435,14 @@ policy boundary.
 Inspect proposals and the roster with:
 
 ```bash
-.venv/bin/python tools/cam1_project.py \
-  --project-root /absolute/path/to/target/project \
+"/CONFIRMED/CAM/REPO/.venv/bin/python" \
+  "/CONFIRMED/CAM/REPO/tools/cam1_project.py" \
+  --project-root "/absolute/path/to/target/project" \
   onboarding status
 
-.venv/bin/python tools/cam1_project.py \
-  --project-root /absolute/path/to/target/project \
+"/CONFIRMED/CAM/REPO/.venv/bin/python" \
+  "/CONFIRMED/CAM/REPO/tools/cam1_project.py" \
+  --project-root "/absolute/path/to/target/project" \
   onboarding status --show-identifiers
 ```
 
@@ -441,8 +464,9 @@ identity decision separately from the tool-derived route observation; it must
 not claim that the operator recognized an MCP ref that `/status` did not show:
 
 ```bash
-.venv/bin/python tools/cam1_project.py \
-  --project-root /absolute/path/to/target/project \
+"/CONFIRMED/CAM/REPO/.venv/bin/python" \
+  "/CONFIRMED/CAM/REPO/tools/cam1_project.py" \
+  --project-root "/absolute/path/to/target/project" \
   participant confirm-route \
   --participant reviewer \
   --expected-address "EXACT FRESH NAME [REF]" \
@@ -453,12 +477,14 @@ Routine roster output redacts identifiers. Reveal them only for an explicit
 local operator check:
 
 ```bash
-.venv/bin/python tools/cam1_project.py \
-  --project-root /absolute/path/to/target/project \
+"/CONFIRMED/CAM/REPO/.venv/bin/python" \
+  "/CONFIRMED/CAM/REPO/tools/cam1_project.py" \
+  --project-root "/absolute/path/to/target/project" \
   participant list
 
-.venv/bin/python tools/cam1_project.py \
-  --project-root /absolute/path/to/target/project \
+"/CONFIRMED/CAM/REPO/.venv/bin/python" \
+  "/CONFIRMED/CAM/REPO/tools/cam1_project.py" \
+  --project-root "/absolute/path/to/target/project" \
   participant list --show-identifiers
 ```
 
@@ -466,14 +492,15 @@ Update mutable display, role, or associated-executable metadata only after direc
 operator confirmation and with the currently displayed metadata revision:
 
 ```bash
-.venv/bin/python tools/cam1_project.py \
-  --project-root /absolute/path/to/target/project \
+"/CONFIRMED/CAM/REPO/.venv/bin/python" \
+  "/CONFIRMED/CAM/REPO/tools/cam1_project.py" \
+  --project-root "/absolute/path/to/target/project" \
   participant update-metadata \
   --participant COMMON_NAME \
   --expected-revision CURRENT_REVISION \
   --display-name "Updated display name" \
   --role "Optional descriptive role" \
-  --product-bin /operator/reviewed/absolute/product/path \
+  --product-bin "/operator/reviewed/absolute/product/path" \
   --operator-reference "How the operator confirmed these exact changes"
 ```
 
@@ -512,11 +539,13 @@ can remain valid CAM/1 wire data, but the reference live path refuses it.
 Verify the complete chain and inspect a redacted recent summary with:
 
 ```bash
-.venv/bin/python tools/cam1_project.py \
-  --project-root /absolute/path/to/target/project \
+"/CONFIRMED/CAM/REPO/.venv/bin/python" \
+  "/CONFIRMED/CAM/REPO/tools/cam1_project.py" \
+  --project-root "/absolute/path/to/target/project" \
   journal verify
-.venv/bin/python tools/cam1_project.py \
-  --project-root /absolute/path/to/target/project \
+"/CONFIRMED/CAM/REPO/.venv/bin/python" \
+  "/CONFIRMED/CAM/REPO/tools/cam1_project.py" \
+  --project-root "/absolute/path/to/target/project" \
   journal tail --limit 20
 ```
 
@@ -525,8 +554,9 @@ routine status check does not spill routing metadata or message bodies into a
 transcript. For an explicit local operator review, use:
 
 ```bash
-.venv/bin/python tools/cam1_project.py \
-  --project-root /absolute/path/to/target/project \
+"/CONFIRMED/CAM/REPO/.venv/bin/python" \
+  "/CONFIRMED/CAM/REPO/tools/cam1_project.py" \
+  --project-root "/absolute/path/to/target/project" \
   journal tail \
   --limit 20 \
   --show-content
@@ -578,10 +608,11 @@ later.
 The supported receive-side command performs that ordering in one transaction:
 
 ```bash
-.venv/bin/python tools/cam1_project.py \
-  --project-root /absolute/path/to/target/project \
+"/CONFIRMED/CAM/REPO/.venv/bin/python" \
+  "/CONFIRMED/CAM/REPO/tools/cam1_project.py" \
+  --project-root "/absolute/path/to/target/project" \
   message ingest \
-  --message /absolute/path/to/exact-delivered-envelope.cam1.json \
+  --message "/absolute/path/to/exact-delivered-envelope.cam1.json" \
   --as-participant receiver-common-name
 ```
 

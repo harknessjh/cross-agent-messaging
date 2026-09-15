@@ -610,24 +610,36 @@ def _append_locked(
             "approval registry exceeds its bounded limits",
         )
     os.lseek(descriptor, 0, os.SEEK_END)
+    durability_confirmed = False
     try:
         _write_all(descriptor, raw)
         os.fsync(descriptor)
+        durability_confirmed = True
+        metadata = os.fstat(descriptor)
+        if metadata.st_size != total + len(raw):
+            raise ProductApprovalError(
+                "product_approval.write",
+                "approval registry size did not match the completed append",
+            )
     except (OSError, ProjectError) as error:
-        try:
-            os.ftruncate(descriptor, total)
-            os.fsync(descriptor)
-        except OSError:
-            pass
-        raise ProductApprovalError(
-            "product_approval.write", "approval registry append did not complete"
-        ) from error
-    metadata = os.fstat(descriptor)
-    if metadata.st_size != total + len(raw):
+        # Appended bytes may include a complete approval or revocation. Never
+        # erase evidence as an implicit rollback or reuse a cached attestation.
+        begin_operation()
         raise ProductApprovalError(
             "product_approval.write",
-            "approval registry size did not match the completed append",
-        )
+            "approval append may have changed the registry; bytes were retained. "
+            "Run product-status; if a partial tail blocks it, run "
+            "product-recovery-status. Do not retry or truncate automatically",
+            audit={
+                "mutation_state": "unknown",
+                "durability_confirmed": durability_confirmed,
+                "event_type": event_type,
+                "intended_record_id": record["record_id"],
+                "intended_record_sha256": record["record_sha256"],
+                "original_byte_length": total,
+                "intended_byte_length": total + len(raw),
+            },
+        ) from error
     return record
 
 
@@ -694,6 +706,8 @@ def _approve_fingerprinted_candidate(
             "product executable no longer matches the reviewed candidate card",
         )
     registry, descriptor, handle = _open_registry(exclusive=True, create=True)
+    record: dict[str, Any] | None = None
+    failure: BaseException | None = None
     try:
         records, total = _verify(handle)
         current_metadata = _metadata_opened(Path(candidate.canonical_path))
@@ -771,10 +785,59 @@ def _approve_fingerprinted_candidate(
             "approval": record,
             "candidate": candidate.as_dict(),
         }
+    except BaseException as error:
+        failure = error
+        raise
     finally:
-        handle.close()
-        fcntl.flock(descriptor, fcntl.LOCK_UN)
-        os.close(descriptor)
+        _finish_registry_mutation(registry, descriptor, handle, record, failure)
+
+
+def _finish_registry_mutation(
+    registry: Path,
+    descriptor: int,
+    handle: BinaryIO,
+    appended_record: dict[str, Any] | None,
+    failure: BaseException | None,
+) -> None:
+    """Preserve append evidence across post-append checks and every cleanup."""
+
+    cleanup_errors = _recovery._cleanup_registry_handles(handle, descriptor)
+    if failure is None and not cleanup_errors:
+        return
+    begin_operation()
+    if isinstance(failure, ProjectError) and failure.audit is not None:
+        failure.audit["registry"] = str(registry)
+        failure.audit["reconciliation_arguments"] = ["product-status"]
+        if cleanup_errors:
+            failure.audit.setdefault("cleanup_errors", []).extend(cleanup_errors)
+        return  # The original exception is already propagating.
+    if appended_record is not None and (
+        failure is None or isinstance(failure, (OSError, ProjectError))
+    ):
+        raise ProductApprovalError(
+            "product_approval.committed_uncertain",
+            "approval ledger append completed and synced, but final checks or "
+            "cleanup failed; run product-status and do not repeat the mutation",
+            audit={
+                "registry": str(registry),
+                "mutation_state": "committed",
+                "durability_confirmed": True,
+                "verification_confirmed": False,
+                "event_type": appended_record["event_type"],
+                "intended_record_id": appended_record["record_id"],
+                "intended_record_sha256": appended_record["record_sha256"],
+                "cleanup_errors": cleanup_errors,
+                "reconciliation_arguments": ["product-status"],
+            },
+        ) from failure
+    if failure is not None:
+        if cleanup_errors:
+            failure.add_note("Approval registry cleanup also failed.")
+        return
+    raise ProductApprovalError(
+        "product_approval.cleanup",
+        "approval registry cleanup failed without a new append; run product-status",
+    )
 
 
 def approve_candidate(
@@ -804,31 +867,6 @@ def approve_candidate(
         expected=expected,
         operator_reference=operator_reference,
         basis=basis,
-        migration=migration,
-        now=now,
-    )
-
-
-def grandfather_candidate(
-    *,
-    vendor: str,
-    product_bin: str,
-    operator_reference: str,
-    migration: dict[str, Any],
-    now: dt.datetime | None = None,
-) -> dict[str, Any]:
-    """Hash and grandfather one migration-eligible legacy roster path once."""
-
-    candidate = discover_candidate(
-        vendor,
-        product_bin,
-        allow_path_lookup=False,
-    )
-    return _approve_fingerprinted_candidate(
-        candidate,
-        expected=candidate.fingerprint_sha256,
-        operator_reference=operator_reference,
-        basis="grandfathered_roster",
         migration=migration,
         now=now,
     )
@@ -1114,6 +1152,8 @@ def revoke_approval(
         label="revoked product executable",
     )
     registry, descriptor, handle = _open_registry(exclusive=True, create=False)
+    record: dict[str, Any] | None = None
+    failure: BaseException | None = None
     try:
         records, total = _verify(handle)
         active = _active_records(records)
@@ -1151,7 +1191,8 @@ def revoke_approval(
             "registry": str(registry),
             "revocation": record,
         }
+    except BaseException as error:
+        failure = error
+        raise
     finally:
-        handle.close()
-        fcntl.flock(descriptor, fcntl.LOCK_UN)
-        os.close(descriptor)
+        _finish_registry_mutation(registry, descriptor, handle, record, failure)

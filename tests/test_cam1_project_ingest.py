@@ -123,6 +123,55 @@ class ProjectMessageIngestTests(ProjectTestCase):
         self.assertTrue(payload["validation_profile"]["available"])
         self.assertEqual(state.StateStore(binding).snapshot().lifecycle.entries, {})
 
+    def test_message_ingest_records_rejection_for_malformed_semantic_types(
+        self,
+    ) -> None:
+        binding = self.initialize()
+        root = builders.build_hello(
+            sender_vendor="codex",
+            sender_name="project-coordinator",
+            sender_session=CODEX_SESSION,
+            recipient_vendor="claude-code",
+            recipient_name="bob-reviewer",
+            recipient_session=CLAUDE_SESSION,
+            reply_transport="codex_queue",
+            reply_address=CODEX_SESSION,
+        )
+        for parent, field in (("action", "risk_class"), ("claimed_sender", "vendor")):
+            for value in ([], {}):
+                with self.subTest(field=field, value=value):
+                    envelope = json.loads(root)
+                    envelope[parent][field] = value
+                    envelope["constraints"]["no_repository_changes"] = False
+                    raw = json.dumps(envelope).encode("utf-8")
+                    message_path = self.private_message_file(
+                        f"{field}-{type(value).__name__}.json", raw
+                    )
+                    result = self.run_tool(
+                        "message",
+                        "ingest",
+                        "--message",
+                        str(message_path),
+                        "--as-participant",
+                        "local-receiver",
+                    )
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    payload = json.loads(result.stderr)
+                    self.assertEqual(payload["status"], "rejected")
+                    self.assertIn("schema.enum", payload["error"]["problem_codes"])
+                    self.assertLessEqual(len(payload["error"]["problem_codes"]), 16)
+                    observed, rejected = journal.replay_records(binding)[-2:]
+                    self.assertEqual(observed["event_type"], "message.inbound.observed")
+                    self.assertEqual(rejected["event_type"], "message.inbound.rejected")
+                    self.assertEqual(journal.decode_exact_message(observed), raw)
+                    self.assertEqual(
+                        rejected["attributes"]["observed_record_id"],
+                        observed["record_id"],
+                    )
+                    self.assertEqual(
+                        state.StateStore(binding).snapshot().lifecycle.entries, {}
+                    )
+
     def test_message_ingest_commits_valid_root_and_reply_lifecycle(self) -> None:
         binding = self.initialize()
         self.bind_ingest_participants(binding)

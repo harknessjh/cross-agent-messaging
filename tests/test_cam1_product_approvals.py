@@ -547,7 +547,7 @@ class ProductApprovalTests(unittest.TestCase):
                 operation()
             self.assertEqual(error.exception.code, "product_approval.path")
 
-    def test_failed_append_removes_partial_record(self) -> None:
+    def test_failed_append_retains_partial_record(self) -> None:
         candidate = self.discover()
         original_write = product_approvals._write_all
 
@@ -566,7 +566,156 @@ class ProductApprovalTests(unittest.TestCase):
                 operator_reference="direct test operator confirmation",
             )
         self.assertEqual(context.exception.code, "product_approval.write")
-        self.assertEqual(product_approvals.approval_status()["record_count"], 0)
+        self.assertEqual(context.exception.audit["mutation_state"], "unknown")
+        self.assertEqual(product_approvals.registry_path().stat().st_size, 17)
+        with self.assertRaises(product_approvals.ProductApprovalError):
+            product_approvals.approval_status()
+
+    def test_approve_and_revoke_faults_retain_bytes_and_invalidate_cache(self) -> None:
+        for operation in ("approve", "revoke"):
+            for fault in (
+                "zero",
+                "partial",
+                "fsync",
+                "verification",
+                "cache",
+                "unlock",
+                "close",
+                "partial_cleanup",
+            ):
+                if operation == "revoke" and fault == "cache":
+                    continue
+                with self.subTest(operation=operation, fault=fault):
+                    self._assert_approval_append_fault(operation, fault)
+
+    def _assert_approval_append_fault(self, operation: str, fault: str) -> None:
+        original_write = product_approvals._write_all
+        original_fsync = os.fsync
+        original_fstat = os.fstat
+        original_identity = product_approvals._registry_identity
+        original_flock = product_approvals.fcntl.flock
+        original_close = os.close
+        isolated = self.home / f"{operation}-{fault}"
+        isolated.mkdir(mode=0o700)
+        with mock.patch.object(
+            product_approvals, "account_home", return_value=isolated
+        ):
+            approval = self.approve()["approval"] if operation == "revoke" else None
+            registry = isolated / "CAM" / "Approvals" / product_approvals.REGISTRY_NAME
+            before = registry.read_bytes() if registry.exists() else b""
+            candidate = self.discover()
+            written = b""
+            append_fd = None
+            synced = False
+            partial = fault in {"partial", "partial_cleanup"}
+
+            def write_fault(descriptor, raw):
+                nonlocal written, append_fd
+                append_fd = descriptor
+                written = raw
+                if fault == "zero":
+                    raise OSError("synthetic zero-progress fault")
+                original_write(descriptor, raw[:17] if partial else raw)
+                if partial:
+                    raise project.ProjectError("state.write", "synthetic partial write")
+
+            def sync_fault(descriptor):
+                nonlocal synced
+                if descriptor == append_fd:
+                    if fault == "fsync":
+                        raise OSError("synthetic sync fault")
+                    synced = True
+                return original_fsync(descriptor)
+
+            def stat_fault(descriptor):
+                if descriptor == append_fd and synced and fault == "verification":
+                    raise OSError("synthetic verification fault")
+                return original_fstat(descriptor)
+
+            def identity_fault(descriptor):
+                if descriptor == append_fd and fault == "cache":
+                    raise OSError("synthetic post-append cache verification fault")
+                return original_identity(descriptor)
+
+            def unlock_fault(descriptor, operation):
+                original_flock(descriptor, operation)
+                if (
+                    descriptor == append_fd
+                    and operation == product_approvals.fcntl.LOCK_UN
+                    and fault in {"unlock", "partial_cleanup"}
+                ):
+                    raise OSError("synthetic post-append unlock fault")
+
+            def close_fault(descriptor):
+                original_close(descriptor)
+                if descriptor == append_fd and fault == "close":
+                    raise OSError("synthetic post-append close fault")
+
+            with (
+                mock.patch.object(
+                    product_approvals, "_write_all", side_effect=write_fault
+                ),
+                mock.patch.object(
+                    product_approvals.os, "fsync", side_effect=sync_fault
+                ),
+                mock.patch.object(
+                    product_approvals.os, "fstat", side_effect=stat_fault
+                ),
+                mock.patch.object(
+                    product_approvals, "_registry_identity", side_effect=identity_fault
+                ),
+                mock.patch.object(
+                    product_approvals.fcntl, "flock", side_effect=unlock_fault
+                ),
+                mock.patch.object(
+                    product_approvals.os, "close", side_effect=close_fault
+                ),
+                mock.patch.object(product_approvals.os, "ftruncate") as truncate,
+                self.assertRaises(cam1_transport.TransportError) as context,
+            ):
+                if approval is None:
+                    cam1_transport.approve_product_executable(
+                        vendor="claude-code",
+                        product_bin=str(self.executable),
+                        expected_fingerprint_sha256=candidate.fingerprint_sha256,
+                        operator_reference="direct synthetic approval",
+                    )
+                else:
+                    cam1_transport.revoke_product_executable(
+                        vendor="claude-code",
+                        product_bin=str(self.executable),
+                        approval_record_id=approval["record_id"],
+                        expected_fingerprint_sha256=candidate.fingerprint_sha256,
+                        operator_reference="direct synthetic revocation",
+                    )
+            truncate.assert_not_called()
+            committed = fault in {"cache", "unlock", "close"}
+            self.assertEqual(
+                context.exception.code,
+                "product_approval.committed_uncertain"
+                if committed
+                else "product_approval.write",
+            )
+            self.assertEqual(
+                context.exception.audit["mutation_state"],
+                "committed" if committed else "unknown",
+            )
+            self.assertEqual(
+                context.exception.audit["durability_confirmed"],
+                fault == "verification" or committed,
+            )
+            appended = b"" if fault == "zero" else written[:17] if partial else written
+            self.assertEqual(registry.read_bytes(), before + appended)
+            self.assertEqual(product_approvals._VERIFIED_APPROVALS, {})
+            if partial:
+                with self.assertRaises(product_approvals.ProductApprovalError):
+                    product_approvals.approval_status()
+            else:
+                status = product_approvals.approval_status()
+                self.assertEqual(
+                    status["record_count"],
+                    int(approval is not None) + int(fault != "zero"),
+                )
 
 
 class ProductApprovalTransportTests(unittest.TestCase):
@@ -613,6 +762,75 @@ class ProductApprovalTransportTests(unittest.TestCase):
             returncode = cam1_transport.main(list(arguments))
         self.assertTrue(emitted)
         return returncode, emitted[-1]
+
+    def test_cli_reports_committed_approval_and_revocation_on_unlock_failure(
+        self,
+    ) -> None:
+        candidate = product_executables.discover_candidate(
+            "claude-code", str(self.executable), allow_path_lookup=False
+        )
+        original_write = product_approvals._write_all
+        original_flock = product_approvals.fcntl.flock
+        record = None
+        for command in ("product-approve", "product-revoke"):
+            with self.subTest(command=command):
+                append_state = {"descriptor": None}
+
+                def write(descriptor, raw, current=append_state):
+                    current["descriptor"] = descriptor
+                    original_write(descriptor, raw)
+
+                def flock(descriptor, operation, current=append_state):
+                    original_flock(descriptor, operation)
+                    if (
+                        descriptor == current["descriptor"]
+                        and operation == product_approvals.fcntl.LOCK_UN
+                    ):
+                        raise OSError("synthetic CLI mutation cleanup failure")
+
+                arguments = [
+                    command,
+                    "--vendor",
+                    "claude-code",
+                    "--product-bin",
+                    str(self.executable),
+                    "--expected-fingerprint-sha256",
+                    candidate.fingerprint_sha256,
+                    "--operator-reference",
+                    "Direct synthetic operator confirmation",
+                ]
+                if command == "product-revoke":
+                    self.assertIsNotNone(record)
+                    arguments.extend(("--approval-record-id", record["record_id"]))
+                with (
+                    mock.patch.object(
+                        product_approvals, "_write_all", side_effect=write
+                    ),
+                    mock.patch.object(
+                        product_approvals.fcntl, "flock", side_effect=flock
+                    ),
+                ):
+                    code, payload = self.invoke_product_cli(*arguments)
+                self.assertEqual(code, 2, payload)
+                self.assertEqual(
+                    payload["error"]["code"], "product_approval.committed_uncertain"
+                )
+                self.assertEqual(payload["audit"]["mutation_state"], "committed")
+                self.assertEqual(
+                    payload["audit"]["reconciliation_arguments"], ["product-status"]
+                )
+                records = [
+                    json.loads(line)
+                    for line in product_approvals.registry_path()
+                    .read_bytes()
+                    .splitlines()
+                ]
+                record = records[-1]
+                self.assertEqual(
+                    record["record_id"], payload["audit"]["intended_record_id"]
+                )
+                self.assertEqual(product_approvals._VERIFIED_APPROVALS, {})
+        self.assertEqual(product_approvals.approval_status()["active"], [])
 
     def test_claude_onboarding_rechecks_metadata_immediately_before_product(
         self,
@@ -992,103 +1210,134 @@ class ProductApprovalTransportTests(unittest.TestCase):
         )
         self.assertFalse(self.marker.exists())
 
-    def test_legacy_roster_path_is_grandfathered_once_and_reused_cross_project(
+    def test_legacy_roster_paths_need_direct_approval_for_both_vendors(self) -> None:
+        for vendor, executable in (
+            ("claude-code", self.executable),
+            ("codex", self.codex),
+        ):
+            with self.subTest(vendor=vendor):
+                candidate = product_executables.discover_candidate(
+                    vendor, str(executable)
+                )
+                participant = mock.Mock(
+                    vendor=vendor,
+                    status=participants.ParticipantStatus.BOUND,
+                    participant_id="00000000-0000-4000-8000-000000000201",
+                    approved_product_executable=candidate.canonical_path,
+                )
+                participant.binding.generation = 3
+                proposal = mock.Mock(
+                    participant_id=participant.participant_id,
+                    operator_reference="direct historical operator confirmation",
+                    confirmed_at="2026-09-01T00:00:00Z",
+                    proposal_id="00000000-0000-4000-8000-000000000401",
+                )
+                proposal.status.value = "confirmed"
+                proposal.execution_context.product_executable = candidate.canonical_path
+                proposal.execution_context.validation_profile_sha256 = (
+                    "c1752841229245561fcbd34570749978d1229098f8b09861aae44305b666c06d"
+                )
+                store = mock.Mock()
+                store.snapshot.return_value.roster.participants = {
+                    participant.participant_id: participant
+                }
+                store.snapshot.return_value.enrollment.proposals = {
+                    proposal.proposal_id: proposal
+                }
+                binding = mock.Mock(project_id="00000000-0000-4000-8000-000000000301")
+                for replaced in (False, True):
+                    if replaced:
+                        executable.write_text("#!/bin/sh\nexit 7\n", encoding="utf-8")
+                        executable.chmod(0o700)
+                    before = product_approvals.approval_status().get("record_count", 0)
+                    with (
+                        self.subTest(replaced=replaced),
+                        mock.patch.object(
+                            cam1_transport.state, "StateStore", return_value=store
+                        ),
+                        self.assertRaises(cam1_transport.TransportError) as error,
+                    ):
+                        cam1_transport.resolve_product_binary(
+                            str(executable), vendor=vendor, binding=binding
+                        )
+                    self.assertEqual(error.exception.code, "product_approval.required")
+                    self.assertIn("product-discover", error.exception.detail)
+                    self.assertEqual(
+                        product_approvals.approval_status().get("record_count", 0),
+                        before,
+                    )
+                    self.assertFalse(self.marker.exists())
+
+                candidate = product_executables.discover_candidate(
+                    vendor, str(executable)
+                )
+                approval = product_approvals.approve_candidate(
+                    vendor=vendor,
+                    product_bin=str(executable),
+                    expected_fingerprint_sha256=candidate.fingerprint_sha256,
+                    operator_reference="direct approval of the newly reviewed bytes",
+                )["approval"]
+                with mock.patch.object(cam1_transport.state, "StateStore") as lookup:
+                    self.assertEqual(
+                        cam1_transport.resolve_product_binary(
+                            str(executable), vendor=vendor, binding=mock.Mock()
+                        ),
+                        candidate.canonical_path,
+                    )
+                    lookup.assert_not_called()
+                product_approvals.revoke_approval(
+                    vendor=vendor,
+                    product_bin=str(executable),
+                    approval_record_id=approval["record_id"],
+                    expected_fingerprint_sha256=candidate.fingerprint_sha256,
+                    operator_reference="direct synthetic revocation",
+                )
+                with self.assertRaises(cam1_transport.TransportError):
+                    cam1_transport.resolve_product_binary(
+                        str(executable), vendor=vendor, binding=binding
+                    )
+
+    def test_historical_grandfathered_record_remains_readable_without_rewriting(
         self,
     ) -> None:
-        canonical_executable = product_executables.discover_candidate(
-            "claude-code", str(self.executable), allow_path_lookup=False
-        ).canonical_path
-        participant = participants.Participant(
-            participant_id="00000000-0000-4000-8000-000000000201",
-            common_name="legacy-claude",
-            display_name="Legacy Claude",
-            role=None,
+        candidate = product_executables.discover_candidate(
+            "claude-code", str(self.executable)
+        )
+        product_approvals.approve_candidate(
             vendor="claude-code",
-            approved_product_executable=canonical_executable,
-            status=participants.ParticipantStatus.BOUND,
-            binding=participants.SessionBinding(
-                generation=3,
-                session_id="00000000-0000-4000-8000-000000000101",
-                session_label="legacy-claude",
-                session_kind="interactive",
-                operator_reference="direct historical operator confirmation",
-                bound_at="2026-09-01T00:00:00Z",
-            ),
+            product_bin=str(self.executable),
+            expected_fingerprint_sha256=candidate.fingerprint_sha256,
+            operator_reference="direct synthetic approval",
         )
-        binding = mock.Mock()
-        binding.project_id = "00000000-0000-4000-8000-000000000301"
-        store = mock.Mock()
-        snapshot = store.snapshot.return_value
-        snapshot.roster.participants = {participant.participant_id: participant}
-        proposal = mock.Mock()
-        proposal.participant_id = participant.participant_id
-        proposal.status.value = "confirmed"
-        proposal.operator_reference = "direct historical product confirmation"
-        proposal.execution_context.product_executable = canonical_executable
-        proposal.execution_context.validation_profile_sha256 = next(
-            iter(cam1_transport.LEGACY_PRODUCT_APPROVAL_PROFILES)
-        )
-        proposal.confirmed_at = "2026-09-01T00:00:01Z"
-        proposal.proposal_id = "00000000-0000-4000-8000-000000000401"
-        snapshot.enrollment.proposals = {proposal.proposal_id: proposal}
-        with (
-            mock.patch.object(cam1_transport.state, "StateStore", return_value=store),
-            mock.patch.object(
-                product_executables,
-                "_fingerprint_opened",
-                wraps=product_executables._fingerprint_opened,
-            ) as fingerprint,
-        ):
+        path = product_approvals.registry_path()
+        record = json.loads(path.read_bytes())
+        record["attributes"]["basis"] = "grandfathered_roster"
+        record["attributes"]["migration"] = {
+            "project_id": "00000000-0000-4000-8000-000000000301",
+            "participant_id": "00000000-0000-4000-8000-000000000201",
+            "binding_generation": 3,
+            "source": "confirmed_enrollment",
+            "source_reference": "00000000-0000-4000-8000-000000000401",
+        }
+        unsigned = {
+            key: value for key, value in record.items() if key != "record_sha256"
+        }
+        record["record_sha256"] = product_approvals._digest(unsigned)
+        raw = product_approvals._canonical_json(record) + b"\n"
+        path.write_bytes(raw)
+        path.chmod(0o600)
+        product_approvals.begin_operation()  # Replay a historical fixture in a fresh operation.
+        with mock.patch.object(cam1_transport.state, "StateStore") as lookup:
             resolved = cam1_transport.resolve_product_binary(
-                str(self.executable), vendor="claude-code", binding=binding
+                str(self.executable), vendor="claude-code"
             )
-        self.assertEqual(resolved, canonical_executable)
-        self.assertEqual(fingerprint.call_count, 1)
-        status = product_approvals.approval_status(vendor="claude-code")
-        self.assertEqual(status["record_count"], 1)
-        approval = status["active"][0]
-        self.assertEqual(approval["attributes"]["basis"], "grandfathered_roster")
+            lookup.assert_not_called()
+        self.assertEqual(resolved, record["attributes"]["canonical_path"])
         self.assertEqual(
-            approval["attributes"]["migration"],
-            {
-                "project_id": binding.project_id,
-                "participant_id": participant.participant_id,
-                "binding_generation": 3,
-                "source": "confirmed_enrollment",
-                "source_reference": proposal.proposal_id,
-            },
+            product_approvals.approval_status()["active"][0]["attributes"]["basis"],
+            "grandfathered_roster",
         )
-
-        other_binding = mock.Mock()
-        other_binding.project_id = "00000000-0000-4000-8000-000000000302"
-        with mock.patch.object(cam1_transport.state, "StateStore") as state_store:
-            reused = cam1_transport.resolve_product_binary(
-                str(self.executable), vendor="claude-code", binding=other_binding
-            )
-        self.assertEqual(reused, canonical_executable)
-        state_store.assert_not_called()
-        self.assertEqual(product_approvals.approval_status()["record_count"], 1)
-
-        product_approvals.revoke_approval(
-            vendor="claude-code",
-            product_bin=canonical_executable,
-            approval_record_id=approval["record_id"],
-            expected_fingerprint_sha256=approval["attributes"]["fingerprint_sha256"],
-            operator_reference="direct revocation after migration test",
-        )
-        with (
-            mock.patch.object(cam1_transport.state, "StateStore", return_value=store),
-            self.assertRaises(cam1_transport.TransportError) as migration_reuse,
-        ):
-            cam1_transport.resolve_product_binary(
-                str(self.executable),
-                vendor="claude-code",
-                binding=binding,
-            )
-        self.assertEqual(
-            migration_reuse.exception.code,
-            "product_approval.grandfather_used",
-        )
+        self.assertEqual(path.read_bytes(), raw)
 
     def test_new_or_unknown_profile_cannot_use_legacy_grandfathering(self) -> None:
         canonical_executable = product_executables.resolve_candidate_path(

@@ -86,11 +86,11 @@ local policy state, not message trust or authority.
 - Permit only `product-discover` to consult `PATH`. It resolves and fingerprints
   one candidate without executing it. Before any product subprocess, require an
   active account-scoped approval for that canonical path and exact fingerprint.
-  Ordinarily that approval comes directly from the operator. The only automatic
-  exception is the narrowly bounded, one-time migration of an unchanged roster
-  path from a directly confirmed enrollment made by a fixed, clean pre-feature
-  reader when that path has no approval history. Never auto-approve outside that
-  migration, auto-revoke, or silently replace an approval. A changed fingerprint
+  New approvals require direct operator confirmation of the candidate card;
+  legacy roster paths are not evidence of previously approved executable bytes.
+  Historical `grandfathered_roster` records remain readable without rewriting or
+  automatic revocation, but no new path-only approval is created. Never
+  auto-approve, auto-revoke, or silently replace an approval. A changed fingerprint
   requires guarded revocation, rediscovery, and fresh approval.
 - Require an explicit absolute executable path for product-assisted onboarding,
   doctor, Claude session or route discovery, preflight, and send operations;

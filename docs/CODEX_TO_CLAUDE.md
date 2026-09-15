@@ -264,15 +264,11 @@ participants, [product update recovery](PRODUCT_UPDATES.md) adds read-only
 roster comparison and an exact metadata-update command to discovery; it does
 not require re-enrollment of an unchanged session.
 
-Existing projects can perform one automatic migration only when an explicitly
-supplied absolute roster path comes from a directly confirmed enrollment made
-by a known clean pre-feature reader. For example, a project-aware
-`--claude-bin /EXACT/LEGACY/ROSTER/PATH claude-list` invokes that migration before
-Claude I/O. The resulting approval has basis `grandfathered_roster` and records
-the source project, participant, binding generation, and enrollment proposal.
-New enrollments, metadata-only bindings, unknown validation profiles, changed
-files, and bare product names never qualify; use the candidate-card approval
-flow instead.
+A legacy roster path does not establish which executable bytes the operator
+previously reviewed. If account approval is missing, use `product-discover`,
+review the candidate card, and directly approve it before product I/O.
+Historical `grandfathered_roster` records remain readable and unchanged;
+already-approved, unchanged executables need no new confirmation or enrollment.
 
 The fingerprint covers the executable file and its canonical path metadata.
 Approval permits CAM to invoke that unchanged executable for product I/O. It
@@ -318,6 +314,12 @@ machine-readable JSON on stdout; diagnostics use stderr and failures return
 nonzero. The live adapters accept complete envelopes of at most 65,536 UTF-8
 bytes; use an operator-approved local path plus digest for a larger artifact
 that both sessions are separately authorized to access.
+
+Malformed or conflicting product receipts do not establish acceptance.
+Decoding failures after product invocation leave delivery **unknown**. The
+adapter records that outcome when storage permits; if outcome journaling also
+fails, it reports the preserved intent and a reconciliation diagnostic. Do not
+retry automatically or interpret an error as proof that nothing was sent.
 
 Run every standalone `cam1.py validate` invocation as its own unpiped command
 and require both its successful exit and its complete verdict. Never use a

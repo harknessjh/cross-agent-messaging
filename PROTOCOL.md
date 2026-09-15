@@ -470,16 +470,13 @@ After that operator selection:
    this candidate-discovery operation MAY consult `PATH`. If the exact
    canonical path and fingerprint do not already have an active account-scoped
    approval, the implementation MUST display a concise candidate card and wait
-   for direct operator approval before appending an approval, except for the
-   one-time legacy migration defined below. A reserved placeholder is not an
-   operator reference. The legacy migration MUST require an explicitly supplied
-   absolute roster path from a directly confirmed enrollment proposal, an
-   unchanged fingerprint, an explicitly supported clean pre-feature validation
-   profile, and no prior approval history for that path. It MUST append a normal
-   `grandfathered_roster` approval with the source project, participant, binding
-   generation, enrollment proposal, and prior direct operator reference before
-   product I/O. It MUST NOT apply to new enrollments, metadata-only bindings,
-   unknown profiles, changed files, or bare product names. A changed fingerprint
+   for direct operator approval before appending an approval. A reserved
+   placeholder is not an operator reference. A legacy roster pathname MUST NOT
+   be used to approve current bytes automatically: it supplies no historical
+   fingerprint comparison. Historical `grandfathered_roster` approval records
+   remain readable and MUST NOT be rewritten or revoked automatically. Missing
+   approvals require the normal candidate-card confirmation, without
+   re-enrolling an unchanged participant. A changed fingerprint
    at an already approved canonical path
    MUST require an explicitly guarded revocation, rediscovery, and new approval;
    the implementation MUST NOT replace or revoke an approval automatically.
@@ -896,6 +893,13 @@ evidence. A fresh short ref by itself is normal route churn.
 
 Through the locally verified MCP interface, the `ListAgents` payload is nested under `result.content[0].text`; that text contains a JSON object whose `listing` field is human-readable. Inspect the live result rather than assuming this nesting will never change.
 
+The reference adapter compares all recognized listing representations and
+rejects contradictions, duplicate JSON keys, non-finite numbers, and missing
+kind/state columns. Agent View and ListAgents must agree on session kind;
+activity may change between observations. This consistency check does not
+authenticate a UUID-to-ref mapping. The adapter cannot recover duplicate-key
+information already discarded by an upstream SDK.
+
 ### Send
 
 ```text
@@ -1300,6 +1304,14 @@ the immutable prepared intent remain; after truncation the valid prefix plus
 both artifacts remain. The manifest's prefix guards make the final state
 reconcilable after a crash. A complete earlier primary-ledger record is never
 edited or deleted.
+
+Normal approval/revocation append failures MUST preserve any appended bytes
+rather than automatically truncating them. They MUST report uncertain mutation
+and the intended record identity, invalidate cached approvals, and require
+read-only reconciliation before another operator decision. A failed fsync
+does not establish that the approval or revocation is absent.
+Post-append checks and cleanup MUST preserve known committed state or the
+original uncertainty; cleanup errors MUST NOT mask the mutation evidence.
 
 Every mutating recovery result MUST classify primary-ledger mutation as
 `not_attempted`, `committed`, or `unknown`. An error after `ftruncate` begins

@@ -185,6 +185,29 @@ class CamValidationTests(unittest.TestCase):
         )
         self.assertIn("/receipt/status", {item.path for item in status_problems})
 
+    def test_malformed_risk_and_vendor_types_are_rejected_without_crashing(
+        self,
+    ) -> None:
+        for field, parent in (
+            ("risk_class", "action"),
+            ("vendor", "claimed_sender"),
+        ):
+            for value in ([], {}, None, True, 1):
+                for name, against in (
+                    ("valid-hello.json", None),
+                    ("valid-ack.json", fixture("valid-hello.json")),
+                ):
+                    with self.subTest(field=field, value=value, fixture=name):
+                        envelope = json.loads(fixture(name))
+                        envelope[parent][field] = value
+                        envelope["constraints"]["no_repository_changes"] = False
+                        problems = self.problem_codes(
+                            cam1.serialize_envelope(envelope), against_raw=against
+                        )
+                        self.assertIn(
+                            f"/{parent}/{field}", {item.path for item in problems}
+                        )
+
     def test_nesting_deeper_than_sixteen_is_rejected(self) -> None:
         raw = b'{"value":' + (b"[" * 16) + b"0" + (b"]" * 16) + b"}"
         problems = self.problem_codes(raw)

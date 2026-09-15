@@ -129,8 +129,10 @@ def _find_transport_error(error: BaseException) -> TransportError | None:
 
 def _bounded_json_value(value: Any) -> Any:
     try:
-        serialized = json.dumps(value, separators=(",", ":"), sort_keys=True)
-    except (TypeError, ValueError):
+        serialized = json.dumps(
+            value, separators=(",", ":"), sort_keys=True, allow_nan=False
+        )
+    except (TypeError, ValueError, RecursionError):
         return {"omitted": "non-json transport result"}
     encoded = serialized.encode("utf-8")
     if len(encoded) <= MAX_RECEIPT_TEXT:
@@ -534,23 +536,54 @@ async def _call_connected_tool(
     )
 
 
+def _product_response_objects(
+    response: ClaudeToolResponse, *, error_code: str
+) -> tuple[dict[str, Any], ...]:
+    """Decode the JSON representations CAM receives, without last-key-wins.
+
+    Plain supplemental prose is allowed. JSON-shaped text and structured data
+    must satisfy the existing bounded strict decoder; malformed representations
+    cannot be hidden beside a valid one. SDK-decoded objects have already lost
+    any duplicate-key information present on the underlying MCP wire.
+    """
+
+    try:
+        texts = [
+            text
+            for text in response.text_content
+            if text.lstrip().startswith(("{", "["))
+        ]
+        if response.structured_content is not None:
+            texts.append(json.dumps(response.structured_content, allow_nan=False))
+        return tuple(cam1.parse_exact_bytes(text.encode("utf-8")) for text in texts)
+    except (cam1.CamValidationError, TypeError, ValueError, RecursionError) as error:
+        raise TransportError(
+            error_code,
+            "Claude returned malformed or ambiguous JSON; any attempted send has "
+            "unknown delivery state and must not be retried automatically",
+        ) from error
+
+
 def _listing_text(response: ClaudeToolResponse) -> str:
     if response.is_error:
         raise TransportError(
             "claude.list_failed", "Claude ListAgents reported an error"
         )
+    listings: set[str] = set()
+    for decoded in _product_response_objects(response, error_code="claude.list_format"):
+        if "listing" not in decoded:
+            continue
+        if not isinstance(decoded["listing"], str):
+            raise TransportError("claude.list_format", "Claude listing must be text")
+        listings.add(decoded["listing"])
     for text in response.text_content:
-        try:
-            decoded = json.loads(text)
-        except json.JSONDecodeError:
-            decoded = None
-        if isinstance(decoded, dict) and isinstance(decoded.get("listing"), str):
-            return decoded["listing"]
-        if "Peer sessions" in text:
-            return text
+        if text.lstrip().startswith("Peer sessions"):
+            listings.add(text)
+    if len(listings) == 1:
+        return next(iter(listings))
     raise TransportError(
         "claude.list_format",
-        "Claude ListAgents returned an unrecognized response format",
+        "Claude ListAgents returned no unambiguous listing",
     )
 
 
@@ -827,23 +860,13 @@ def _validated_summary(value: str) -> str:
 
 
 def _direct_receipt_objects(response: ClaudeToolResponse) -> tuple[dict[str, Any], ...]:
-    candidates: list[dict[str, Any]] = []
-    if isinstance(response.structured_content, dict):
-        candidates.append(response.structured_content)
-    for text in response.text_content:
-        try:
-            decoded = json.loads(text)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(decoded, dict):
-            candidates.append(decoded)
-
     unique: dict[str, dict[str, Any]] = {}
-    for candidate in candidates:
-        try:
-            key = json.dumps(candidate, separators=(",", ":"), sort_keys=True)
-        except (TypeError, ValueError):
-            continue
+    for candidate in _product_response_objects(
+        response, error_code="claude.receipt_unrecognized"
+    ):
+        key = json.dumps(
+            candidate, separators=(",", ":"), sort_keys=True, allow_nan=False
+        )
         unique[key] = candidate
     return tuple(unique.values())
 
@@ -1222,6 +1245,12 @@ def _send_to_codex_queue(
     except subprocess.TimeoutExpired as error:
         raise TransportError(
             "codex.queue_failure", "Codex queue command did not complete"
+        ) from error
+    except UnicodeError as error:
+        raise TransportError(
+            "codex.queue_encoding",
+            "Codex queue output could not be decoded; delivery state is unknown "
+            "and must not be retried automatically",
         ) from error
     if completed.returncode != 0:
         raise TransportError(

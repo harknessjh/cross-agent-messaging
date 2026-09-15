@@ -5,11 +5,14 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 
 class ProjectError(Exception):
     """Bounded project-state failure suitable for a machine-readable CLI."""
 
-    def __init__(self, code: str, detail: str):
+    def __init__(self, code: str, detail: str, *, audit: dict[str, Any] | None = None):
         self.code = code[:80]
         self.detail = detail[:300]
+        self.audit = audit
         super().__init__(self.detail)
