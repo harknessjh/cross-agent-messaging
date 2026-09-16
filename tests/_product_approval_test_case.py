@@ -10,6 +10,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from tests._native_executable_fixture import write_native
 from tools.cam1lib import product_approvals, product_executables
 
 
@@ -24,11 +25,7 @@ class ProductApprovalTestCase(unittest.TestCase):
         self.bin_dir.mkdir(mode=0o700)
         self.marker = self.home / "executed"
         self.executable = self.bin_dir / "claude"
-        self.executable.write_text(
-            "#!/bin/sh\nprintf executed > " + str(self.marker) + "\n",
-            encoding="utf-8",
-        )
-        self.executable.chmod(0o700)
+        write_native(self.executable)
         self.account_home_patch = mock.patch.object(
             product_approvals, "account_home", return_value=self.home
         )

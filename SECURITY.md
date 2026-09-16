@@ -101,6 +101,16 @@ local policy state, not message trust or authority.
   revoked, while the new candidate requires its own approval. These checks
   reduce accidental substitution but cannot defeat a process already operating
   as the same account or eliminate every time-of-check/time-of-use race.
+- Before fingerprinting and each cached/prelaunch check, inspect the canonical
+  executable and its ancestors through no-follow descriptors. Require current-user
+  or root ownership, reject untrusted mode/ACL mutation rights, and inspect the
+  native entrypoint without running it. macOS local administrators are inside the
+  trusted-administrator exclusion; other groups are not implicitly trusted.
+  Harmless deny/read ACLs remain allowed. Sticky trusted parents protect only
+  trusted-owned children; they do not waive child ownership or ACL checks.
+  Require native Mach-O/ELF external entrypoints; script interpreters are not
+  transitively approved by approving a launcher. Apply this policy to bootstrap,
+  profile, and project/provenance Git launches as well as both products.
 - Require project-aware preflight and send operations to match the executable
   exactly to the participant's confirmed roster association as well. Account
   approval and roster association are independent gates. A missing legacy
@@ -182,6 +192,8 @@ repository-configured hooks and filesystem monitors disabled, and submodules
 ignored for status. This reduces side effects from repository configuration;
 it does not make an untrusted repository or same-user executable replacement a
 security boundary.
+
+Executable inspection supports the [documented local permission filesystems](docs/PRODUCT_UPDATES.md#native-executable-requirements), not arbitrary network or ownership-emulating storage. On Linux, rejecting group write also rejects effective named POSIX ACL write grants through the ACL mask. On macOS, inspect extended ACL allow entries directly, rejecting unresolved mutation-grant principals and inspection failures. The dependency-minimal executable-policy modules are captured bootstrap sources and belong to the same initial trust base as the bootstrap itself. Native format does not attest dynamic loaders, libraries, plugins, environment-selected dependencies, or child programs; the initial Python installation, current account, and administrators remain trusted. This is location/entrypoint hardening, not a sandbox or code-signing verifier.
 
 Keep any transient envelope files in an owner-only directory outside tracked
 worktrees. Do not use a shared temporary root. Delete them only under an

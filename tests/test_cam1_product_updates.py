@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
+from tests._native_executable_fixture import write_native
 from tests.test_cam1_project import NOW, ProjectTestCase
 from tools import cam1_project, cam1_transport
 from tools.cam1lib import participants, product_approvals, product_executables, state
@@ -32,9 +33,7 @@ class ProductUpdateTests(ProjectTestCase):
 
     def executable(self, name: str) -> Path:
         path = self.account / name
-        path.write_text(
-            f"#!/bin/sh\ntouch {shlex.quote(str(self.marker))}\n", encoding="utf-8"
-        )
+        write_native(path)
         path.chmod(0o700)
         return path
 
@@ -225,7 +224,7 @@ class ProductUpdateTests(ProjectTestCase):
     ) -> None:
         self.enroll("codex", path=self.new)
         self.approve("codex", self.new)
-        self.new.write_text("#!/bin/sh\nexit 3\n", encoding="utf-8")
+        write_native(self.new, "replacement 3")
         before = self.retained_bytes()
         code, card = self.discover("codex", path=self.new)
         self.assertEqual((code, card["status"]), (0, "replacement_approval_required"))
@@ -295,7 +294,7 @@ class ProductUpdateTests(ProjectTestCase):
         self.enroll("codex")
         self.approve("codex", self.new)
         _, card = self.discover("codex", path=self.new)
-        self.new.write_text("#!/bin/sh\nexit 4\n", encoding="utf-8")
+        write_native(self.new, "replacement 4")
         # Metadata associates a path, not bytes. Regardless of whether that
         # association is recorded, the existing account gate rejects drift.
         self.apply_guidance(card["participant_update"])

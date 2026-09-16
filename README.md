@@ -155,10 +155,11 @@ authority.
 
 ## Requirements
 
-- macOS or another compatible POSIX environment;
+- macOS, or Linux on x86-64 or ARM64, with supported local filesystem permissions;
 - Python 3.11 through 3.14;
 - Git and a local target directory initialized with `git init`;
-- installed Codex and Claude Code commands;
+- installed native Codex, Claude Code, and Git executables (symlinks to native
+  targets are supported; shell, Node, and Python launcher scripts are not);
 - one independent session from each product on the same host and user account;
 - an active account approval for each unchanged product executable fingerprint;
   new approvals require direct candidate-card confirmation; and
@@ -166,6 +167,10 @@ authority.
 
 The target project does not need an initial commit. Start each agent inside the
 target Git worktree; CAM uses the current working directory by default.
+
+CAM's own tools still run in Python. The native-only rule applies to the external
+programs CAM launches, not to instructions in messages or scripts in your project.
+See [executable requirements and recovery](docs/PRODUCT_UPDATES.md#native-executable-requirements).
 
 Clone CAM and create its Python environment once. Repeat project preparation
 and initial session enrollment for each project that will use CAM. Replacing a

@@ -530,6 +530,93 @@ class ValidationProfileTests(unittest.TestCase):
                     self.assertEqual(code, "profile.path_set_mismatch")
                     self.assertFalse(marker.exists())
 
+    def test_clean_public_cli_rejects_script_products_without_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            copied, _git_bin = self.initialized_git_profile_root(base / "cam")
+            marker = base / "script-executed"
+            script = base / "script-product"
+            script.write_text(
+                f"#!/bin/sh\ntouch {shlex.quote(str(marker))}\n", encoding="utf-8"
+            )
+            script.chmod(0o700)
+            for vendor in ("codex", "claude-code"):
+                with self.subTest(vendor=vendor):
+                    completed = subprocess.run(
+                        [
+                            sys.executable,
+                            str(copied / "tools/cam1_transport.py"),
+                            "product-discover",
+                            "--vendor",
+                            vendor,
+                            "--product-bin",
+                            str(script),
+                        ],
+                        cwd=copied,
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        timeout=20,
+                    )
+                    self.assertEqual(completed.returncode, 2, completed.stderr)
+                    result = json.loads(completed.stdout or completed.stderr)
+                    self.assertEqual(
+                        result["error"]["code"], "product_approval.native_required"
+                    )
+                    self.assertFalse(marker.exists())
+
+    def test_bootstrap_rejects_script_git_before_ordinary_cam_imports(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            copied, _git_bin = self.initialized_git_profile_root(base / "cam")
+            script_marker, import_marker = (
+                base / "git-ran",
+                base / "ordinary-import-ran",
+            )
+            script = base / "fake-git"
+            script.write_text(
+                f"#!/bin/sh\ntouch {shlex.quote(str(script_marker))}\n",
+                encoding="utf-8",
+            )
+            script.chmod(0o700)
+            bootstrap_source = copied / "tools/_cam1_bootstrap.py"
+            original = bootstrap_source.read_text(encoding="utf-8")
+            start = original.index("_GIT_EXECUTABLE_CANDIDATES = (")
+            end = original.index("\n)", start) + 2
+            bootstrap_source.write_text(
+                original[:start]
+                + f"_GIT_EXECUTABLE_CANDIDATES = ({str(script)!r},)"
+                + original[end:],
+                encoding="utf-8",
+            )
+            application = copied / "tools/cam1lib/product_executables.py"
+            application.write_text(
+                application.read_text(encoding="utf-8")
+                + f"\nPath({str(import_marker)!r}).touch()\n",
+                encoding="utf-8",
+            )
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(copied / "tools/cam1_transport.py"),
+                    "product-discover",
+                    "--vendor",
+                    "codex",
+                    "--product-bin",
+                    str(script),
+                ],
+                cwd=copied,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            self.assertEqual(completed.returncode, 2, completed.stderr)
+            result = json.loads(completed.stdout or completed.stderr)
+            self.assertEqual(result["error"]["code"], "profile.source_unavailable")
+            self.assertFalse(script_marker.exists())
+            self.assertFalse(import_marker.exists())
+
     def test_dirty_product_commands_cannot_import_or_mutate_approval_state(
         self,
     ) -> None:
@@ -551,7 +638,9 @@ class ValidationProfileTests(unittest.TestCase):
                 ).encode()
             )
             executable = base / "codex"
-            executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            from tests._native_executable_fixture import write_native
+
+            write_native(executable)
             executable.chmod(0o700)
             candidate = product_executables.discover_candidate(
                 "codex",

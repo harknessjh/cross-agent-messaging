@@ -37,6 +37,9 @@ _SOURCE_PATHS = {
     "tools": "__init__.py",
     "tools._cam1_bootstrap": "_cam1_bootstrap.py",
     "tools._cam1_entry": "_cam1_entry.py",
+    "tools._cam1_executable": "_cam1_executable.py",
+    "tools._cam1_executable_format": "_cam1_executable_format.py",
+    "tools._cam1_executable_platform": "_cam1_executable_platform.py",
     "tools.cam1": "cam1.py",
     "tools.cam1_project": "cam1_project.py",
     "tools.cam1_transport": "cam1_transport.py",
@@ -196,16 +199,15 @@ def _git_environment() -> dict[str, str]:
 
 
 def _git_executable() -> str:
+    # These dependency-minimal modules are captured bootstrap sources, not
+    # ordinary application imports before the source-control gate.
+    from tools._cam1_executable import ExecutablePolicyError, require_native_executable
+
     for candidate in _GIT_EXECUTABLE_CANDIDATES:
         try:
-            resolved = os.path.realpath(candidate)
-            metadata = posix.stat(resolved)
-        except OSError:
+            return require_native_executable(candidate)
+        except ExecutablePolicyError:
             continue
-        if metadata.st_mode & _REGULAR_FILE_MASK == _REGULAR_FILE and posix.access(
-            resolved, posix.X_OK
-        ):
-            return resolved
     raise BootstrapError(
         "profile.source_unavailable",
         "a trusted absolute Git executable is unavailable",
@@ -217,7 +219,10 @@ def _run_git(
     repository_root: str,
     *arguments: str,
 ) -> subprocess.CompletedProcess[bytes]:
+    from tools._cam1_executable import ExecutablePolicyError, require_native_executable
+
     try:
+        git_bin = require_native_executable(git_bin)
         return subprocess.run(
             [
                 git_bin,
@@ -237,7 +242,7 @@ def _run_git(
             timeout=5,
             env=_git_environment(),
         )
-    except (OSError, subprocess.TimeoutExpired) as error:
+    except (ExecutablePolicyError, OSError, subprocess.TimeoutExpired) as error:
         raise BootstrapError(
             "profile.source_unavailable",
             "CAM bootstrap source-control inspection failed",

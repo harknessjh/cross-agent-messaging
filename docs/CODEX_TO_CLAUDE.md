@@ -276,6 +276,13 @@ does not cover dynamically loaded dependencies, authenticate the vendor or
 agent, authorize a message or workload action, or establish that the program
 is trustworthy.
 
+External Codex, Claude, and Git entrypoints must also pass the shared
+[native executable and location policy](PRODUCT_UPDATES.md#native-executable-requirements).
+CAM rejects script launchers without executing them, preserves historical
+approvals for inspection/revocation, and rechecks ancestry permissions before
+each launch even when the product fingerprint is cached. This does not prohibit
+the Python interpreter running CAM or scripts in the user's project.
+
 `validation-profile` reports a deterministic digest of every Python source
 below `tools/`, the schemas, runtime requirements, and importable binary or
 sourceless modules outside standard `__pycache__` directories. It reports the

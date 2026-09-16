@@ -11,6 +11,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from tools._cam1_executable import ExecutablePolicyError, require_native_executable
+
 from .errors import ProjectError
 from .secure_fs import (
     _canonical_existing_directory,
@@ -28,14 +30,10 @@ MAX_GIT_OUTPUT_BYTES = 16_384
 
 def _default_git_executable() -> str:
     for candidate_text in GIT_EXECUTABLE_CANDIDATES:
-        candidate = Path(candidate_text)
         try:
-            resolved = candidate.resolve(strict=True)
-            metadata = resolved.stat()
-        except OSError:
+            return require_native_executable(candidate_text)
+        except ExecutablePolicyError:
             continue
-        if stat.S_ISREG(metadata.st_mode) and os.access(resolved, os.X_OK):
-            return str(resolved)
     # Preserve a deterministic absolute failure target; discovery will emit a
     # bounded error rather than consulting PATH.
     return GIT_EXECUTABLE_CANDIDATES[-1]
@@ -62,7 +60,7 @@ def _git_probe_prefix(git_bin: str, context: Path) -> list[str]:
     """Build the fixed, side-effect-minimized prefix for a Git query."""
 
     return [
-        git_bin,
+        _resolve_executable(git_bin),
         "--no-optional-locks",
         "-c",
         "core.fsmonitor=false",
@@ -92,7 +90,10 @@ def _resolve_executable(path_text: str) -> str:
         raise ProjectError("git.not_found", "git executable was not found") from None
     if not stat.S_ISREG(metadata.st_mode) or not os.access(resolved, os.X_OK):
         raise ProjectError("git.not_executable", "git path is not an executable file")
-    return str(resolved)
+    try:
+        return require_native_executable(resolved)
+    except ExecutablePolicyError as error:
+        raise ProjectError(f"git.{error.code}", error.detail) from error
 
 
 def _git_output(git_bin: str, context: Path, *arguments: str) -> str:

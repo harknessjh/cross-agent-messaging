@@ -483,6 +483,14 @@ After that operator selection:
    Any approval establishes product-I/O eligibility only and MUST NOT be treated
    as session enrollment, message trust, action authority, or permission for
    workload work.
+   The reference implementation additionally requires native Mach-O (macOS)
+   or ELF (Linux) external product and Git entrypoints, checked canonical
+   ownership/permissions, and supported local filesystem semantics. Script
+   launchers are not supported. Eligibility is rechecked before launch even
+   when an approval is cached; an existing approval does not exempt unsafe
+   ancestry or a changed ACL. This is a local implementation policy, not a
+   change to CAM envelopes or a restriction on recipients' independently
+   authorized project scripts. See [executable requirements](docs/PRODUCT_UPDATES.md#native-executable-requirements).
 3. Using that approved absolute executable, the session observes its own full stable session UUID from trusted product
    session metadata, or asks the operator for the full UUID when that metadata
    is unavailable. It MUST NOT infer the UUID from a name, cwd, PID, socket, or

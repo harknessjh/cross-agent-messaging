@@ -415,6 +415,17 @@ permits CAM to invoke that unchanged executable for product I/O. It does not
 cover dependencies, authenticate a vendor or session, authorize a message or
 workload action, or establish that the program is trustworthy.
 
+External entrypoints now also pass a shared native-executable and location policy
+at discovery, cached approval rechecks, and Git launch boundaries (including the
+pre-import source gate). The policy uses no-follow descriptors, explicit trusted
+owners, mode/ACL checks, supported filesystem semantics, and bounded Mach-O/ELF
+inspection. It does not execute a candidate to decide its format. These small
+policy modules are captured bootstrap sources, not unverified application
+imports before the gate. Existing approvals and message/journal formats do not
+change; an old approval remains inspectable but cannot override current launch
+ineligibility. [Supported installations and recovery](PRODUCT_UPDATES.md#native-executable-requirements)
+describe the deliberate script-launcher compatibility limit.
+
 Earlier readers could create a `grandfathered_roster` approval from a confirmed
 legacy roster pathname. That shortcut has been removed: the old pathname did
 not provide historical executable bytes to compare with the current candidate.

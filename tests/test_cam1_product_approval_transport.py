@@ -7,6 +7,7 @@ import json
 import unittest
 from unittest import mock
 
+from tests._native_executable_fixture import write_native
 from tools import cam1_transport
 from tools.cam1lib import (
     compatibility,
@@ -27,7 +28,7 @@ class ProductApprovalTransportTests(ProductApprovalTestCase):
     def setUp(self) -> None:
         super().setUp()
         self.codex = self.bin_dir / "codex"
-        self.codex.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        write_native(self.codex)
         self.codex.chmod(0o700)
 
     def approve_both(self) -> None:
@@ -457,7 +458,7 @@ class ProductApprovalTransportTests(ProductApprovalTestCase):
         self.assertEqual(returncode, 0)
         self.assertEqual(approved["status"], "approved")
 
-        self.executable.write_text("#!/bin/sh\nexit 17\n", encoding="utf-8")
+        write_native(self.executable, "replacement 17")
         self.executable.chmod(0o700)
         returncode, replacement = self.invoke_product_cli(
             "product-discover",
@@ -552,7 +553,7 @@ class ProductApprovalTransportTests(ProductApprovalTestCase):
                 binding = mock.Mock(project_id="00000000-0000-4000-8000-000000000301")
                 for replaced in (False, True):
                     if replaced:
-                        executable.write_text("#!/bin/sh\nexit 7\n", encoding="utf-8")
+                        write_native(executable, "replacement 7")
                         executable.chmod(0o700)
                     before = product_approvals.approval_status().get("record_count", 0)
                     with (

@@ -24,6 +24,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from tools._cam1_executable import ExecutablePolicyError, require_native_executable
+
 from .errors import ProjectError
 from .secure_fs import _open_directory_fd
 
@@ -224,7 +226,21 @@ def discovery_command(vendor: str, canonical_path: str) -> tuple[str, ...]:
     )
 
 
+def _require_launch_eligibility(path: Path) -> None:
+    try:
+        canonical = require_native_executable(path)
+        if canonical != str(path):
+            raise ExecutablePolicyError(
+                "changed", "canonical product path changed during inspection"
+            )
+    except ExecutablePolicyError as error:
+        raise ProductApprovalError(
+            f"product_approval.{error.code}", error.detail
+        ) from error
+
+
 def _fingerprint_opened(path: Path) -> ExecutableFingerprint:
+    _require_launch_eligibility(path)
     try:
         parent_descriptor = _open_directory_fd(path.parent)
     except ProjectError as error:
@@ -324,6 +340,7 @@ def _fingerprint_opened(path: Path) -> ExecutableFingerprint:
 def _metadata_opened(path: Path) -> dict[str, int]:
     """Read the approved non-content tuple through a no-follow descriptor."""
 
+    _require_launch_eligibility(path)
     try:
         parent_descriptor = _open_directory_fd(path.parent)
     except ProjectError as error:
