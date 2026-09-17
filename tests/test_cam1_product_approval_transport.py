@@ -313,6 +313,34 @@ class ProductApprovalTransportTests(ProductApprovalTestCase):
             self.assertIn("fingerprint_sha256", approval)
         self.assertFalse(self.marker.exists())
 
+    def test_doctor_names_missing_path_before_resolving_either_product(self) -> None:
+        cases = (
+            ([], ("--claude-bin", "--codex-bin")),
+            (["--claude-bin", str(self.executable)], ("--codex-bin",)),
+            (["--codex-bin", str(self.codex)], ("--claude-bin",)),
+            (
+                ["--claude-bin", "relative", "--codex-bin", str(self.codex)],
+                ("--claude-bin",),
+            ),
+        )
+        for arguments, missing in cases:
+            with (
+                self.subTest(arguments=arguments),
+                mock.patch.object(cam1_transport, "resolve_product_binary") as resolve,
+                mock.patch.object(cam1_transport, "doctor") as doctor,
+                mock.patch.object(cam1_transport, "_resolve_project") as project_lookup,
+            ):
+                code, report = self.invoke_product_cli(*arguments, "doctor")
+            self.assertEqual(code, 2)
+            self.assertEqual(report["error"]["code"], "doctor.absolute_paths_required")
+            detail = report["error"]["detail"]
+            for flag in ("--claude-bin", "--codex-bin"):
+                self.assertEqual(flag in detail, flag in missing)
+            resolve.assert_not_called()
+            doctor.assert_not_called()
+            project_lookup.assert_not_called()
+        self.assertFalse(self.marker.exists())
+
     def test_each_product_command_fails_before_product_io_when_unapproved(self) -> None:
         cases = (
             ("doctor", ["doctor"], "doctor"),

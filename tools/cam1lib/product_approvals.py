@@ -19,6 +19,7 @@ import shlex
 import stat
 import threading
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO, cast
@@ -138,6 +139,9 @@ def begin_operation() -> None:
 
     with _VERIFIED_APPROVALS_LOCK:
         _VERIFIED_APPROVALS.clear()
+    from . import product_installations
+
+    product_installations.begin_operation()
 
 
 def _operator_reference(value: Any) -> str:
@@ -288,14 +292,16 @@ def registry_path() -> Path:
     return _registry_directory(create=False) / REGISTRY_NAME
 
 
-def _open_registry(*, exclusive: bool, create: bool) -> tuple[Path, int, BinaryIO]:
+def _open_registry(
+    *, exclusive: bool, create: bool, registry_name: str = REGISTRY_NAME
+) -> tuple[Path, int, BinaryIO]:
     directory = _registry_directory(create=create)
     parent_descriptor = _open_private_directory(directory, label="approval.directory")
     descriptor: int | None = None
     try:
         flags = _APPEND_FLAGS if exclusive else _READ_FLAGS
         try:
-            descriptor = os.open(REGISTRY_NAME, flags, dir_fd=parent_descriptor)
+            descriptor = os.open(registry_name, flags, dir_fd=parent_descriptor)
         except FileNotFoundError:
             if not create:
                 raise ProductApprovalError(
@@ -304,14 +310,14 @@ def _open_registry(*, exclusive: bool, create: bool) -> tuple[Path, int, BinaryI
                 ) from None
             try:
                 descriptor = os.open(
-                    REGISTRY_NAME,
+                    registry_name,
                     _CREATE_FLAGS,
                     PRIVATE_FILE_MODE,
                     dir_fd=parent_descriptor,
                 )
             except FileExistsError:
                 descriptor = os.open(
-                    REGISTRY_NAME, _APPEND_FLAGS, dir_fd=parent_descriptor
+                    registry_name, _APPEND_FLAGS, dir_fd=parent_descriptor
                 )
             else:
                 _prepare_created_private_file(descriptor, label="approval.registry")
@@ -331,7 +337,7 @@ def _open_registry(*, exclusive: bool, create: bool) -> tuple[Path, int, BinaryI
         # any ledger bytes.
         _validate_private_file(descriptor, label="approval.registry")
         path_metadata = os.stat(
-            REGISTRY_NAME, dir_fd=parent_descriptor, follow_symlinks=False
+            registry_name, dir_fd=parent_descriptor, follow_symlinks=False
         )
         opened_metadata = os.fstat(descriptor)
         if (path_metadata.st_dev, path_metadata.st_ino) != (
@@ -344,7 +350,7 @@ def _open_registry(*, exclusive: bool, create: bool) -> tuple[Path, int, BinaryI
             )
         os.lseek(descriptor, 0, os.SEEK_SET)
         handle = os.fdopen(os.dup(descriptor), "rb")
-        return directory / REGISTRY_NAME, descriptor, handle
+        return directory / registry_name, descriptor, handle
     except ProductApprovalError:
         if descriptor is not None:
             os.close(descriptor)
@@ -361,7 +367,7 @@ def _open_registry(*, exclusive: bool, create: bool) -> tuple[Path, int, BinaryI
         os.close(parent_descriptor)
 
 
-def _parse_record(raw: bytes) -> dict[str, Any]:
+def _decode_record(raw: bytes, validator: Draft202012Validator) -> dict[str, Any]:
     if not raw.endswith(b"\n") or len(raw) > MAX_RECORD_BYTES:
         raise ProductApprovalError(
             "product_approval.record",
@@ -377,7 +383,7 @@ def _parse_record(raw: bytes) -> dict[str, Any]:
         raise ProductApprovalError(
             "product_approval.record", "approval registry contains invalid JSON"
         ) from None
-    if not isinstance(value, dict) or list(_VALIDATOR.iter_errors(value)):
+    if not isinstance(value, dict) or list(validator.iter_errors(value)):
         raise ProductApprovalError(
             "product_approval.record",
             "approval registry record failed schema validation",
@@ -394,6 +400,11 @@ def _parse_record(raw: bytes) -> dict[str, Any]:
         raise ProductApprovalError(
             "product_approval.record_digest", "approval registry digest is invalid"
         )
+    return value
+
+
+def _parse_record(raw: bytes) -> dict[str, Any]:
+    value = _decode_record(raw, _VALIDATOR)
     attributes = cast(dict[str, Any], value["attributes"])
     event_type = value["event_type"]
     _operator_reference(attributes["operator_reference"])
@@ -450,7 +461,11 @@ def _parse_record(raw: bytes) -> dict[str, Any]:
     return value
 
 
-def _verify(handle: BinaryIO) -> tuple[list[dict[str, Any]], int]:
+def _verify(
+    handle: BinaryIO,
+    *,
+    parse_record: Callable[[bytes], dict[str, Any]] | None = None,
+) -> tuple[list[dict[str, Any]], int]:
     records: list[dict[str, Any]] = []
     total = 0
     previous: str | None = None
@@ -466,12 +481,18 @@ def _verify(handle: BinaryIO) -> tuple[list[dict[str, Any]], int]:
                 "approval registry exceeds its bounded limits",
             )
         if not raw.endswith(b"\n") and len(raw) <= MAX_RECORD_BYTES:
+            if parse_record is not None:
+                raise ProductApprovalError(
+                    "installation.partial_tail",
+                    "installation ledger has an incomplete record; preserve it for "
+                    "operator reconciliation, without retry or automatic repair",
+                )
             raise ProductApprovalError(
                 "product_approval.recovery_required",
                 "approval registry ends with one incomplete record; run the "
                 "read-only product-recovery-status command",
             )
-        record = _parse_record(raw)
+        record = (parse_record or _parse_record)(raw)
         if record["sequence"] != len(records) + 1:
             raise ProductApprovalError(
                 "product_approval.sequence",
@@ -540,6 +561,23 @@ def _metadata_tuple(value: dict[str, Any]) -> tuple[int, ...]:
     return tuple(cast(int, value[field]) for field in _EXECUTABLE_METADATA_FIELDS)
 
 
+def _changed_fields(expected: dict[str, Any], observed: dict[str, Any]) -> str:
+    return (
+        ", ".join(
+            sorted(key for key, value in expected.items() if observed.get(key) != value)
+        )
+        or "unknown"
+    )
+
+
+def _changed_metadata_fields(
+    expected: tuple[int, ...], observed: dict[str, Any]
+) -> str:
+    return _changed_fields(
+        dict(zip(_EXECUTABLE_METADATA_FIELDS, expected, strict=True)), observed
+    )
+
+
 def _approval_cache_key(
     registry: Path, vendor: str, canonical_path: str
 ) -> tuple[str, str, str]:
@@ -592,6 +630,8 @@ def _append_locked(
     event_type: str,
     attributes: dict[str, Any],
     now: dt.datetime | None,
+    registry_format: str = REGISTRY_FORMAT,
+    parse_record: Callable[[bytes], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if len(records) >= MAX_REGISTRY_RECORDS:
         raise ProductApprovalError(
@@ -603,6 +643,8 @@ def _append_locked(
         event_type=event_type,
         attributes=attributes,
         now=now,
+        registry_format=registry_format,
+        parse_record=parse_record,
     )
     if total + len(raw) > MAX_REGISTRY_BYTES:
         raise ProductApprovalError(
@@ -627,9 +669,14 @@ def _append_locked(
         begin_operation()
         raise ProductApprovalError(
             "product_approval.write",
-            "approval append may have changed the registry; bytes were retained. "
-            "Run product-status; if a partial tail blocks it, run "
-            "product-recovery-status. Do not retry or truncate automatically",
+            (
+                "installation append may have changed its ledger; bytes were retained. "
+                "Run product-installation-status; do not retry or repair automatically"
+                if parse_record is not None
+                else "approval append may have changed the registry; bytes were retained. "
+                "Run product-status; if a partial tail blocks it, run "
+                "product-recovery-status. Do not retry or truncate automatically"
+            ),
             audit={
                 "mutation_state": "unknown",
                 "durability_confirmed": durability_confirmed,
@@ -649,11 +696,13 @@ def _build_record(
     event_type: str,
     attributes: dict[str, Any],
     now: dt.datetime | None,
+    registry_format: str = REGISTRY_FORMAT,
+    parse_record: Callable[[bytes], dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], bytes]:
     """Build and locally verify one canonical record without mutating the ledger."""
 
     unsigned = {
-        "format": REGISTRY_FORMAT,
+        "format": registry_format,
         "sequence": len(records) + 1,
         "record_id": str(uuid.uuid4()),
         "recorded_at": _utc_text(now),
@@ -663,7 +712,7 @@ def _build_record(
     }
     record = {**unsigned, "record_sha256": _digest(unsigned)}
     raw = _canonical_json(record) + b"\n"
-    _parse_record(raw)
+    (parse_record or _parse_record)(raw)
     return record, raw
 
 
@@ -739,7 +788,8 @@ def _approve_fingerprinted_candidate(
                 }
             raise ProductApprovalError(
                 "product_approval.drift",
-                "an active approval exists but its fingerprint no longer matches; "
+                "an active approval exists but its fingerprint no longer matches "
+                f"(changed fields: {_changed_fields(current['attributes']['fingerprint'], candidate.fingerprint.as_dict())}); "
                 "run product-status, directly confirm a product-revoke using the "
                 "active record ID and fingerprint guards, then rediscover and "
                 "approve the replacement",
@@ -798,6 +848,8 @@ def _finish_registry_mutation(
     handle: BinaryIO,
     appended_record: dict[str, Any] | None,
     failure: BaseException | None,
+    *,
+    reconciliation_command: str = "product-status",
 ) -> None:
     """Preserve append evidence across post-append checks and every cleanup."""
 
@@ -807,7 +859,7 @@ def _finish_registry_mutation(
     begin_operation()
     if isinstance(failure, ProjectError) and failure.audit is not None:
         failure.audit["registry"] = str(registry)
-        failure.audit["reconciliation_arguments"] = ["product-status"]
+        failure.audit["reconciliation_arguments"] = [reconciliation_command]
         if cleanup_errors:
             failure.audit.setdefault("cleanup_errors", []).extend(cleanup_errors)
         return  # The original exception is already propagating.
@@ -817,7 +869,7 @@ def _finish_registry_mutation(
         raise ProductApprovalError(
             "product_approval.committed_uncertain",
             "approval ledger append completed and synced, but final checks or "
-            "cleanup failed; run product-status and do not repeat the mutation",
+            f"cleanup failed; run {reconciliation_command} and do not repeat the mutation",
             audit={
                 "registry": str(registry),
                 "mutation_state": "committed",
@@ -827,7 +879,7 @@ def _finish_registry_mutation(
                 "intended_record_id": appended_record["record_id"],
                 "intended_record_sha256": appended_record["record_sha256"],
                 "cleanup_errors": cleanup_errors,
-                "reconciliation_arguments": ["product-status"],
+                "reconciliation_arguments": [reconciliation_command],
             },
         ) from failure
     if failure is not None:
@@ -836,7 +888,7 @@ def _finish_registry_mutation(
         return
     raise ProductApprovalError(
         "product_approval.cleanup",
-        "approval registry cleanup failed without a new append; run product-status",
+        f"approval registry cleanup failed without a new append; run {reconciliation_command}",
     )
 
 
@@ -878,7 +930,13 @@ def require_approved_executable(
     product_bin: str,
     allow_path_lookup: bool = False,
 ) -> tuple[str, dict[str, Any]]:
-    """Return an executable only when its full current fingerprint is approved."""
+    """Resolve explicit installation trust or the unchanged strict-file policy."""
+
+    from . import product_installations
+
+    installation = product_installations.resolve(vendor=vendor, product_bin=product_bin)
+    if installation is not None:
+        return installation
 
     normalized_vendor = _vendor(vendor)
     path, _source = _resolved_candidate_path(
@@ -934,7 +992,8 @@ def require_approved_executable(
             if _metadata_tuple(current_metadata) != cached.executable_metadata:
                 raise ProductApprovalError(
                     "product_approval.drift",
-                    "product executable metadata changed after approval; fresh "
+                    "product executable metadata changed after approval "
+                    f"(changed fields: {_changed_metadata_fields(cached.executable_metadata, current_metadata)}); fresh "
                     "approval is required",
                 )
             return canonical_path, cached.summary()
@@ -952,7 +1011,8 @@ def require_approved_executable(
         if record["attributes"]["fingerprint_sha256"] != candidate.fingerprint_sha256:
             raise ProductApprovalError(
                 "product_approval.drift",
-                "product executable fingerprint changed after approval; run "
+                "product executable fingerprint changed after approval "
+                f"(changed fields: {_changed_fields(record['attributes']['fingerprint'], candidate.fingerprint.as_dict())}); run "
                 "product-status, directly confirm a product-revoke using the active "
                 "record ID and fingerprint guards, then rediscover and approve the "
                 "replacement",
@@ -984,6 +1044,13 @@ def require_approved_metadata(
     in the same operation.
     """
 
+    from . import product_installations
+
+    installation = product_installations.resolve(
+        vendor=vendor, product_bin=product_bin, prelaunch=True
+    )
+    if installation is not None:
+        return installation
     normalized_vendor = _vendor(vendor)
     path, _source = _resolved_candidate_path(
         normalized_vendor, product_bin, allow_path_lookup=False
@@ -1033,9 +1100,40 @@ def require_approved_metadata(
         if _metadata_tuple(current) != verified.executable_metadata:
             raise ProductApprovalError(
                 "product_approval.drift",
-                "product executable metadata changed after approval; fresh approval is required",
+                "product executable metadata changed after approval "
+                f"(changed fields: {_changed_metadata_fields(verified.executable_metadata, current)}); fresh approval is required",
             )
         return canonical_path, verified.summary()
+    finally:
+        handle.close()
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
+def has_approval_history(*, vendor: str, canonical_path: str) -> bool:
+    """Check retained strict history by literal path, including revoked approvals.
+
+    Do not resolve the path: it may now be an alias, but existing participants
+    can still hold its former canonical pathname as their strict selection.
+    """
+
+    normalized_vendor = _vendor(vendor)
+    historical_path = _canonical_stored_path(canonical_path)
+    try:
+        _registry, descriptor, handle = _open_registry(exclusive=False, create=False)
+    except ProductApprovalError as error:
+        if error.code.endswith("missing"):
+            return False
+        raise
+    try:
+        records, _ = _verify(handle)
+        _active_records(records)  # Validate revocations as well as record integrity.
+        return any(
+            record["event_type"] == APPROVAL_EVENT
+            and record["attributes"]["vendor"] == normalized_vendor
+            and record["attributes"]["canonical_path"] == historical_path
+            for record in records
+        )
     finally:
         handle.close()
         fcntl.flock(descriptor, fcntl.LOCK_UN)

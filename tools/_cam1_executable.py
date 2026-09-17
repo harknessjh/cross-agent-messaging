@@ -18,6 +18,7 @@ from pathlib import Path
 
 from tools._cam1_executable_format import is_native_executable
 from tools._cam1_executable_platform import (
+    filesystem_identity,
     has_untrusted_acl_mutation,
     require_permission_filesystem,
     trusted_admin_group,
@@ -49,6 +50,36 @@ def _require_permissions(fd: int, metadata: os.stat_result, *, directory: bool) 
         raise ExecutablePolicyError(
             "acl", "executable path grants untrusted ACL mutation rights"
         )
+
+
+def inspect_installation_directory(
+    path: Path, *, include_filesystem_identity: bool = False
+) -> tuple[os.stat_result, str | None]:
+    """Check a canonical directory and all ancestors without following links."""
+
+    if not path.is_absolute() or ".." in path.parts:
+        raise ExecutablePolicyError("path", "installation directory must be absolute")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    descriptor = os.open("/", flags)
+    try:
+        for index, part in enumerate(path.parts):
+            if index:
+                opened = os.open(part, flags, dir_fd=descriptor)
+                os.close(descriptor)
+                descriptor = opened
+            metadata = os.fstat(descriptor)
+            require_permission_filesystem(descriptor)
+            _require_permissions(descriptor, metadata, directory=True)
+        identity = (
+            filesystem_identity(descriptor) if include_filesystem_identity else None
+        )
+        return metadata, identity
+    except OSError as error:
+        raise ExecutablePolicyError(
+            "inspection", "installation directory could not be inspected safely"
+        ) from error
+    finally:
+        os.close(descriptor)
 
 
 def require_native_executable(path: str | Path) -> str:

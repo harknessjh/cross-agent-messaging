@@ -645,6 +645,7 @@ def _cli_api() -> _transport_cli.TransportCliApi:
         product_recovery_status=module.product_recovery_status,
         recover_product_partial_tail=module.recover_product_partial_tail,
         revoke_product_executable=module.revoke_product_executable,
+        installation_command=_products.installation_command,
         resolve_project=module._resolve_project,
         list_local_peers=module.list_local_peers,
         preflight_project_claude=module.preflight_project_claude,

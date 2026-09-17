@@ -11,6 +11,7 @@ import functools
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 
@@ -35,6 +36,7 @@ class TransportCliApi:
     product_recovery_status: Callable[..., dict[str, Any]]
     recover_product_partial_tail: Callable[..., dict[str, Any]]
     revoke_product_executable: Callable[..., dict[str, Any]]
+    installation_command: Callable[..., dict[str, Any]]
     resolve_project: Callable[[argparse.Namespace], Any]
     list_local_peers: Callable[..., Any]
     preflight_project_claude: Callable[..., Any]
@@ -108,6 +110,26 @@ def build_parser(api: TransportCliApi) -> argparse.ArgumentParser:
 
     subparsers.add_parser("doctor", help="check local transport prerequisites")
     subparsers.add_parser("claude-list", help="list eligible local Claude sessions")
+
+    for operation in ("discover", "approve", "status", "revoke"):
+        installation = subparsers.add_parser(
+            f"product-installation-{operation}",
+            help=f"{operation} explicit installation-level product trust",
+        )
+        if operation != "status":
+            installation.add_argument(
+                "--vendor", choices=("codex", "claude-code"), required=True
+            )
+            installation.add_argument("--launcher", required=True)
+        if operation in ("discover", "approve"):
+            installation.add_argument("--installation-root", required=True)
+        if operation == "approve":
+            installation.add_argument("--expected-card-sha256", required=True)
+        if operation == "revoke":
+            installation.add_argument("--approval-record-id", required=True)
+            installation.add_argument("--expected-policy-sha256", required=True)
+        if operation in ("approve", "revoke"):
+            installation.add_argument("--operator-reference", required=True)
 
     discovery_parser = subparsers.add_parser(
         "product-discover",
@@ -292,7 +314,9 @@ def main(
                 allow_dirty=args.allow_dirty_validator,
                 expected_sha256=args.expected_validation_profile_sha256,
             )
-            if args.command == "product-discover":
+            if args.command.startswith("product-installation-"):
+                result = api.installation_command(args)
+            elif args.command == "product-discover":
                 result = api.discover_product_executable(
                     vendor=args.vendor,
                     product_bin=args.product_bin,
@@ -367,6 +391,22 @@ def main(
                     )
                 )
                 return 2
+            invalid_flags = [
+                flag
+                for flag, value in (
+                    ("--claude-bin", args.claude_bin),
+                    ("--codex-bin", args.codex_bin),
+                )
+                if not Path(value).is_absolute()
+            ]
+            if invalid_flags:
+                raise api.transport_error(
+                    "doctor.absolute_paths_required",
+                    "doctor requires explicit absolute paths for both products; "
+                    "missing or non-absolute: "
+                    + ", ".join(invalid_flags)
+                    + ". No product was invoked; no PATH fallback was attempted.",
+                )
             try:
                 binding = api.resolve_project(args)
             except api.project.ProjectError:
