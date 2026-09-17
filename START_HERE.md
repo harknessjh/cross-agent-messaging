@@ -29,6 +29,8 @@ Complete [section 0](#0-set-up-and-verify-the-cam-repository) when you first cre
 
 The first CAM session that uses a particular Codex or Claude Code executable shows you a non-executing candidate card and asks whether CAM may use that exact path and fingerprint. The approval is stored for this operating-system account and is reused across projects while the executable remains unchanged. An update or replacement requires a new card and an explicit guarded replacement; CAM never silently replaces an approval.
 
+Codex, Claude Code, and Git must resolve to native executables in trusted local locations; script launchers are not supported. CAM itself still uses the Python environment below. If discovery stops with `native_required` or a permission error, follow the [executable requirements](docs/PRODUCT_UPDATES.md#native-executable-requirements); do not bypass the check or change installed permissions automatically.
+
 ### For each project
 
 Complete [sections 1–4](#1-prepare-your-projects-git-repo):

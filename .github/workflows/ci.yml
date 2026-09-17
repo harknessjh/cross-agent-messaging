@@ -81,6 +81,13 @@ jobs:
           --pattern test_cam1_acl.py
           --verbose
 
+      - name: Exercise native executable and launch boundaries
+        run: >-
+          python -m unittest discover
+          --start-directory tests
+          --pattern 'test_cam1_executable_*.py'
+          --verbose
+
   minimum-dependencies:
     name: Minimum declared dependencies
     runs-on: ubuntu-latest

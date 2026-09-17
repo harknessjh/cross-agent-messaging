@@ -12,6 +12,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from tests._native_executable_fixture import write_native
 from tools import cam1_transport
 from tools.cam1lib import (
     product_approvals,
@@ -34,7 +35,9 @@ class ProductApprovalTests(ProductApprovalTestCase):
     def test_discovery_approval_status_and_require_never_execute_candidate(
         self,
     ) -> None:
-        candidate = self.discover()
+        with mock.patch("subprocess.run") as spawn:
+            candidate = self.discover()
+        spawn.assert_not_called()
         self.assertFalse(self.marker.exists())
         result = self.approve()
         self.assertEqual(result["status"], "approved")
@@ -50,7 +53,7 @@ class ProductApprovalTests(ProductApprovalTestCase):
 
     def test_record_limit_rejects_append_without_poisoning_registry(self) -> None:
         second_executable = self.bin_dir / "codex"
-        second_executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        write_native(second_executable)
         second_executable.chmod(0o700)
         second_candidate = product_executables.discover_candidate(
             "codex",
@@ -162,7 +165,7 @@ class ProductApprovalTests(ProductApprovalTestCase):
 
     def test_candidate_change_requires_a_fresh_card(self) -> None:
         candidate = self.discover()
-        self.executable.write_text("#!/bin/sh\nexit 7\n", encoding="utf-8")
+        write_native(self.executable, "replacement 7")
         self.executable.chmod(0o700)
         with self.assertRaises(product_approvals.ProductApprovalError) as context:
             product_approvals.approve_candidate(
@@ -176,7 +179,7 @@ class ProductApprovalTests(ProductApprovalTestCase):
 
     def test_fingerprint_drift_and_symlink_retarget_fail_closed(self) -> None:
         self.approve()
-        self.executable.write_text("#!/bin/sh\nexit 9\n", encoding="utf-8")
+        write_native(self.executable, "replacement 9")
         self.executable.chmod(0o700)
         with self.assertRaises(product_approvals.ProductApprovalError) as drift:
             product_approvals.require_approved_executable(
@@ -185,10 +188,10 @@ class ProductApprovalTests(ProductApprovalTestCase):
         self.assertEqual(drift.exception.code, "product_approval.drift")
 
         approved_target = self.bin_dir / "approved-target"
-        approved_target.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        write_native(approved_target)
         approved_target.chmod(0o700)
         replacement = self.bin_dir / "replacement"
-        replacement.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        write_native(replacement, "replacement 1")
         replacement.chmod(0o700)
         link = self.bin_dir / "current-claude"
         link.symlink_to(approved_target)
@@ -218,10 +221,7 @@ class ProductApprovalTests(ProductApprovalTestCase):
             (second_directory, 1),
         ):
             executable = directory / "claude"
-            executable.write_text(
-                f"#!/bin/sh\nexit {exit_code}\n",
-                encoding="utf-8",
-            )
+            write_native(executable, str(exit_code))
             executable.chmod(0o700)
         directory_link = self.bin_dir / "selected"
         directory_link.symlink_to(first_directory, target_is_directory=True)

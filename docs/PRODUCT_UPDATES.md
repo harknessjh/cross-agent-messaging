@@ -27,9 +27,46 @@ Discovery resolves the current `PATH` candidate without executing it, even for
 `--version`. It does not install, approve, revoke, update the roster, or send a
 message. It does not establish that the candidate is the newest release or the
 binary running an existing session. To select a managed installation explicitly,
-add `--product-bin "/absolute/path/to/launcher-or-executable"`. A launcher symlink
+add `--product-bin "/absolute/path/to/native-executable-or-symlink"`. A launcher symlink
 is resolved to its canonical target; approval never covers all future targets.
 Supply any existing `--state-root` or `--git-bin` overrides consistently.
+
+### Native executable requirements
+
+CAM invokes installed Codex, Claude Code, and Git programs to discover sessions,
+deliver messages, and inspect Git metadata. Those external entrypoints must be
+native Mach-O executables on macOS or ELF executables on Linux. Shell, Node, Python,
+and `#!/usr/bin/env` wrappers are rejected without execution. Symlinks are allowed
+when they resolve to an eligible native target; CAM launches the checked canonical
+path, not the alias. CAM's own Python tools and recipients' independent project
+work are unaffected by this restriction.
+
+The executable and every canonical ancestor must have trusted ownership and no
+untrusted mutation permissions. macOS's local administrator group is within the
+trusted-administrator boundary; arbitrary groups are not. Read-only and deny-only
+macOS ACLs are allowed. A trusted-owned sticky directory can protect a trusted-owned
+child; this is not a blanket exception for temporary storage. CAM does not repair
+installed permissions or automatically unwrap a script to find another executable.
+
+Supported storage is APFS/HFS on macOS with ownership enabled, and local POSIX
+permission filesystems on Linux x86-64/ARM64: ext2/3/4, Btrfs, XFS, tmpfs, ramfs,
+overlayfs, eCryptfs, and F2FS. Unknown, network, FUSE, or ownership-disabled mounts
+fail inspection rather than being assumed safe. An administrator remains responsible
+for the trustworthiness of the filesystem and its backing storage.
+
+If discovery reports `product_approval.native_required`, select an installed native
+product with `--product-bin` or obtain a compatible installation separately. For
+`owner`, `writable`, `acl`, or `inspection` errors, ask the operator to review the
+installation and filesystem; do not auto-install, chmod, chown, clear ACLs, or bypass
+the gate. Equivalent Git errors use the `git.` prefix; bootstrap/profile Git failures
+are reported as `profile.source_unavailable`. Explicit Git paths do not silently
+fall back to another candidate.
+
+Upgrading CAM does not rewrite or revoke old approvals. Unchanged eligible native
+products retain their approvals; now-ineligible script/location approvals remain
+inspectable and explicitly revocable but cannot authorize a launch. No new journal
+or approval-ledger format is introduced. Native format is not a signature or an
+attestation of linked libraries, loaders, plugins, or child programs.
 
 The output includes the executable approval card and `participant_update`:
 

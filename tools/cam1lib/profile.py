@@ -19,6 +19,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from tools import _cam1_bootstrap
+from tools._cam1_executable import ExecutablePolicyError, require_native_executable
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 PROFILE_FORMAT = "CAM-VALIDATION-PROFILE/1"
@@ -38,6 +39,9 @@ REQUIRED_PROFILE_PATHS = (
     "tools/__init__.py",
     "tools/_cam1_bootstrap.py",
     "tools/_cam1_entry.py",
+    "tools/_cam1_executable.py",
+    "tools/_cam1_executable_format.py",
+    "tools/_cam1_executable_platform.py",
     "tools/cam1.py",
     "tools/cam1_project.py",
     "tools/cam1_transport.py",
@@ -242,14 +246,10 @@ def _profile_digest(
 
 def _git_executable() -> str | None:
     for candidate_text in GIT_EXECUTABLE_CANDIDATES:
-        candidate = Path(candidate_text)
         try:
-            resolved = candidate.resolve(strict=True)
-            metadata = resolved.stat()
-        except OSError:
+            return require_native_executable(candidate_text)
+        except ExecutablePolicyError:
             continue
-        if stat.S_ISREG(metadata.st_mode) and os.access(resolved, os.X_OK):
-            return str(resolved)
     return None
 
 
@@ -273,6 +273,7 @@ def _run_git(
     *arguments: str,
 ) -> subprocess.CompletedProcess[bytes]:
     try:
+        git_bin = require_native_executable(git_bin)
         return subprocess.run(
             [
                 git_bin,
@@ -292,7 +293,7 @@ def _run_git(
             timeout=5,
             env=_git_environment(),
         )
-    except (OSError, subprocess.TimeoutExpired) as error:
+    except (ExecutablePolicyError, OSError, subprocess.TimeoutExpired) as error:
         raise ValidationProfileError(
             "profile.source_unavailable",
             "validation source-control probe failed",
