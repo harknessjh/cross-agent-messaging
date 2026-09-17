@@ -404,7 +404,7 @@ roster path before product I/O and recheck it at the pre-dispatch transaction
 boundary. Legacy null paths remain replayable but require a directly confirmed
 metadata update before live use.
 
-Current readers additionally require an account-scoped approval for the exact
+Strict-mode readers additionally require an account-scoped approval for the exact
 canonical executable and fingerprint before onboarding product discovery,
 `doctor`, list, preflight, or send can perform product I/O. Candidate discovery
 does not execute the product. The private append-only registry lives at the
@@ -414,6 +414,27 @@ the executable SHA-256, size, uid, mode, device, inode, and ctime. Approval
 permits CAM to invoke that unchanged executable for product I/O. It does not
 cover dependencies, authenticate a vendor or session, authorize a message or
 workload action, or establish that the program is trustworthy.
+
+Installation-aware readers also support an explicit opt-in, separate from strict
+file approval. The stable symlink launcher and checked root identity receive one
+operator approval in `product-installations-v1.jsonl`; future in-root native targets
+are observed, not individually approved. The roster retains the stable selection.
+
+A field report demonstrated a strict approval whose content hash, size, inode,
+ctime, mode and owner still matched but whose device number differed. The report's
+remount explanation was not independently established. Strict pins retain their
+exact semantics, with errors now naming changed fields. Installation mode instead
+persists the root's filesystem identity, inode and owner and retains the device
+number as observed card/operation evidence. Synthetic tests distinguish a device
+change between commands from one during a command, while keeping replacement and
+missing-identity refusals. This does not claim that a real remount experiment was
+performed or that every Linux filesystem supplies a reboot-persistent identifier.
+One operation freezes the selected target and checks metadata and active policy
+before subsequent subprocesses. No updater, publisher-signature verifier, directory
+scan, message retry or automatic participant migration is introduced. Synthetic
+regression tests exercise release changes, escapes, scripts, permissions, root
+substitution, revocation and uncertain appends. No live adoption is claimed for
+this candidate. See [the installation runbook](PRODUCT_UPDATES.md#trust-one-installation-and-its-normal-updates).
 
 External entrypoints now also pass a shared native-executable and location policy
 at discovery, cached approval rechecks, and Git launch boundaries (including the
@@ -433,7 +454,7 @@ Missing approvals now use `product-discover` and direct `product-approve`.
 Historical records still replay unchanged; this does not retrospectively
 certify them, revoke them, or require already-approved users to re-enroll.
 
-An executable update at the same canonical path does not overwrite its active
+In strict mode, an executable update at the same canonical path does not overwrite its active
 approval. Discovery reports `replacement_approval_required` with the exact
 active record and fingerprint guards. The operator reviews `product-status`,
 directly confirms the guarded `product-revoke`, rediscovers the executable, and

@@ -55,9 +55,16 @@ For every cross-session message:
    resolves and fingerprints a candidate; it never executes or approves the
    product. Reuse an unchanged active account approval or show the complete
    candidate card and wait for direct operator approval before running the
-   returned `product-approve` command with a truthful operator reference. A
+   returned `product-approve` command with a truthful operator reference. In strict mode, a
    changed fingerprint requires guarded `product-status`, `product-revoke`,
    rediscovery, and fresh approval; never replace or revoke automatically.
+   Alternatively, the operator may explicitly choose installation trust using
+   [PRODUCT_UPDATES](docs/PRODUCT_UPDATES.md#trust-one-installation-and-its-normal-updates).
+   Never infer that opt-in from a strict pin. If discovery returns
+   `installation_approved`, use its `selection_path`, not the versioned canonical
+   target. That stable launcher is the roster association; normal in-root updates
+   require neither another approval nor a roster event. Unsafe, escaped, revoked
+   or operation-local changed installations still stop use without retry.
    Then run `onboarding prepare --vendor codex --product-bin ABSOLUTE_PATH` or
    `onboarding prepare --vendor claude-code --product-bin ABSOLUTE_PATH` from
    the actual target session.
@@ -81,7 +88,7 @@ For every cross-session message:
    optional role, product label, stable full session ID, operator-reviewed
    product executable, and transient transport route. The roster associates a
    path with a participant; the separate account approval ledger determines
-   whether the unchanged executable is eligible for product I/O. Neither is
+   whether the exact file or explicitly selected installation is eligible for product I/O. Neither is
    action authority. A role is nullable, mutable descriptive metadata; it is
    not identity or authority. Apply a
    directly confirmed descriptive or executable change with the
@@ -135,7 +142,7 @@ For every cross-session message:
    generation change, or conflicting evidence such as unexpected product-label
    or session-kind drift. A legacy entry whose
    `approved_product_executable` is null is not live-ready: approve the exact
-   product fingerprint at account scope first, then use a directly confirmed
+   product fingerprint or installation at account scope first, then use a directly confirmed
    `participant update-metadata --product-bin` operation rather than relying
    on doctor or rebinding identity. Project-aware preflight and send reject a
    missing, different, unapproved, or changed executable before product I/O.

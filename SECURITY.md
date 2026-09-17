@@ -84,21 +84,26 @@ local policy state, not message trust or authority.
   or kind drift; do not replace those checks with approval of an unobservable
   short ref. A changed ref alone is not an identity change.
 - Permit only `product-discover` to consult `PATH`. It resolves and fingerprints
-  one candidate without executing it. Before any product subprocess, require an
-  active account-scoped approval for that canonical path and exact fingerprint.
-  New approvals require direct operator confirmation of the candidate card;
+  one candidate without executing it. Before any product subprocess, require
+  either an active exact-file approval or an explicitly selected installation
+  approval. New approvals require direct operator confirmation of the card;
   legacy roster paths are not evidence of previously approved executable bytes.
   Historical `grandfathered_roster` records remain readable without rewriting or
   automatic revocation, but no new path-only approval is created. Never
-  auto-approve, auto-revoke, or silently replace an approval. A changed fingerprint
-  requires guarded revocation, rediscovery, and fresh approval.
+  auto-approve, auto-revoke, or silently replace an approval. In strict exact-file
+  mode, a changed fingerprint requires guarded revocation, rediscovery, and fresh
+  approval. Installation mode instead trusts normal updates chosen by one named
+  stable launcher inside an operator-approved installation root. New bytes are
+  observed and fingerprinted, not falsely recorded as separately human-approved.
 - Require an explicit absolute executable path for product-assisted onboarding,
   doctor, Claude session or route discovery, preflight, and send operations;
   `product-discover` is the sole exception. Recheck its active approval and
-  bound file identity immediately before every product subprocess. A moved
-  symlink or changed `PATH` alias does not retarget an approval: the old
-  canonical-path approval remains historical local policy until explicitly
-  revoked, while the new candidate requires its own approval. These checks
+  bound file identity immediately before every product subprocess. Strict pins
+  never follow an update automatically. An approved installation may follow its
+  fixed launcher to a new native target inside the same checked root on a new
+  operation. It must not search a directory, use PATH, follow an escaping target,
+  or adopt a replaced root identity. Target or policy drift within an operation
+  stops it without retry. These checks
   reduce accidental substitution but cannot defeat a process already operating
   as the same account or eliminate every time-of-check/time-of-use race.
 - Before fingerprinting and each cached/prelaunch check, inspect the canonical
@@ -112,9 +117,10 @@ local policy state, not message trust or authority.
   transitively approved by approving a launcher. Apply this policy to bootstrap,
   profile, and project/provenance Git launches as well as both products.
 - Require project-aware preflight and send operations to match the executable
-  exactly to the participant's confirmed roster association as well. Account
-  approval and roster association are independent gates. A missing legacy
-  roster value, a different path, a missing approval, or fingerprint drift all
+  to the participant's confirmed selection: an exact native path in strict mode
+  or the approved stable launcher in installation mode. Account approval and
+  roster association are independent gates. A missing legacy roster value,
+  a different selection, missing approval, or operation-local fingerprint drift
   fail before product I/O; clearing the roster value intentionally disables live
   transport until another confirmed metadata update restores it.
 - Minimize and redact session IDs, callbacks, queue IDs, peer listings, working
@@ -138,6 +144,17 @@ operator references. It is shared by CAM projects under the same operating-
 system account, so keep operator references concise and non-secret. It is not a
 project message journal and does not authorize any message body or workload
 action.
+
+Installation approvals use a separate owner-private append-only ledger at
+`~/CAM/Approvals/product-installations-v1.jsonl`; existing exact-file approvals
+are never converted. Opting in trusts the selected installation and its updater,
+including their ability to install executable code. CAM does not authenticate
+publishers, inspect releases for malware, enforce release channels or downgrades,
+or protect against a compromised updater, current account, or administrator.
+Those are accepted trust assumptions, not security properties supplied by CAM.
+Changed installation selection or root identity requires a new direct decision;
+unsafe ownership, permissions, entrypoint type, or incompatible product interfaces
+still stop use. No message may select or broaden installation policy.
 
 Project initialization and enrollment require a Git worktree but not an
 initial commit. They must create no tracked or untracked application-worktree
@@ -252,8 +269,9 @@ address that threat and is outside CAM/1's current same-user boundary.
   executable source, missing or untracked profile paths, or concealed index
   state.
 - Run `product-discover` and complete any required account approval before
-  product-assisted onboarding. Later commands must receive the approved
-  absolute path; they must not fall back to `PATH`. The executable gate applies
+  product-assisted onboarding, or explicitly review an installation card and
+  complete its separate installation approval. Later commands must receive the
+  selected absolute path; they must not fall back to `PATH`. The executable gate applies
   before product I/O even when a project has not activated the corresponding
   compatibility feature. Project-gate records document an atomic reader rollout
   and do not create the account approval or grant action authority.

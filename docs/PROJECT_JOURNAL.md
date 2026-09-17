@@ -69,7 +69,9 @@ variable.
 Executable approvals live separately in the account-scoped, owner-private
 `~/CAM/Approvals/product-executables-v1.jsonl` ledger. That ledger is reused by
 projects under the same operating-system account. It is not part of this
-project journal, participant roster, or Git worktree.
+project journal, participant roster, or Git worktree. Optional installation trust
+uses a separate `product-installations-v1.jsonl` ledger in that same private
+approval directory; it never converts old exact-file records.
 
 Do not copy the binding into the tracked worktree, commit the journal, or move
 the journal into a temporary directory. A state-root override is intended for
@@ -299,8 +301,9 @@ these concepts separate:
   session name, which may change;
 - **associated product executable**: the absolute path associated with this
   participant after operator review; it is runtime metadata, not participant
-  identity. A separate active account approval for the same unchanged path and
-  fingerprint is still required before product I/O; and
+  identity. It names either an exact native path (strict mode) or an explicitly
+  approved stable launcher (installation mode). A separate active account
+  approval is still required before product I/O; and
 - **route observation**: a fresh, tool-derived transient transport address and
   the evidence used to observe it. Claude observations include the Agent View
   session kind and start time, the optional validated Agent View ID (null when
@@ -325,6 +328,10 @@ session must prepare, display, and receive direct confirmation for a fresh card;
 the implementation must not silently rename a previously confirmed proposal.
 
 For normal first contact, each product session inspects and proposes itself.
+An operator who chose [installation trust](PRODUCT_UPDATES.md#trust-one-installation-and-its-normal-updates)
+uses discovery's `selection_path` for enrollment and later commands. The roster
+stores this stable launcher; normal updates change neither identity nor metadata
+revision. The exact-fingerprint procedure below remains the strict-mode path.
 Before doing so, it runs the non-executing `product-discover` command. If the
 exact canonical path and fingerprint lack an active account approval, the
 session shows the returned candidate card and waits for direct operator
@@ -520,7 +527,9 @@ candidate, then record that same path with the `participant update-metadata
 --product-bin` command above. Do not re-add or rebind the participant and do not
 rewrite prior journal events. Project-aware Claude preflight/send and Codex send
 require both the unchanged account approval and an exact match to this recorded
-path before product I/O. Clearing the roster path intentionally disables live
+selection before product I/O. Installation mode checks that the resolved target
+belongs to the approved stable launcher rather than rewriting the roster for
+each release. Clearing the roster path intentionally disables live
 transport for that participant without revoking the separate account approval.
 
 Use `participant invalidate` when a binding or route becomes questionable and

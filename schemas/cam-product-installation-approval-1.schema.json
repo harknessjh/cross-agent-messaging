@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Copyright © 2026 John Harkness. PolyForm Noncommercial 1.0.0; see LICENSE.",
+  "title": "CAM product installation approval record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "sequence", "record_id", "recorded_at", "event_type", "previous_record_sha256", "attributes", "record_sha256"],
+  "properties": {
+    "format": {"const": "CAM-PRODUCT-INSTALLATION-APPROVAL/1"},
+    "sequence": {"type": "integer", "minimum": 1, "maximum": 10000},
+    "record_id": {"type": "string", "format": "uuid"},
+    "recorded_at": {"type": "string", "format": "date-time", "maxLength": 64},
+    "event_type": {"enum": ["product_installation.approved", "product_installation.revoked"]},
+    "previous_record_sha256": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]},
+    "attributes": {"oneOf": [{"$ref": "#/$defs/approval"}, {"$ref": "#/$defs/revocation"}]},
+    "record_sha256": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "path": {"type": "string", "minLength": 1, "maxLength": 4096, "pattern": "^/"},
+    "vendor": {"enum": ["codex", "claude-code"]},
+    "reference": {"type": "string", "minLength": 1, "maxLength": 1024},
+    "identity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["filesystem", "inode", "uid"],
+      "properties": {
+        "filesystem": {"type": "string", "pattern": "^(darwin-volume:[0-9a-f]{32}|linux-fsid:[0-9a-f]{8}:[0-9a-f]{16})$"},
+        "inode": {"type": "integer", "minimum": 0},
+        "uid": {"type": "integer", "minimum": 0}
+      }
+    },
+    "selection": {
+      "type": "object", "additionalProperties": false,
+      "required": ["vendor", "launcher", "root", "root_identity"],
+      "properties": {
+        "vendor": {"$ref": "#/$defs/vendor"},
+        "launcher": {"$ref": "#/$defs/path"},
+        "root": {"$ref": "#/$defs/path"},
+        "root_identity": {"$ref": "#/$defs/identity"}
+      }
+    },
+    "approval": {
+      "type": "object", "additionalProperties": false,
+      "required": ["selection", "policy_sha256", "operator_reference", "initial_path", "initial_fingerprint_sha256", "initial_root_device"],
+      "properties": {
+        "selection": {"$ref": "#/$defs/selection"},
+        "policy_sha256": {"$ref": "#/$defs/sha256"},
+        "operator_reference": {"$ref": "#/$defs/reference"},
+        "initial_path": {"$ref": "#/$defs/path"},
+        "initial_fingerprint_sha256": {"$ref": "#/$defs/sha256"},
+        "initial_root_device": {"type": "integer", "minimum": 0}
+      }
+    },
+    "revocation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["vendor", "launcher", "approval_record_id", "policy_sha256", "operator_reference"],
+      "properties": {
+        "vendor": {"$ref": "#/$defs/vendor"},
+        "launcher": {"$ref": "#/$defs/path"},
+        "approval_record_id": {"type": "string", "format": "uuid"},
+        "policy_sha256": {"$ref": "#/$defs/sha256"},
+        "operator_reference": {"$ref": "#/$defs/reference"}
+      }
+    }
+  }
+}
