@@ -163,7 +163,16 @@ executes or approves that program:
 .venv/bin/python tools/cam1_transport.py product-discover --vendor claude-code
 ```
 
-Each command returns a concise candidate card, an exact canonical target, a
+For an explicitly approved installation, discovery instead returns
+`installation_approved`: use its stable `selection_path` for onboarding, roster
+metadata and every live `--claude-bin`/`--codex-bin` option. The observed versioned
+target is audit evidence, not the path to copy into the roster. Normal in-root
+updates reuse that installation approval. To opt in once, follow
+[installation trust](PRODUCT_UPDATES.md#trust-one-installation-and-its-normal-updates).
+Do not infer consent from an existing strict pin. The following exact-fingerprint
+approval and recovery instructions apply to strict mode.
+
+Each strict-mode command returns a concise candidate card, an exact canonical target, a
 fingerprint, and `approval_command`. The operator checks the displayed vendor,
 path, SHA-256, size, owner, mode, device, inode, and ctime, then directly
 confirms whether to run that exact approval command after replacing
@@ -230,7 +239,7 @@ After both approvals, run `doctor` with the returned absolute paths:
 
 `doctor`, `claude-list`, `claude-preflight`, `claude-send`, `codex-send`, and
 product-assisted onboarding all fail before product I/O unless the resolved
-target has an unchanged active account approval. Pass the approved Claude path
+target has an active strict-file or selected-installation approval. Pass the approved Claude path
 explicitly to every live Claude command and the approved Codex path explicitly
 to every live Codex command. A `PATH` result is only a discovery candidate; it
 never makes a product executable eligible to run.
@@ -239,7 +248,7 @@ The full content hash is checked once per executable in a one-shot operation.
 The helper then rechecks the approval registry and the bound non-content file
 identity immediately before each product subprocess; if the registry changed,
 it is fully replayed before reuse. Path or fingerprint drift fails closed;
-a changed fingerprint at the same canonical path requires guarded replacement
+a changed fingerprint in strict mode at the same canonical path requires guarded replacement
 of its approval. If `product-discover` reports
 `replacement_approval_required`, follow its exact recovery sequence: inspect
 `product-status`; directly confirm the returned `product-revoke` command, which
@@ -252,7 +261,7 @@ replacement risk but cannot eliminate the final check-to-exec race.
 candidate fingerprint, vendor, and canonical path that guarded the operation.
 This is causal audit evidence, not proof of product authorship or trust.
 
-Approvals follow the canonical resolved target, not a `PATH` entry or symlink
+Strict approvals follow the canonical resolved target, not a `PATH` entry or symlink
 alias. If `PATH` starts selecting another executable, or an alias is retargeted,
 the old canonical-path approval remains visible history but does not approve the
 new target. Discover and directly approve the new target, then separately
@@ -271,7 +280,7 @@ Historical `grandfathered_roster` records remain readable and unchanged;
 already-approved, unchanged executables need no new confirmation or enrollment.
 
 The fingerprint covers the executable file and its canonical path metadata.
-Approval permits CAM to invoke that unchanged executable for product I/O. It
+Strict approval permits CAM to invoke that unchanged executable for product I/O. It
 does not cover dynamically loaded dependencies, authenticate the vendor or
 agent, authorize a message or workload action, or establish that the program
 is trustworthy.

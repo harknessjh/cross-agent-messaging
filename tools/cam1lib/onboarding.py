@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import product_approvals, profile, project, routing
+from . import product_approvals, product_installations, profile, project, routing
 from .enrollment import EnrollmentProposal
 from .protocol import CamUsageError
 
@@ -72,6 +72,9 @@ def _resolved_executable(value: str | None, *, vendor: str) -> tuple[str, str]:
 def resolve_product_executable(value: str, *, vendor: str) -> str:
     """Validate and canonicalize one explicitly selected product executable."""
 
+    installation = product_installations.resolve(vendor=vendor, product_bin=value)
+    if installation is not None:
+        return product_installations.selected_path(vendor, installation[0])
     resolved, _ = _resolved_executable(value, vendor=vendor)
     return resolved
 
@@ -238,6 +241,14 @@ def inspect_self(
     environ = os.environ if environment is None else environment
     canonical_session, session_source = _session_identifier(vendor, session_id, environ)
     executable, executable_source = _resolved_executable(product_bin, vendor=vendor)
+    # Verify from the operator's explicit selection before any product call;
+    # retain its stable launcher for the roster while launching canonical bytes.
+    try:
+        executable, _approval = product_approvals.require_approved_executable(
+            vendor=vendor, product_bin=product_bin, allow_path_lookup=False
+        )
+    except product_approvals.ProductApprovalError as error:
+        raise CamUsageError(error.code, error.detail) from error
     if vendor == "claude-code":
         discovered = _claude_agent_view(executable, canonical_session)
         if session_label is not None and session_label != discovered.product_name:
@@ -268,14 +279,6 @@ def inspect_self(
         observed_kind = discovered.kind
         discovery_source = f"{session_source}+claude_agent_view"
     else:
-        try:
-            product_approvals.require_approved_executable(
-                vendor="codex",
-                product_bin=executable,
-                allow_path_lookup=False,
-            )
-        except product_approvals.ProductApprovalError as error:
-            raise CamUsageError(error.code, error.detail) from error
         try:
             session_context = project.discover_git_context(
                 Path.cwd(), git_bin=binding.git_bin
@@ -318,7 +321,7 @@ def inspect_self(
         common_name=selected_common_name,
         display_name=selected_display_name,
         role=role,
-        product_executable=executable,
+        product_executable=product_installations.selected_path(vendor, executable),
         product_executable_source=executable_source,
     )
 

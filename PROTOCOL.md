@@ -89,6 +89,8 @@ Shell examples assume a POSIX environment such as macOS, Linux, or WSL. Other pl
   Git-bound CAM project; it is not a transport or authority source.
 - **Product-executable approval**: an account-scoped record that one exact
   canonical executable path and fingerprint is eligible for CAM product I/O.
+  Supporting readers MAY additionally accept an explicit installation approval
+  under the installation-trust profile below; it is not a per-release approval.
   It is neither session enrollment nor authority for a message or action.
 - **Operator**: a human responsible for a session. Sender and recipient may have different operators.
 - **Side effect**: any state change, code execution, network access, external communication, or irreversible action.
@@ -483,6 +485,11 @@ After that operator selection:
    Any approval establishes product-I/O eligibility only and MUST NOT be treated
    as session enrollment, message trust, action authority, or permission for
    workload work.
+   A reader supporting the optional installation-trust profile MAY instead
+   accept an operator-confirmed stable launcher and bounded installation root.
+   This is an explicit choice to trust that installation's updater. It MUST
+   NOT be inferred from an existing exact-file approval or roster entry.
+   That selection, not each future release, receives direct confirmation.
    The reference implementation additionally requires native Mach-O (macOS)
    or ELF (Linux) external product and Git entrypoints, checked canonical
    ownership/permissions, and supported local filesystem semantics. Script
@@ -540,14 +547,14 @@ commit. The roster path is only a participant association; the separate
 account approval controls product-I/O eligibility. The executable remains
 subject to fresh existence, fingerprint, account-ledger, capability, and
 live-source checks whenever it is used. Every live reference operation MUST
-receive an absolute path, verify an unchanged active approval before product
+receive an absolute path, verify an active approval under its selected mode before product
 I/O, and recheck the bound file identity immediately before each product
 subprocess. `PATH` resolution MUST NOT select a live target. A legacy null path
 is preserved for audit but is not live-ready until the exact executable is
 approved at account scope and a directly confirmed metadata event associates
 that absolute path with the participant.
 
-Product updates do not themselves change participant identity. A reader MAY
+In strict mode, product updates do not themselves change participant identity. A reader MAY
 provide read-only, participant-aware executable discovery that reports the
 recorded and candidate canonical paths and a revision-guarded metadata update
 command. It MUST NOT infer approval or mutate the roster as part of discovery.
@@ -556,6 +563,50 @@ remains independent and MUST NOT be revoked automatically. Updating only the
 executable association MUST preserve the existing session binding. The
 [product-update runbook](docs/PRODUCT_UPDATES.md) describes the reference flow
 for both supported vendors.
+
+### Optional local installation trust
+
+The reference implementation's persistent root identity combines the OS-reported
+filesystem identity, directory inode and owner. A mount's device number is
+operation-local evidence, not persistent installation identity. A change to that
+number during an operation MUST still refuse use; a new operation MUST verify the
+complete persistent identity before accepting any new device number. An unavailable
+or changed filesystem identity, inode or owner MUST NOT be ignored. Filesystem
+identifiers do not authenticate volumes and need not survive filesystem recreation.
+
+An installation approval MUST bind one explicit stable launcher, a canonical
+installation root and its directory identity. The launcher MUST be distinct
+from the canonical native target, so an old canonical roster path cannot opt in
+implicitly. The reference reader also rejects a launcher that appears as a
+canonical path in that vendor's retained strict-file approval history, including
+revoked approvals. Choose a different stable launcher for an explicit migration;
+do not remove history to reuse the old path.
+The operator explicitly trusts updates made through that selected
+installation; publisher authentication, malicious-update detection, release-channel
+verification and downgrade prevention are outside this local profile.
+
+The supporting reference reader stores installation approvals and guarded
+revocations separately in `~/CAM/Approvals/product-installations-v1.jsonl`, using
+[`cam-product-installation-approval-1.schema.json`](schemas/cam-product-installation-approval-1.schema.json).
+It MUST retain the existing strict-file ledger unchanged. Current users MUST NOT
+be migrated automatically. Selecting a stable launcher for a participant uses
+one directly confirmed metadata update or new enrollment, without changing session
+identity. Older readers without installation support cannot authorize this mode.
+
+For an explicitly selected installation, each new operation MAY resolve the
+launcher to a new native executable inside the same root without a new approval
+or roster event. It MUST check the root identity, containment, traversed alias
+parents and canonical native target permissions. It MUST NOT select a target
+by PATH, directory search or an envelope's instructions. The inspected target
+and fingerprint MUST be frozen within the operation; target, file or approval
+drift before a later subprocess MUST stop it without automatic retry. Revoking
+an installation MUST NOT silently fall back to a strict-file approval.
+
+The observed fingerprint MUST be recorded as operation evidence, not as a new
+human approval of that release. Successful probes or approvals do not authenticate
+the product, its dependencies, a message or an action. Interface compatibility
+checks remain mandatory. Uncertain installation-ledger appends MUST retain bytes
+and report reconciliation evidence. No automatic repair is permitted.
 
 A mutual challenge is optional reachability evidence, not a second enrollment
 or authentication layer. The reference quick start uses the confirmed roster
@@ -590,7 +641,7 @@ Nonces MUST be unpredictable, single-use, at least 128 bits, and short-lived. A 
 Before sending, the agent MUST:
 
 1. Pass the clean CAM source-profile gate, require an explicit absolute product
-   path, and verify that path's unchanged active account approval before any
+   path, and verify its active strict-file or selected-installation approval before any
    product subprocess. Resolve the Git-bound CAM project, verify its required journal, and rebuild
    current roster and lifecycle projections from that journal when needed.
 2. Resolve both the sender and intended recipient as active, bound project
@@ -707,6 +758,10 @@ path and fingerprint and a truthful direct-operator reference. `doctor` then
 uses only the explicit, actively approved absolute paths and performs the
 bounded version and capability probes. The detailed non-normative sequence is
 in [the transport guide](docs/CODEX_TO_CLAUDE.md#3-install-and-verify-the-reference-tools).
+Explicit installation discovery requires absolute launcher and root paths;
+its returned approval command instead binds the complete reviewed installation
+card. Later live commands use that stable selection and launch the inspected
+canonical target, never the alias itself.
 
 A Codex sender can normally obtain its callback UUID with:
 

@@ -247,6 +247,101 @@ class ExecutablePolicyTests(unittest.TestCase):
                     with self.assertRaises(OSError):
                         platform_policy.require_permission_filesystem(0)
 
+    def test_real_directory_identity_comes_from_checked_descriptor(self) -> None:
+        metadata, identity = policy.inspect_installation_directory(
+            self.base, include_filesystem_identity=True
+        )
+        self.assertEqual(metadata.st_ino, self.base.stat().st_ino)
+        self.assertTrue(
+            identity.startswith(
+                "darwin-volume:" if sys.platform == "darwin" else "linux-fsid:"
+            )
+        )
+
+    def test_darwin_volume_uuid_requires_complete_nonzero_reply(self) -> None:
+        for length, identifier, accepted in (
+            (20, bytes(range(16)), True),
+            (19, bytes(range(16)), False),
+            (20, bytes(16), False),
+        ):
+
+            def getattrlist(
+                fd, request, buffer, size, options, length=length, identifier=identifier
+            ):
+                attrs = ctypes.cast(
+                    request, ctypes.POINTER(platform_policy._DarwinAttrList)
+                ).contents
+                self.assertEqual((fd, size, options), (17, 20, 0))
+                self.assertEqual((attrs.bitmapcount, attrs.volattr), (5, 0x80040000))
+                payload = length.to_bytes(4, sys.byteorder) + identifier
+                ctypes.memmove(buffer, payload, len(payload))
+                return 0
+
+            with (
+                self.subTest(length=length, identifier=identifier),
+                mock.patch.object(platform_policy.sys, "platform", "darwin"),
+                mock.patch.object(
+                    platform_policy,
+                    "_darwin_libc",
+                    return_value=mock.Mock(fgetattrlist=getattrlist),
+                ),
+            ):
+                if accepted:
+                    self.assertEqual(
+                        platform_policy.filesystem_identity(17),
+                        "darwin-volume:" + identifier.hex(),
+                    )
+                else:
+                    with self.assertRaises(OSError):
+                        platform_policy.filesystem_identity(17)
+
+    def test_linux_filesystem_identity_is_typed_and_never_zero(self) -> None:
+        for fsid, accepted in (((0x11223344, -1), True), ((0, 0), False)):
+
+            def statfs(fd, pointer, fsid=fsid):
+                self.assertEqual(fd, 17)
+                metadata = ctypes.cast(
+                    pointer, ctypes.POINTER(platform_policy._LinuxStatFS)
+                ).contents
+                metadata.type = 0xEF53
+                metadata.fsid[:] = fsid
+                return 0
+
+            with (
+                self.subTest(fsid=fsid),
+                mock.patch.object(platform_policy.sys, "platform", "linux"),
+                mock.patch.object(
+                    platform_policy,
+                    "_linux_libc",
+                    return_value=mock.Mock(fstatfs=statfs),
+                ),
+            ):
+                if accepted:
+                    self.assertEqual(
+                        platform_policy.filesystem_identity(17),
+                        "linux-fsid:0000ef53:11223344ffffffff",
+                    )
+                else:
+                    with self.assertRaises(OSError):
+                        platform_policy.filesystem_identity(17)
+
+    def test_filesystem_identity_syscall_failures_are_not_guessed(self) -> None:
+        for platform, library, function in (
+            ("darwin", "_darwin_libc", "fgetattrlist"),
+            ("linux", "_linux_libc", "fstatfs"),
+        ):
+            with (
+                self.subTest(platform=platform),
+                mock.patch.object(platform_policy.sys, "platform", platform),
+                mock.patch.object(
+                    platform_policy,
+                    library,
+                    return_value=mock.Mock(**{function: mock.Mock(return_value=-1)}),
+                ),
+            ):
+                with self.assertRaises(OSError):
+                    platform_policy.filesystem_identity(17)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -70,6 +70,7 @@ _SOURCE_PATHS = {
     "tools.cam1lib.product_approval_recovery_evidence": "cam1lib/product_approval_recovery_evidence.py",
     "tools.cam1lib.product_approvals": "cam1lib/product_approvals.py",
     "tools.cam1lib.product_executables": "cam1lib/product_executables.py",
+    "tools.cam1lib.product_installations": "cam1lib/product_installations.py",
     "tools.cam1lib.project": "cam1lib/project.py",
     "tools.cam1lib.project_git": "cam1lib/project_git.py",
     "tools.cam1lib.protocol": "cam1lib/protocol.py",

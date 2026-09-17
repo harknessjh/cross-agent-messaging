@@ -29,11 +29,19 @@ from typing import Any
 
 if __package__:
     from . import cam1
-    from .cam1lib import product_approvals, project, routing, secure_fs, state
+    from .cam1lib import (
+        product_approvals,
+        product_installations,
+        project,
+        routing,
+        secure_fs,
+        state,
+    )
 else:  # Direct execution adds tools/ rather than the repo to sys.path.
     import cam1  # type: ignore[no-redef]
     from cam1lib import (  # type: ignore[no-redef]
         product_approvals,
+        product_installations,
         project,
         routing,
         secure_fs,
@@ -396,9 +404,9 @@ def doctor(
     required_arguments = (
         [
             "--claude-bin",
-            resolved_claude,
+            product_installations.selected_path("claude-code", resolved_claude),
             "--codex-bin",
-            resolved_codex,
+            product_installations.selected_path("codex", resolved_codex),
         ]
         if isinstance(resolved_claude, str) and isinstance(resolved_codex, str)
         else None

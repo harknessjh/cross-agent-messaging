@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
@@ -32,6 +33,53 @@ else:
 
 
 class ProductApprovalTests(ProductApprovalTestCase):
+    def test_strict_device_only_drift_names_field_without_reapproval(self) -> None:
+        self.approve()
+        registry = product_approvals.registry_path()
+        before = registry.read_bytes()
+        observed = self.discover()
+        fingerprint = replace(observed.fingerprint, dev=observed.fingerprint.dev + 2)
+        changed = replace(
+            observed,
+            fingerprint=fingerprint,
+            fingerprint_sha256=product_executables._candidate_digest(
+                observed.vendor, observed.canonical_path, fingerprint
+            ),
+        )
+        product_approvals.begin_operation()
+        with mock.patch.object(
+            product_approvals, "discover_candidate", return_value=changed
+        ):
+            with self.assertRaises(product_approvals.ProductApprovalError) as error:
+                product_approvals.require_approved_executable(
+                    vendor="claude-code", product_bin=str(self.executable)
+                )
+        self.assertEqual(error.exception.code, "product_approval.drift")
+        self.assertIn("changed fields: dev)", error.exception.detail)
+        self.assertEqual(registry.read_bytes(), before)
+
+    def test_cached_strict_device_drift_names_field_before_launch(self) -> None:
+        self.approve()
+        product_approvals.require_approved_executable(
+            vendor="claude-code", product_bin=str(self.executable)
+        )
+        observed = product_approvals._metadata_opened(self.executable.resolve())
+        observed["dev"] += 2
+        with mock.patch.object(
+            product_approvals, "_metadata_opened", return_value=observed
+        ):
+            for check in (
+                product_approvals.require_approved_executable,
+                product_approvals.require_approved_metadata,
+            ):
+                with self.subTest(check=check.__name__):
+                    with self.assertRaises(
+                        product_approvals.ProductApprovalError
+                    ) as error:
+                        check(vendor="claude-code", product_bin=str(self.executable))
+                    self.assertEqual(error.exception.code, "product_approval.drift")
+                    self.assertIn("changed fields: dev)", error.exception.detail)
+
     def test_discovery_approval_status_and_require_never_execute_candidate(
         self,
     ) -> None:

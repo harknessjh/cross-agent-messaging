@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import shlex
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,7 @@ from tools.cam1lib import (
     participants,
     product_approvals,
     product_executables,
+    product_installations,
     project,
     state,
 )
@@ -36,11 +38,12 @@ def _require_approved_product_executable(
             "participant has no operator-approved product executable; update its "
             "metadata before live transport",
         )
-    if supplied_path != approved:
+    selection = product_installations.selected_path(participant.vendor, supplied_path)
+    if selection != approved:
         raise TransportError(
             "roster.product_executable_mismatch",
             f"participant {participant.common_name!r} expects {approved!r}; "
-            f"supplied canonical executable is {supplied_path!r}. "
+            f"supplied executable selection is {selection!r} (target {supplied_path!r}). "
             "After a product update, run product-discover with --vendor and "
             "--participant to review approval and roster-update guidance; "
             "do not re-enroll the session",
@@ -125,7 +128,9 @@ def discover_product_executable(
     if participant is not None:
         assert binding is not None
         card["participant_update"] = _participant_update_guidance(
-            binding, participant, card["candidate"]["canonical_path"]
+            binding,
+            participant,
+            card.get("selection_path", card["candidate"]["canonical_path"]),
         )
     return card
 
@@ -180,6 +185,33 @@ def _participant_update_guidance(
 
 def _discover_product_card(*, vendor: str, product_bin: str | None) -> dict[str, Any]:
     try:
+        # Discovery alone may inspect PATH. Live callers must pass the explicit
+        # stable launcher or strict canonical path returned by the card.
+        explicit = product_bin
+        if explicit is None:
+            command = product_executables.PRODUCT_COMMANDS.get(vendor)
+            explicit = shutil.which(command) if command is not None else None
+        installation = (
+            product_installations.resolve(vendor=vendor, product_bin=explicit)
+            if explicit is not None
+            else None
+        )
+        if installation is not None:
+            canonical, evidence = installation
+            return {
+                "ok": True,
+                "status": "installation_approved",
+                "candidate": {
+                    "vendor": vendor,
+                    "canonical_path": canonical,
+                    "fingerprint": evidence["fingerprint"],
+                    "fingerprint_sha256": evidence["fingerprint_sha256"],
+                    "source": "explicit_installation",
+                },
+                "selection_path": evidence["selection"]["launcher"],
+                "installation_approval": evidence,
+                "next_step": "Use selection_path for onboarding, participant metadata and live commands. Normal in-root updates need no new approval or roster change. The observed fingerprint is not a separate release approval.",
+            }
         card = product_executables.candidate_card(
             product_executables.discover_candidate(vendor, product_bin)
         )
@@ -323,3 +355,33 @@ def begin_operation() -> None:
     """Start one operation-local product-approval attestation scope."""
 
     product_approvals.begin_operation()
+
+
+def installation_command(args: Any) -> dict[str, Any]:
+    """Dispatch non-executing installation policy commands behind the source gate."""
+
+    operation = args.command.removeprefix("product-installation-")
+    fields = {
+        "discover": ("vendor", "launcher", "installation_root"),
+        "approve": (
+            "vendor",
+            "launcher",
+            "installation_root",
+            "expected_card_sha256",
+            "operator_reference",
+        ),
+        "revoke": (
+            "vendor",
+            "launcher",
+            "approval_record_id",
+            "expected_policy_sha256",
+            "operator_reference",
+        ),
+        "status": (),
+    }
+    try:
+        return getattr(product_installations, operation)(
+            **{name: getattr(args, name) for name in fields[operation]}
+        )
+    except product_approvals.ProductApprovalError as error:
+        raise TransportError(error.code, error.detail, audit=error.audit) from error

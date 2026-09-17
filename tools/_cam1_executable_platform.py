@@ -63,6 +63,18 @@ class _LinuxStatFS(ctypes.Structure):
     ]
 
 
+class _DarwinAttrList(ctypes.Structure):
+    _fields_ = [
+        ("bitmapcount", ctypes.c_uint16),
+        ("reserved", ctypes.c_uint16),
+        ("commonattr", ctypes.c_uint32),
+        ("volattr", ctypes.c_uint32),
+        ("dirattr", ctypes.c_uint32),
+        ("fileattr", ctypes.c_uint32),
+        ("forkattr", ctypes.c_uint32),
+    ]
+
+
 @lru_cache(maxsize=1)
 def _linux_libc() -> ctypes.CDLL:
     if ctypes.sizeof(ctypes.c_long) != 8 or os.uname().machine not in (
@@ -107,6 +119,16 @@ def _darwin_libc() -> ctypes.CDLL:
             ctypes.c_int,
         ),
         "fstatfs64": ([ctypes.c_int, ctypes.POINTER(_DarwinStatFS)], ctypes.c_int),
+        "fgetattrlist": (
+            [
+                ctypes.c_int,
+                ctypes.POINTER(_DarwinAttrList),
+                ctypes.c_void_p,
+                ctypes.c_size_t,
+                ctypes.c_uint32,
+            ],
+            ctypes.c_int,
+        ),
     }
     for name, (arguments, result) in signatures.items():
         function = getattr(lib, name)
@@ -117,6 +139,38 @@ def _darwin_libc() -> ctypes.CDLL:
 def _check(result: int) -> None:
     if result != 0:
         raise OSError(ctypes.get_errno(), "executable permission inspection failed")
+
+
+def filesystem_identity(fd: int) -> str:
+    """Inspect the opened filesystem, never infer its identity from st_dev.
+
+    Darwin exposes a persistent volume UUID. Linux's opaque fsid may change
+    with filesystem/kernel behavior; such a change is still a refusal. Neither
+    identifier authenticates a volume or detects a deliberately cloned volume.
+    """
+
+    if sys.platform == "darwin":
+        request = _DarwinAttrList(bitmapcount=5, volattr=0x80040000)
+        # ATTR_VOL_INFO | ATTR_VOL_UUID; a uint32 byte count then 16 UUID bytes.
+        buffer = ctypes.create_string_buffer(20)
+        _check(
+            _darwin_libc().fgetattrlist(
+                fd, ctypes.byref(request), buffer, len(buffer), 0
+            )
+        )
+        if int.from_bytes(buffer.raw[:4], sys.byteorder) != 20 or not any(
+            buffer.raw[4:]
+        ):
+            raise OSError("installation volume UUID is unavailable or malformed")
+        return "darwin-volume:" + buffer.raw[4:].hex()
+    if sys.platform == "linux":
+        metadata = _LinuxStatFS()
+        _check(_linux_libc().fstatfs(fd, ctypes.byref(metadata)))
+        if not any(metadata.fsid):
+            raise OSError("installation filesystem identity is unavailable")
+        identifier = "".join(f"{value & 0xFFFFFFFF:08x}" for value in metadata.fsid)
+        return f"linux-fsid:{metadata.type & 0xFFFFFFFF:08x}:{identifier}"
+    raise OSError("installation identity supports macOS and Linux only")
 
 
 def _trusted_acl_principal(lib: ctypes.CDLL, entry: ctypes.c_void_p) -> bool:

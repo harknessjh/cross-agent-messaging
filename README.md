@@ -30,13 +30,15 @@ The journal makes conversations reviewable by the human operator. Product
 transports still control delivery, and a transport receipt remains distinct
 from recipient handling or completed work.
 
-Before CAM invokes Codex or Claude Code, a non-executing discovery step
-binds the exact product path and fingerprint to a direct, account-scoped
-operator approval. That approval is reused across projects while the executable
-remains unchanged; it authorizes only CAM's use of that executable, not a
-message body or project action. A legacy roster path alone cannot approve the
-bytes currently installed there. Historical approvals remain readable and
-unchanged, but missing approvals require the normal candidate-card confirmation.
+Before CAM invokes Codex or Claude Code, the operator approves either an exact
+executable (strict mode) or one stable launcher and its installation directory
+(installation mode). The latter trusts that installation's normal updates, so
+each release no longer needs a fresh approval or roster edit. Native-format,
+location and operation-local drift checks still apply. Neither choice approves
+a message body or project action. Existing strict pins remain unchanged until
+the operator opts in. See [product trust and updates](docs/PRODUCT_UPDATES.md).
+A legacy roster path alone cannot approve the bytes installed there or opt a
+participant into installation trust. Historical approvals remain readable.
 
 ## How messages travel
 
@@ -161,8 +163,8 @@ authority.
 - installed native Codex, Claude Code, and Git executables (symlinks to native
   targets are supported; shell, Node, and Python launcher scripts are not);
 - one independent session from each product on the same host and user account;
-- an active account approval for each unchanged product executable fingerprint;
-  new approvals require direct candidate-card confirmation; and
+- an active account approval for each selected installation or strict executable
+  fingerprint; new approvals require direct candidate-card confirmation; and
 - human confirmation of each session's enrollment identity card.
 
 The target project does not need an initial commit. Start each agent inside the
@@ -193,7 +195,9 @@ CAM adds no files to the application worktree. It stores:
 
 The approval ledger is not a project journal. It records which unchanged local
 product executables CAM may invoke and is reused across Git projects under the
-same operating-system account.
+same operating-system account. Optional installation trust uses the separate
+`~/CAM/Approvals/product-installations-v1.jsonl` ledger. Normal updates do not
+rewrite either ledger or the project roster.
 
 If an interrupted approval-ledger append leaves one incomplete EOF fragment,
 `product-recovery-status` can inspect it without mutation. Only the separately
