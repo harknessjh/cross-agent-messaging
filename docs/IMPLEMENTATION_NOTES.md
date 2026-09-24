@@ -182,6 +182,27 @@ Direct child-process stdio through the MCP SDK avoids the terminal canonical
 line-buffering and shell-quoting failures observed with hand-written long
 JSON-RPC lines.
 
+The helper parses a Claude send receipt before exiting the MCP client context.
+Once a valid success receipt is known, a later cleanup error or timeout produces
+the usual `transport_accepted` result with a bounded `post_send_cleanup`
+diagnostic, also recorded with the acceptance. Raw exception text is not copied
+into that diagnostic. For MCP cleanup failures, the class identifies the
+wrapped cause (for example, `OSError` or `ExceptionGroup`); an overall timeout
+remains `TimeoutError`. An unsuccessful, malformed, or missing receipt is never
+promoted to acceptance by this path.
+
+Cancellation and interruption still propagate. When the project adapter has
+already captured acceptance, it attempts synchronous outcome finalization first;
+a recording failure remains explicit with the known receipt ID in an exception
+note and, for recognized CAM errors, the chained error's audit. Ordinary
+unexpected recording exceptions do not replace the original interruption.
+Under `asyncio.run`, the first SIGINT cancels the coroutine; the resulting
+`KeyboardInterrupt` retains that cancellation and its note as exception context.
+This is not a guarantee against a second interruption, process death, or failed
+storage. It adds no retry or reconciliation loop. Synthetic regression coverage includes
+cleanup errors, exception groups, timeouts, cancellation, and journal failures;
+it does not establish how frequently a real vendor client encounters them.
+
 ## 4. Codex callback behavior
 
 In the tested build, `codex queue` sends but does not expose a supported
@@ -208,6 +229,11 @@ A callback did not reliably interrupt a long active Codex turn. CAM/1 therefore
 does not inspect an internal queue database or poll a transcript as a receive
 workaround. The sender yields and the operator checks the target session if a
 reply remains absent.
+
+Codex queue timeout handling is unchanged by Claude receipt preservation. A
+timed-out process remains an unknown outcome; partial stdout is not treated as
+proven acceptance. Preserving and qualifying that evidence requires a separate
+reproduction and receipt-contract review.
 
 Claude peer activity is scheduling state, not a receipt. A local `busy` peer
 remains addressable and can accept a send, but `busy` does not prove that the

@@ -21,6 +21,11 @@ collaboration guidance. These are local reference-profile and documentation
 changes, not CAM/1.1 or a wire-format change. Envelopes continue to declare
 `"protocol":"CAM/1"`, and the core wire schema is unchanged.
 
+Receipt-preservation clarification (2026-09-24): section 11 makes explicit
+that the existing requirement to preserve a parsed send receipt also applies
+when subsequent client cleanup fails. It describes local diagnostics and
+interruption evidence, without changing wire fields or retry permissions.
+
 ## 1. Purpose
 
 This document defines a same-host messaging profile for Codex and Claude Code agents that need to exchange messages with:
@@ -1045,6 +1050,26 @@ CAM/1 envelope. No separate human approval of the short ref is required:
 The client MUST inspect both JSON-RPC errors and MCP tool results marked as errors. It MUST preserve the returned send receipt.
 
 Every `tools/call` send MUST produce a parsed result with the expected JSON-RPC `id` before it is recorded as accepted. In the reference Claude transport, acceptance additionally requires a non-error MCP result whose direct result object contains `success:true` and a canonical UUID `msg_id`; `success:false`, conflicting result objects, or a missing `msg_id` fails closed. No result means no proven transport receipt, even if a shorter message worked earlier. If the bridge becomes unresponsive, terminate only the bridge process that this client started and create a fresh process for later operations. Repeat initialization and `ListAgents`, but do not resend an unknown prior call; section 16 permits the reference adapter to retry only when the journal proves dispatch was not attempted. Agent addresses and initialization state MUST NOT be assumed to survive a bridge restart.
+
+Once that receipt is validated, a later MCP client-cleanup failure or timeout
+MUST NOT erase the known transport acceptance. The reference helper retains
+`status: transport_accepted` and the receipt ID, with an optional bounded
+`post_send_cleanup` diagnostic (`code`, `error_class`) in its local result and
+`transport.accepted` journal record. This diagnostic is not a wire-envelope
+field, a delivery receipt, or permission to retry. An invalid or negative send
+receipt remains a failure even if cleanup also fails.
+
+Caller cancellation or interruption after a validated receipt is not converted
+into an ordinary successful return. The reference project adapter first attempts
+to record the known acceptance synchronously, then propagates the interruption.
+If outcome recording fails, it attempts to retain the receipt ID in a bounded
+note on the original exception; recognized CAM recording failures also carry
+the receipt in the chained `TransportError` audit. With `asyncio.run`'s first
+SIGINT handling, the note is on the `CancelledError` chained as the resulting
+`KeyboardInterrupt`'s context. The caller MUST NOT resend. An interruption
+before a receipt, abrupt process termination, or another interruption during
+recording may leave an uncertain
+or orphaned intent. These cases do not establish non-delivery or permit retry.
 
 The envelope's `recipient.session_id` MUST equal the selected full Claude
 session UUID. The fresh `name [ref]` is an ephemeral route for this one send and

@@ -536,7 +536,7 @@ def _acceptance_attributes(
     lifecycle_state_committed: bool,
     observed_at: str,
 ) -> dict[str, Any]:
-    return {
+    attributes = {
         "intent_record_id": intent_record["record_id"],
         "participant_id": attempt.participant_id,
         "message_id": result["message_id"],
@@ -546,6 +546,9 @@ def _acceptance_attributes(
         "lifecycle_state_committed": lifecycle_state_committed,
         "observed_at": observed_at,
     }
+    if "post_send_cleanup" in result:
+        attributes["post_send_cleanup"] = dict(result["post_send_cleanup"])
+    return attributes
 
 
 def _accepted_state_incomplete_error(
