@@ -439,6 +439,25 @@ async def send_project_claude(
     def before_dispatch() -> None:
         attempt.dispatch_started = True
 
+    accepted_result: dict[str, Any] | None = None
+
+    def on_accepted(result: dict[str, Any]) -> None:
+        # The native client calls this synchronously before MCP teardown. Keep
+        # the same result so cancellation cannot discard a known receipt.
+        nonlocal accepted_result
+        accepted_result = result
+
+    def finalize_accepted(result: dict[str, Any]) -> dict[str, Any]:
+        try:
+            with project.project_transaction(binding) as transaction:
+                return _finalize_accepted_attempt(
+                    binding, store, transaction, attempt, result
+                )
+        except (project.ProjectError, OSError) as lock_error:
+            raise _post_attempt_lock_failure(
+                attempt, accepted=True, result=result
+            ) from lock_error
+
     try:
         result = await _send_to_claude(
             claude_bin=claude_bin,
@@ -450,6 +469,7 @@ async def send_project_claude(
             timeout_seconds=timeout_seconds,
             before_send=before_send,
             before_dispatch=before_dispatch,
+            on_accepted=on_accepted,
         )
     except TransportError as error:
         if attempt.intent_record is not None:
@@ -468,21 +488,35 @@ async def send_project_claude(
                     original_error=error,
                 ) from lock_error
         raise
-    try:
-        with project.project_transaction(binding) as transaction:
-            return _finalize_accepted_attempt(
-                binding,
-                store,
-                transaction,
-                attempt,
-                result,
+    except BaseException as interrupted:
+        # In particular, do not swallow caller cancellation or KeyboardInterrupt.
+        # Once acceptance is known, settle it synchronously before propagating
+        # the interruption. No await, resend, or outcome-repair loop is involved.
+        if accepted_result is not None:
+            accepted_result["post_send_cleanup"] = {
+                "code": "claude.send_interrupted",
+                "error_class": type(interrupted).__name__[:80],
+            }
+            receipt_id = _transport_receipt_identifier(accepted_result)
+            try:
+                finalize_accepted(accepted_result)
+            except Exception as outcome_error:
+                outcome_code = (
+                    outcome_error.code
+                    if isinstance(outcome_error, TransportError)
+                    else type(outcome_error).__name__[:80]
+                )
+                interrupted.add_note(
+                    f"CAM transport accepted receipt {receipt_id}; "
+                    f"outcome recording failed ({outcome_code}); do not resend."
+                )
+                raise interrupted from outcome_error
+            interrupted.add_note(
+                f"CAM transport accepted receipt {receipt_id}; "
+                "acceptance journaled; do not resend."
             )
-    except (project.ProjectError, OSError) as lock_error:
-        raise _post_attempt_lock_failure(
-            attempt,
-            accepted=True,
-            result=result,
-        ) from lock_error
+        raise
+    return finalize_accepted(result)
 
 
 def send_project_codex(

@@ -1001,6 +1001,7 @@ async def _send_to_claude(
     timeout_seconds: float,
     before_send: Callable[[ValidatedEnvelope, routing.ClaudeRoute], None],
     before_dispatch: Callable[[], None],
+    on_accepted: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Resolve a full session UUID and send to its fresh local peer route."""
 
@@ -1011,6 +1012,8 @@ async def _send_to_claude(
         summary if summary is not None else _default_summary(envelope)
     )
     claude_bin = _resolve_binary(claude_bin, label="claude")
+    accepted_result: dict[str, Any] | None = None
+    receipt_error: TransportError | None = None
     try:
         async with asyncio.timeout(timeout_seconds):
             _require_product_metadata(claude_bin, label="claude")
@@ -1087,28 +1090,64 @@ async def _send_to_claude(
                     tool_name="SendMessage",
                     arguments=send_arguments,
                 )
-    except TimeoutError as error:
-        raise TransportError(
-            "claude.timeout", "Claude send exceeded the overall timeout"
-        ) from error
-    transport_message_id = _accepted_claude_message_id(response)
-    result = {
-        "ok": True,
-        "status": "transport_accepted",
-        "application_ack": False,
-        "local_only": True,
-        "target": transport_address,
-        "target_ref": peer.ref,
-        "message_id": envelope["message_id"],
-        "transport_message_id": transport_message_id,
-        "mcp_protocol": response.protocol_version,
-        "notify_when_idle_requested": notify_when_idle,
-        "transport_receipt": response.receipt(),
-        "product_executable_approval": product_approval,
-    }
-    result["target_session_id"] = selected.session_id
-    result["target_agent_view_id"] = selected.agent_view_id
-    return result
+                # Retain proven acceptance before the next await (client exit).
+                # A later cleanup failure cannot undo this product receipt.
+                try:
+                    transport_message_id = _accepted_claude_message_id(response)
+                except TransportError as error:
+                    receipt_error = error
+                    raise
+                accepted_result = {
+                    "ok": True,
+                    "status": "transport_accepted",
+                    "application_ack": False,
+                    "local_only": True,
+                    "target": transport_address,
+                    "target_ref": peer.ref,
+                    "message_id": envelope["message_id"],
+                    "transport_message_id": transport_message_id,
+                    "mcp_protocol": response.protocol_version,
+                    "notify_when_idle_requested": notify_when_idle,
+                    "product_executable_approval": product_approval,
+                    "target_session_id": selected.session_id,
+                    "target_agent_view_id": selected.agent_view_id,
+                }
+                if on_accepted is not None:
+                    on_accepted(accepted_result)
+                accepted_result["transport_receipt"] = response.receipt()
+    except (TimeoutError, TransportError) as error:
+        # Keep an explicit invalid/negative receipt ahead of a cleanup failure
+        # that masks it. Never manufacture acceptance from a completed call.
+        if receipt_error is not None:
+            if receipt_error is error:
+                raise
+            raise receipt_error from error
+        if isinstance(error, TimeoutError):
+            transport_error = TransportError(
+                "claude.timeout", "Claude send exceeded the overall timeout"
+            )
+        else:
+            transport_error = error
+        if accepted_result is None:
+            if transport_error is error:
+                raise
+            raise transport_error from error
+        # MCP wraps the cleanup exception. Report its class, not its text;
+        # leave an overall TimeoutError classified as a timeout, rather than
+        # exposing the CancelledError that asyncio uses to implement it.
+        cleanup_error = (
+            error.__cause__
+            if isinstance(error, TransportError)
+            and error.code == "claude.mcp_failure"
+            and error.__cause__ is not None
+            else error
+        )
+        accepted_result["post_send_cleanup"] = {
+            "code": transport_error.code,
+            "error_class": type(cleanup_error).__name__[:80],
+        }
+    assert accepted_result is not None
+    return accepted_result
 
 
 def _canonical_uuid(value: str, *, label: str) -> str:
