@@ -31,6 +31,137 @@ else:
 
 
 class ProjectTransportLifecycleTests(ProjectBoundTransportTestCase):
+    def test_expired_not_attempted_reply_can_be_rebuilt_with_fresh_identity(
+        self,
+    ) -> None:
+        self._check_rebuilt_expired_reply("not_attempted")
+
+    def test_expired_unknown_reply_still_reserves_slot_against_fresh_identity(
+        self,
+    ) -> None:
+        self._check_rebuilt_expired_reply("unknown")
+
+    def test_expired_orphaned_reply_still_reserves_slot_against_fresh_identity(
+        self,
+    ) -> None:
+        self._check_rebuilt_expired_reply(None)
+
+    def _check_rebuilt_expired_reply(self, delivery_state: str | None) -> None:
+        self.add_codex_participant()
+        self.add_claude_participant()
+        now = dt.datetime.now(dt.UTC)
+        root_time = now - dt.timedelta(minutes=5)
+        root = cam1.build_request(
+            sender_vendor="codex",
+            sender_name="example-coordinator",
+            sender_session=CODEX_THREAD,
+            recipient_vendor="claude-code",
+            recipient_name="local-worker",
+            recipient_session=CLAUDE_SESSION,
+            reply_transport="codex_queue",
+            reply_address=CODEX_THREAD,
+            risk_class="informational",
+            operation="review_structure",
+            intent="Request one local structure review",
+            body="Review the project structure without making changes.",
+            authorization_basis="none",
+            expires_in=120,
+            now=root_time,
+        )
+        sender = {
+            "sender_vendor": "claude-code",
+            "sender_name": "local-worker",
+            "sender_session": CLAUDE_SESSION,
+            "reply_transport": "claude_send_message",
+            "reply_address": CLAUDE_SESSION,
+        }
+        accepted_time = root_time + dt.timedelta(seconds=1)
+        accepted = cam1.build_ack(
+            root, **sender, status_value="accepted", now=accepted_time
+        )
+        store = state.StateStore(self.binding)
+        store.lifecycle_root(root, now=root_time)
+        store.lifecycle_reply(accepted, now=accepted_time)
+        stale_time = root_time + dt.timedelta(seconds=30)
+        stale = cam1.build_result(
+            root, **sender, body="Review complete.", expires_in=60, now=stale_time
+        )
+        stale_message = json.loads(stale)
+        # Seed only audit evidence, not a committed result or a product send.
+        intent = journal.append_record(
+            self.binding,
+            event_type="message.outbound.intent",
+            exact_message=stale,
+            attributes={"message_id": stale_message["message_id"]},
+            now=stale_time,
+        )
+        if delivery_state is not None:
+            journal.append_record(
+                self.binding,
+                event_type="transport.not_accepted",
+                attributes={
+                    "intent_record_id": intent["record_id"],
+                    "delivery_state": delivery_state,
+                },
+                now=stale_time + dt.timedelta(seconds=1),
+            )
+        with self.assertRaises(cam1.CamValidationError):
+            cam1.validate_exact_bytes(stale, against_raw=root, now=now)
+
+        fresh = cam1.build_result(root, **sender, body="Review complete.", now=now)
+        fresh_message = json.loads(fresh)
+        self.assertNotEqual(fresh_message["message_id"], stale_message["message_id"])
+        self.assertNotEqual(
+            fresh_message["action"]["idempotency_key"],
+            stale_message["action"]["idempotency_key"],
+        )
+        self.assertEqual(fresh_message["in_reply_to"], stale_message["in_reply_to"])
+        cam1.validate_exact_bytes(fresh, against_raw=root, now=now)
+        root_path = self.private_envelope("fresh-reply-root.json", root)
+        fresh_path = self.private_envelope("fresh-reply.json", fresh)
+        marker = self.base / "fresh-reply-called"
+        self.approved_codex_bin.write_text(
+            f"#!{sys.executable}\nfrom pathlib import Path\n"
+            f"with Path({str(marker)!r}).open('a') as stream: stream.write('called\\n')\n"
+            "print('Queued message 00000000-0000-4000-8000-000000000903 "
+            f"for thread {CODEX_THREAD}.')\n",
+            encoding="utf-8",
+        )
+        self.approved_codex_bin.chmod(0o700)
+        result = self.run_transport(
+            "codex-send",
+            "--participant",
+            "example-coordinator",
+            "--envelope",
+            str(fresh_path),
+            "--against",
+            str(root_path),
+            codex_bin=self.approved_codex_bin,
+        )
+        intents = [
+            record
+            for record in journal.replay_records(self.binding)
+            if record["event_type"] == "message.outbound.intent"
+        ]
+        self.assertEqual(journal.decode_exact_message(intents[0]), stale)
+        if delivery_state == "not_attempted":
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["status"], "transport_accepted")
+            self.assertEqual(payload["lifecycle"]["state"], "completed")
+            self.assertEqual(marker.read_text().splitlines(), ["called"])
+            self.assertEqual(len(intents), 2)
+            self.assertEqual(journal.decode_exact_message(intents[1]), fresh)
+            self.assertIsNone(intents[1]["attributes"].get("retry_after_intent"))
+        else:
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertEqual(
+                json.loads(result.stderr)["error"]["code"],
+                "transport.reply_transition_reserved",
+            )
+            self.assertFalse(marker.exists())
+            self.assertEqual(len(intents), 1)
+
     def test_claude_root_to_codex_reply_returns_through_project_claude_send(
         self,
     ) -> None:

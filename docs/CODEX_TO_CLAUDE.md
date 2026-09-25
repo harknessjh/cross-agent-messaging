@@ -1209,7 +1209,8 @@ Operational recovery rules:
   identical envelope to be tried again only when `--retry-after-intent` names
   the latest exact journal intent. Product errors, nonzero exits, rejection,
   accepted, unknown, orphaned, superseded, and older attempts are
-  non-retriable.
+  non-retriable. For an expired reply with a conclusive `not_attempted`
+  outcome, see [reply transport recovery](#reply-transport-recovery) below.
 - **Callback is not visible:** finish and yield. Do not read internal Codex
   queue databases or repeatedly message the peer.
 - **Receiver holds or rejects:** honor the result and ask the operator in that
@@ -1222,3 +1223,20 @@ Every message remains subject to each session's own instructions, permissions,
 and operator authorization. A future advisory moderator may inspect journal
 appends, but automatic moderation and execution are deliberately deferred from
 this release.
+
+### Reply transport recovery
+
+For the [close-the-loop duty](CONTINUING_COLLABORATION.md#close-the-loop-on-requested-work), use the actual transport outcome, not missing peer feedback, to decide what is safe. These are replies to an existing preserved root, not renewal of the requested work.
+
+| Recorded outcome | Next step |
+| --- | --- |
+| Confirmed failure before any outbound intent | Tell the operator the reply is unsent. Once the blocker clears, a fresh preflight/send may be attempted at the next natural turn or operator prompt, within existing permission. If the unsent envelope expired, build and validate a new reply against the same preserved root, checking its current lifecycle. |
+| Latest intent conclusively `not_attempted` | If the payload is still fresh, retry it with `--retry-after-intent` naming the latest exact intent, using identical still-fresh bytes and all normal checks. If it has expired, build and validate a new reply against the same preserved root, checking its current lifecycle. Use a new message ID and idempotency key from the typed builder, without `--retry-after-intent`: this is a new reply, not a retry. |
+| `transport_accepted` | Do not resend the accepted message. Acceptance satisfies the send step, not proof of delivery, handling, or the reported work's correctness. A later legal lifecycle reply is distinct from resending. |
+| Unknown, orphaned, or otherwise unresolved outcome | Preserve the evidence and tell the operator the outcome is unknown, not unsent. Do not retry, rebuild a competing reply, or dispatch another lifecycle reply for that root while its reply slot is reserved. |
+
+An error code alone does not prove that no intent was recorded. To establish a pre-intent failure, check the complete verified journal history for the attempted message ID: there must be no outbound intent for it. Absence from a truncated `journal tail`, or missing `intent_record` / `delivery_state` fields in command output, is not proof. If an intent exists, follow its linked recorded outcome; if that evidence is unavailable or ambiguous, stop and report the uncertainty. A new message ID never bypasses an unresolved reply slot for the same root.
+
+Product rejection and nonzero exits are not retry permission; follow the [reference adapter's retry rules](../PROTOCOL.md#16-replay-ordering-and-retries). If a reply was transport-accepted and later held or refused by the receiving product, it is not a pre-dispatch failure. Do not assume a later hold/refusal notice will reach the sending agent; it may be visible only to the receiving operator. Report only evidence you actually have. The receiving operator resolves the hold or policy; do not resend through a different route to evade it.
+
+Attempt recovery at a natural turn or operator prompt, not on a retry timer. Never bypass a failed gate to close the loop.

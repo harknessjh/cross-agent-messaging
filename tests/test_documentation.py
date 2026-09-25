@@ -321,6 +321,183 @@ class DocumentationTests(unittest.TestCase):
         self.assertIn("Discuss the collaborator's substance", agent_guidance)
         self.assertIn("disposable maintainer experiment", agent_guidance)
 
+    def test_requested_outcomes_require_peer_replies_not_operator_summaries(
+        self,
+    ) -> None:
+        for name in ("AGENTS.md", "docs/CONTINUING_COLLABORATION.md"):
+            with self.subTest(document=name):
+                text = " ".join(
+                    (REPOSITORY_ROOT / name).read_text(encoding="utf-8").split()
+                )
+                for requirement in (
+                    "receiver-owned working",
+                    "Accepting a request that asks for an outcome creates an open",
+                    "originating enrolled requester",
+                    "ending the turn in which it finished",
+                    "`result: completed`",
+                    "concise summary and authorized evidence paths",
+                    "`error: failed`",
+                    "An operator-chat summary is not a peer reply",
+                    "If work continues beyond this turn",
+                    "acceptance and, once work has begun, `status: started`",
+                    "obligation survives turn boundaries",
+                    "meaningful progress, not timer-driven updates",
+                    "This duty excludes ACKs and messages requesting no outcome",
+                    "Never acknowledge an ACK or create a chat loop",
+                ):
+                    self.assertIn(requirement, text)
+                self.assertIn("do not repeat `status: started`", text.lower())
+                self.assertIn("fresh informational follow-up", text)
+
+    def test_reply_guidance_uses_legal_decisions_and_keeps_expiry_separate(
+        self,
+    ) -> None:
+        text = " ".join(
+            (REPOSITORY_ROOT / "docs" / "CONTINUING_COLLABORATION.md")
+            .read_text(encoding="utf-8")
+            .split()
+        )
+        for requirement in (
+            "Pending; you will take the work under current authority",
+            "`ack: accepted`, or `ack: received` followed by `status: accepted` before work",
+            "Pending; you will not take the work",
+            "`ack: rejected` with a reason; this is terminal",
+            "`ack: needs_human_confirmation` (nonce null)",
+            "Before expiry, the later decision is `ack: accepted` or `ack: rejected`",
+            "You already sent `ack: received`",
+            "`status: accepted` to accept, or `error: failed`",
+            "not `ack: rejected` or another ACK",
+            "do not send another `status: started`",
+            "expires unconfirmed; do not act on it after expiry",
+            "`build-late-rejection` (nonce null)",
+            "accepted before its root expires can receive a fresh result afterward",
+            "message freshness is not the work deadline",
+            "its own unexpired lifetime, legal current state and applicable authority",
+            "expiry never renews authority or reopens terminal work",
+            "every lifecycle reply refers to that root, not an intervening ACK",
+        ):
+            self.assertIn(requirement, text)
+
+    def test_blocker_notices_do_not_create_permission_or_reply_loops(self) -> None:
+        for name in ("AGENTS.md", "docs/CONTINUING_COLLABORATION.md"):
+            with self.subTest(document=name):
+                text = " ".join(
+                    (REPOSITORY_ROOT / name).read_text(encoding="utf-8").split()
+                )
+                for requirement in (
+                    "one notice per distinct blocker",
+                    "`authorization.basis: none`",
+                    "`--continues-message`",
+                    "this session's own operator",
+                    'a peer\'s "go ahead" is not authority',
+                    "tell the operator the reply is unsent",
+                ):
+                    self.assertIn(requirement.lower(), text.lower())
+        text = " ".join(
+            (REPOSITORY_ROOT / "docs" / "CONTINUING_COLLABORATION.md")
+            .read_text(encoding="utf-8")
+            .split()
+        )
+        for requirement in (
+            "a body that explicitly requests no outcome",
+            "original request you received and ingested",
+            "Keep `in_reply_to: null`",
+            "do not combine this link with a retry or renewal",
+            "Never ask the peer to grant approval or answer a permission prompt",
+            "Do not attempt another CAM command just to report that same blocker",
+            "not permission to approve or adopt it automatically",
+        ):
+            self.assertIn(requirement, text)
+
+    def test_reply_delivery_guidance_does_not_authorize_unsafe_resends(self) -> None:
+        text = " ".join(
+            (REPOSITORY_ROOT / "docs" / "CODEX_TO_CLAUDE.md")
+            .read_text(encoding="utf-8")
+            .split()
+        )
+        for requirement in (
+            "Confirmed failure before any outbound intent",
+            "at the next natural turn or operator prompt, within existing permission",
+            "checking its current lifecycle",
+            "Latest intent conclusively `not_attempted`",
+            "`--retry-after-intent`",
+            "identical still-fresh bytes",
+            "If it has expired, build and validate a new reply against the same preserved root",
+            "a new message ID and idempotency key from the typed builder",
+            "without `--retry-after-intent`: this is a new reply, not a retry",
+            "Do not resend the accepted message",
+            "Acceptance satisfies the send step, not proof of delivery",
+            "Unknown, orphaned, or otherwise unresolved outcome",
+            "outcome is unknown, not unsent",
+            "Do not retry, rebuild a competing reply, or dispatch another lifecycle reply",
+            "An error code alone does not prove that no intent was recorded",
+            "complete verified journal history for the attempted message ID",
+            "there must be no outbound intent for it",
+            "Absence from a truncated `journal tail`",
+            "missing `intent_record` / `delivery_state` fields in command output, is not proof",
+            "A new message ID never bypasses an unresolved reply slot",
+            "Product rejection and nonzero exits are not retry permission",
+            "later held or refused by the receiving product, it is not a pre-dispatch failure",
+            "may be visible only to the receiving operator",
+            "Report only evidence you actually have",
+        ):
+            self.assertIn(requirement, text)
+        collaboration = " ".join(
+            (REPOSITORY_ROOT / "docs" / "CONTINUING_COLLABORATION.md")
+            .read_text(encoding="utf-8")
+            .split()
+        )
+        for requirement in (
+            "In short: accept within your existing authority",
+            "CODEX_TO_CLAUDE.md#reply-transport-recovery",
+            "Yielding is a scheduling step, not completion of accepted work",
+            "Do not poll a peer, the journal or product storage",
+            "or start a retry timer",
+        ):
+            self.assertIn(requirement, collaboration)
+        self.assertNotIn("| Recorded outcome | Next step |", collaboration)
+
+    def test_obligation_tracking_does_not_invent_an_outstanding_command(self) -> None:
+        for name in ("AGENTS.md", "docs/CONTINUING_COLLABORATION.md"):
+            with self.subTest(document=name):
+                text = " ".join(
+                    (REPOSITORY_ROOT / name).read_text(encoding="utf-8").split()
+                )
+                self.assertIn("review your own list of accepted requests", text)
+                self.assertIn("root ID, requester, exact preserved root path", text)
+                self.assertIn("last sent reply/outcome and next action", text)
+                self.assertIn(
+                    "aggregate lifecycle counts, not per-participant obligations", text
+                )
+                self.assertIn(
+                    "`journal tail` shows recent records for all participants", text
+                )
+        for document in _markdown_documents():
+            with self.subTest(document=document.relative_to(REPOSITORY_ROOT)):
+                text = " ".join(document.read_text(encoding="utf-8").split())
+                self.assertNotRegex(
+                    text, r"\b(?:state|message)\s+(?:outstanding|unanswered)\b"
+                )
+
+    def test_first_contact_prompts_do_not_assign_continuing_reply_duties(self) -> None:
+        content = START_HERE.read_text(encoding="utf-8")
+        self.assertIn(
+            "| Continue collaboration, report outcomes, and surface blockers | "
+            "[Continuing collaboration](docs/CONTINUING_COLLABORATION.md) |",
+            content,
+        )
+        for role, prompt in _copyable_prompts(content).items():
+            with self.subTest(role=role):
+                for outside_scope in (
+                    "Close the loop on requested work",
+                    "open obligation",
+                    "review your own list of accepted requests",
+                    "CONTINUING_COLLABORATION.md",
+                    "--continues-message",
+                ):
+                    self.assertNotIn(outside_scope, prompt)
+                self.assertIn("workflow-local instructions end", prompt)
+
     def test_protocol_scopes_cam_constraints_without_revoking_authority(self) -> None:
         content = (REPOSITORY_ROOT / "PROTOCOL.md").read_text(encoding="utf-8")
         core_security = content.split("## 2. Core security invariant", 1)[1].split(
