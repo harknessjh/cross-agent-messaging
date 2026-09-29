@@ -33,6 +33,7 @@ if __package__:
         product_approvals,
         product_installations,
         project,
+        protocol,
         routing,
         secure_fs,
         state,
@@ -43,6 +44,7 @@ else:  # Direct execution adds tools/ rather than the repo to sys.path.
         product_approvals,
         product_installations,
         project,
+        protocol,
         routing,
         secure_fs,
         state,
@@ -83,10 +85,12 @@ class TransportError(Exception):
         detail: str,
         *,
         audit: dict[str, Any] | None = None,
+        diagnostics: protocol.LocalDiagnostics | None = None,
     ) -> None:
         self.code = code[:80]
         self.detail = detail[:500]
         self.audit = audit
+        self.diagnostics = diagnostics
         super().__init__(self.detail)
 
 
@@ -285,15 +289,46 @@ def _agent_view_probe_before(claude_bin: str, deadline: float) -> dict[str, Any]
             shell=False,
             timeout=remaining,
         )
-    except (OSError, subprocess.TimeoutExpired):
-        return {"ok": False, "detail": "Agent View probe did not complete"}
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return {
+            "ok": False,
+            "detail": "Agent View probe did not complete",
+            "diagnostics": routing.agent_view_failure_diagnostics(
+                error=error, stderr=getattr(error, "stderr", None)
+            ).as_dict(),
+        }
     if completed.returncode != 0:
-        return {"ok": False, "exit_code": completed.returncode}
+        return {
+            "ok": False,
+            "exit_code": completed.returncode,
+            "diagnostics": routing.agent_view_failure_diagnostics(
+                returncode=completed.returncode, stderr=completed.stderr
+            ).as_dict(),
+        }
     try:
         sessions = routing.parse_agent_view_sessions(completed.stdout)
     except routing.RoutingError as error:
-        return {"ok": False, "detail": error.detail}
-    return {"ok": True, "sessions": len(sessions)}
+        return {
+            "ok": False,
+            "detail": error.detail,
+            "diagnostics": routing.agent_view_failure_diagnostics(
+                returncode=completed.returncode, stderr=completed.stderr, error=error
+            ).as_dict(),
+        }
+    result: dict[str, Any] = {
+        "ok": True,
+        "sessions": len(sessions),
+        "row_count": sum(len(rows) for rows in sessions.values()),
+        "distinct_session_count": len(sessions),
+    }
+    if not sessions:
+        result["warnings"] = [
+            {
+                "code": "claude.empty_agent_view",
+                "detail": "No sessions observed; recipient reachability still requires fresh preflight.",
+            }
+        ]
+    return result
 
 
 def _mcp_sdk_check() -> tuple[bool, str | None]:
@@ -601,7 +636,16 @@ def parse_peers(listing: str) -> tuple[Peer, ...]:
     try:
         return routing.parse_list_agents_peers(listing)
     except routing.RoutingError as error:
-        raise TransportError(error.code, error.detail) from error
+        raise TransportError(
+            error.code,
+            error.detail,
+            diagnostics=protocol.LocalDiagnostics(
+                {
+                    "phase": "list_agents_parse",
+                    "list_agents": {"observation": "not_parsed"},
+                }
+            ),
+        ) from error
 
 
 async def list_local_peers(
@@ -663,17 +707,30 @@ def _discover_agent_view_sessions(
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         raise TransportError(
-            "claude.agents_failure", "claude agents discovery did not complete"
+            "claude.agents_failure",
+            "claude agents discovery did not complete",
+            diagnostics=routing.agent_view_failure_diagnostics(
+                error=error, stderr=getattr(error, "stderr", None)
+            ),
         ) from error
     if completed.returncode != 0:
         raise TransportError(
             "claude.agents_failure",
             f"claude agents exited with status {completed.returncode}",
+            diagnostics=routing.agent_view_failure_diagnostics(
+                returncode=completed.returncode, stderr=completed.stderr
+            ),
         )
     try:
         return routing.parse_agent_view_sessions(completed.stdout)
     except routing.RoutingError as error:
-        raise TransportError(error.code, error.detail) from error
+        raise TransportError(
+            error.code,
+            error.detail,
+            diagnostics=routing.agent_view_failure_diagnostics(
+                returncode=completed.returncode, stderr=completed.stderr, error=error
+            ),
+        ) from error
 
 
 def _select_agent_view_session(
@@ -682,7 +739,9 @@ def _select_agent_view_session(
     try:
         return routing.select_agent_view_session(sessions, session_id)
     except routing.RoutingError as error:
-        raise TransportError(error.code, error.detail) from error
+        raise TransportError(
+            error.code, error.detail, diagnostics=error.diagnostics
+        ) from error
 
 
 def _correlate_route(
@@ -690,15 +749,29 @@ def _correlate_route(
     peers: Sequence[Peer],
     *,
     requested_target: str | None,
+    observed_peers: Sequence[Peer] | None = None,
+    observed_sessions: dict[str, tuple[routing.AgentViewSession, ...]] | None = None,
 ) -> routing.ClaudeRoute:
     try:
         return routing.correlate_route(
             session,
             tuple(peers),
             requested_target=requested_target,
+            observed_peers=tuple(observed_peers)
+            if observed_peers is not None
+            else None,
         )
     except routing.RoutingError as error:
-        raise TransportError(error.code, error.detail) from error
+        diagnostics = error.diagnostics
+        if diagnostics is not None and observed_sessions is not None:
+            diagnostics = diagnostics.with_fields(
+                agent_view=routing.agent_view_diagnostics(
+                    observed_sessions, session.session_id
+                ).as_dict()["agent_view"]
+            )
+        raise TransportError(
+            error.code, error.detail, diagnostics=diagnostics
+        ) from error
 
 
 _STABLE_AGENT_VIEW_FIELDS = (
@@ -720,12 +793,19 @@ async def _refresh_agent_view_session(
 ) -> routing.AgentViewSession:
     """Recheck stable Agent View identity after MCP route correlation."""
 
-    sessions = await asyncio.to_thread(
-        _discover_agent_view_sessions,
-        claude_bin=claude_bin,
-        timeout_seconds=timeout_seconds,
-    )
-    refreshed = _select_agent_view_session(sessions, selected.session_id)
+    try:
+        sessions = await asyncio.to_thread(
+            _discover_agent_view_sessions,
+            claude_bin=claude_bin,
+            timeout_seconds=timeout_seconds,
+        )
+        refreshed = _select_agent_view_session(sessions, selected.session_id)
+    except TransportError as error:
+        if error.diagnostics is not None:
+            error.diagnostics = error.diagnostics.with_fields(
+                phase="agent_view_refresh", list_agents={"observation": "correlated"}
+            )
+        raise
     changed = [
         field_name
         for field_name in _STABLE_AGENT_VIEW_FIELDS
@@ -735,6 +815,27 @@ async def _refresh_agent_view_session(
         raise TransportError(
             "claude.session_changed",
             "Claude Agent View identity changed during route discovery",
+            diagnostics=protocol.LocalDiagnostics(
+                {
+                    "phase": "agent_view_refresh",
+                    "changed_fields": [
+                        {
+                            "product_name": "name",
+                            "started_at_ms": "start_time",
+                            "process_id": "process_identity",
+                        }.get(field, field)
+                        for field in changed
+                    ],
+                    "process_identity_changed": "process_id" in changed,
+                    "previous_kind_state": routing._kind_state(
+                        selected.kind, selected.state
+                    ),
+                    "observed_kind_state": routing._kind_state(
+                        refreshed.kind, refreshed.state
+                    ),
+                    "list_agents": {"observation": "correlated"},
+                }
+            ),
         )
     return refreshed
 
@@ -750,6 +851,9 @@ def _require_project_session_cwd(
         raise TransportError(
             "claude.project_mismatch",
             "Claude Agent View cwd is not an absolute project path",
+            diagnostics=protocol.LocalDiagnostics(
+                {"phase": "project_check", "reason": "cwd_not_absolute"}
+            ),
         )
     try:
         resolved = candidate.resolve(strict=True)
@@ -757,11 +861,17 @@ def _require_project_session_cwd(
         raise TransportError(
             "claude.project_mismatch",
             "Claude Agent View cwd could not be resolved",
+            diagnostics=protocol.LocalDiagnostics(
+                {"phase": "project_check", "reason": "cwd_unresolvable"}
+            ),
         ) from None
     if not resolved.is_dir():
         raise TransportError(
             "claude.project_mismatch",
             "Claude Agent View cwd is not a directory",
+            diagnostics=protocol.LocalDiagnostics(
+                {"phase": "project_check", "reason": "cwd_not_directory"}
+            ),
         )
     try:
         session_context = project.discover_git_context(
@@ -772,11 +882,17 @@ def _require_project_session_cwd(
         raise TransportError(
             "claude.project_mismatch",
             "Claude session cwd is not an eligible Git worktree",
+            diagnostics=protocol.LocalDiagnostics(
+                {"phase": "project_check", "reason": "git_probe_failure"}
+            ),
         ) from error
     if session_context.common_dir != binding.git_common_dir:
         raise TransportError(
             "claude.project_mismatch",
             "Claude session belongs to a different Git project",
+            diagnostics=protocol.LocalDiagnostics(
+                {"phase": "project_check", "reason": "different_common_dir"}
+            ),
         )
     return session_context
 
@@ -957,6 +1073,8 @@ async def _preflight_claude_session(
                     selected,
                     local_peers,
                     requested_target=target,
+                    observed_peers=peers,
+                    observed_sessions=sessions,
                 )
                 _require_product_metadata(claude_bin, label="claude")
                 selected = await _refresh_agent_view_session(
@@ -1044,6 +1162,8 @@ async def _send_to_claude(
                     selected,
                     local_peers,
                     requested_target=target,
+                    observed_peers=peers,
+                    observed_sessions=sessions,
                 )
                 _require_product_metadata(claude_bin, label="claude")
                 selected = await _refresh_agent_view_session(

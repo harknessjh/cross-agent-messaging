@@ -40,7 +40,11 @@ from tools.cam1lib import (
     project,
     state,
 )
-from tools.cam1lib.protocol import CamUsageError, CamValidationError
+from tools.cam1lib.protocol import (
+    CamUsageError,
+    CamValidationError,
+    local_diagnostic_fields,
+)
 from tools.cam1lib.state import StateStore
 
 
@@ -720,7 +724,14 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
     except (project.ProjectError, CamUsageError) as error:
-        payload = {"ok": False, "error": {"code": error.code, "detail": error.detail}}
+        payload = {
+            "ok": False,
+            "error": {
+                "code": error.code,
+                "detail": error.detail,
+                **local_diagnostic_fields(error),
+            },
+        }
         if getattr(error, "audit", None) is not None:
             payload["audit"] = error.audit
         _emit(

@@ -7,9 +7,12 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 import uuid
 from dataclasses import dataclass
 from typing import Any
+
+from .protocol import LocalDiagnostics
 
 MAX_AGENT_VIEW_BYTES = 1_048_576
 MAX_AGENT_VIEW_SESSIONS = 512
@@ -27,9 +30,12 @@ AGENT_VIEW_ID_PATTERN = re.compile(r"^[0-9a-fA-F]{8}$")
 class RoutingError(ValueError):
     """A bounded discovery or route-selection failure."""
 
-    def __init__(self, code: str, detail: str) -> None:
+    def __init__(
+        self, code: str, detail: str, *, diagnostics: LocalDiagnostics | None = None
+    ) -> None:
         self.code = code[:80]
         self.detail = detail[:500]
+        self.diagnostics = diagnostics
         super().__init__(self.detail)
 
 
@@ -363,6 +369,144 @@ def _current_agent_view_rows(
     return tuple(row for row in representations if row.agent_view_id is not None)
 
 
+def diagnostic_label(value: str) -> str:
+    """Render at most 64 source characters without terminal control or bidi."""
+
+    return "".join(
+        json.dumps(char, ensure_ascii=True)[1:-1]
+        if unicodedata.category(char).startswith("C")
+        else char
+        for char in value[:64]
+    )
+
+
+def _kind_state(kind: str, state: str) -> dict[str, Any]:
+    return {
+        "kind": diagnostic_label(kind),
+        "state": diagnostic_label(state),
+        "kind_truncated": len(kind) > 64,
+        "state_truncated": len(state) > 64,
+    }
+
+
+def agent_view_diagnostics(
+    sessions: dict[str, tuple[AgentViewSession, ...]], session_id: str
+) -> LocalDiagnostics:
+    """Describe the selected UUID's observed rows, never its routing identity."""
+
+    representations = sessions.get(session_id, ())
+    candidates = _current_agent_view_rows(representations)
+    has_process = any(row.process_backed for row in representations)
+    summaries = []
+    for row in representations[:8]:
+        if has_process and not row.process_backed:
+            reason = "shadowed_by_process_row"
+        elif not row.process_backed and row.agent_view_id is None:
+            reason = "idless_nonprocess_row"
+        elif row.kind.lower() not in LOCAL_SESSION_KINDS:
+            reason = "kind_not_local"
+        elif row.state.lower() not in ADDRESSABLE_SESSION_STATES:
+            reason = "state_not_addressable"
+        else:
+            reason = "eligible_candidate"
+        summaries.append(
+            {
+                **_kind_state(row.kind, row.state),
+                "process_backed": row.process_backed,
+                "agent_view_id_present": row.agent_view_id is not None,
+                "selection_reason": reason,
+            }
+        )
+    return LocalDiagnostics(
+        {
+            "phase": "agent_view_selection",
+            "agent_view": {
+                "observation": "parsed",
+                "row_count": sum(len(rows) for rows in sessions.values()),
+                "distinct_session_count": len(sessions),
+                "selected_uuid_present": session_id in sessions,
+                "representation_count": len(representations),
+                "candidate_count": len(candidates),
+                "rows": summaries,
+                "rows_omitted": max(0, len(representations) - len(summaries)),
+            },
+            "list_agents": {"observation": "not_observed"},
+        }
+    )
+
+
+def list_agents_diagnostics(
+    session: AgentViewSession, peers: tuple[Peer, ...]
+) -> LocalDiagnostics:
+    matches = [peer for peer in peers if peer.name == session.product_name]
+    return LocalDiagnostics(
+        {
+            "phase": "list_agents_correlation",
+            "agent_view": {"observation": "selected", "selected_uuid_present": True},
+            "list_agents": {
+                "observation": "parsed",
+                "row_count": len(peers),
+                "local_count": sum(peer.local for peer in peers),
+                "local_addressable_count": sum(
+                    peer.local and peer.addressable for peer in peers
+                ),
+                "excluded_count": sum(
+                    not (peer.local and peer.addressable) for peer in peers
+                ),
+                "match_basis": "mutable_name_only_not_uuid_identity",
+                "name_match_count": len(matches),
+                "rows": [
+                    {
+                        **_kind_state(peer.kind, peer.state),
+                        "local": peer.local,
+                        "addressable": peer.addressable,
+                        "selection_reason": (
+                            "nonlocal"
+                            if not peer.local
+                            else "eligible_candidate"
+                            if peer.addressable
+                            else "state_or_kind_not_addressable"
+                        ),
+                    }
+                    for peer in matches[:8]
+                ],
+                "rows_omitted": max(0, len(matches) - 8),
+            },
+        }
+    )
+
+
+def agent_view_failure_diagnostics(
+    *,
+    returncode: int | None = None,
+    error: BaseException | None = None,
+    stderr: bytes | str | None = None,
+    stderr_captured: bool = True,
+) -> LocalDiagnostics:
+    """Report subprocess facts without stdout, stderr text, paths or arguments."""
+
+    stderr_facts: dict[str, Any] = {
+        "observation": "not_captured" if not stderr_captured else "unavailable"
+    }
+    if stderr_captured and isinstance(stderr, (bytes, str)):
+        size = len(stderr if isinstance(stderr, bytes) else stderr.encode("utf-8"))
+        stderr_facts = {
+            "observation": "captured",
+            "present": size > 0,
+            "byte_length": size,
+        }
+    return LocalDiagnostics(
+        {
+            "phase": "agent_view_probe",
+            "agent_view": {"observation": "not_parsed"},
+            "list_agents": {"observation": "not_observed"},
+            "exit_code": returncode,
+            "error_class": diagnostic_label(type(error).__name__) if error else None,
+            "stderr": stderr_facts,
+        }
+    )
+
+
 def select_agent_view_session(
     sessions: dict[str, tuple[AgentViewSession, ...]], session_id: str
 ) -> AgentViewSession:
@@ -381,6 +525,9 @@ def select_agent_view_session(
         raise RoutingError(
             "claude.agent_name_ambiguous",
             "multiple active Claude sessions share the selected mutable product name",
+            diagnostics=agent_view_diagnostics(
+                sessions, selected.session_id
+            ).with_fields(same_name_eligible_session_count=len(same_name_session_ids)),
         )
     return selected
 
@@ -396,12 +543,14 @@ def select_agent_view_identity_session(
         raise RoutingError(
             "claude.session_not_found",
             "full sessionId was not present in fresh claude agents output",
+            diagnostics=agent_view_diagnostics(sessions, canonical),
         )
     process_backed = tuple(row for row in representations if row.process_backed)
     if len(process_backed) > 1:
         raise RoutingError(
             "claude.session_ambiguous",
             "selected sessionId has more than one live process-backed representation",
+            diagnostics=agent_view_diagnostics(sessions, canonical),
         )
     candidates = _current_agent_view_rows(representations)
     eligible = tuple(
@@ -414,6 +563,7 @@ def select_agent_view_identity_session(
         raise RoutingError(
             "claude.session_not_local" if not eligible else "claude.session_ambiguous",
             "selected sessionId does not have one eligible live local representation",
+            diagnostics=agent_view_diagnostics(sessions, canonical),
         )
     selected = eligible[0]
     return selected
@@ -450,6 +600,7 @@ def correlate_route(
     local_peers: tuple[Peer, ...],
     *,
     requested_target: str | None = None,
+    observed_peers: tuple[Peer, ...] | None = None,
 ) -> ClaudeRoute:
     """Correlate unique mutable name to one fresh ListAgents address."""
 
@@ -459,16 +610,25 @@ def correlate_route(
         raise RoutingError(
             code,
             "selected full sessionId does not map to one unique fresh ListAgents name/ref",
+            diagnostics=list_agents_diagnostics(
+                session, local_peers if observed_peers is None else observed_peers
+            ),
         )
     peer = matching[0]
     if peer.kind.lower() != session.kind.lower():
         raise RoutingError(
             "claude.route_kind_mismatch",
             "Agent View and ListAgents disagree on the selected session kind",
+            diagnostics=list_agents_diagnostics(
+                session, local_peers if observed_peers is None else observed_peers
+            ),
         )
     if requested_target is not None and peer.qualified_address != requested_target:
         raise RoutingError(
             "claude.target_session_mismatch",
             "requested target does not equal the fresh route for the selected sessionId",
+            diagnostics=list_agents_diagnostics(
+                session, local_peers if observed_peers is None else observed_peers
+            ),
         )
     return ClaudeRoute(session=session, peer=peer)

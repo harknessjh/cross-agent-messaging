@@ -178,6 +178,32 @@ reported as unavailable, and cloud or Remote Control rows are nonlocal.
 Duplicate-name, multiple-live-representation, ambiguous, and mismatched rows
 fail closed. It neither connects to the session UDS nor exposes an MCP URL.
 
+Discovery failures now carry bounded local diagnostics through selection,
+onboarding, the native transport wrappers and CLI output. They distinguish a
+UUID absent from the observed inventory from a present-but-excluded row,
+retain excluded `ListAgents` rows only for diagnostic counts, and identify
+refresh changes without copying private routing identifiers or paths. The
+eligible selection tuple, process-backed precedence and all gates are
+unchanged. State-only activity changes still do not count as stable-identity
+drift. Doctor warns non-fatally on a parsed empty Agent View inventory without
+adding a `ListAgents` probe. Onboarding's discarded stderr stays discarded.
+See [discovery failure diagnostics](CODEX_TO_CLAUDE.md#discovery-failure-diagnostics).
+
+Conflict diagnostics are attached only after the existing state-event applier
+chooses `state.message_conflict` or `lifecycle.message_conflict`. A failure-only
+lookup attributes the stored bytes to the first matching committed lifecycle
+record in the current verified transaction, not an intent or observation.
+No persistent projection field or success-path history scan is added. New
+ingest rejections copy the bounded diagnostic into the existing audit event;
+older records and replay-error semantics remain valid. See
+[conflict diagnostics](PROJECT_JOURNAL.md#conflict-diagnostics).
+
+Coverage uses synthetic inventories, subprocess failures, exception-group
+wrapping, and disposable project journals. It does not establish how a real
+Claude build lists a peer during a long tool call, reproduce a sandbox cause,
+or authorize new state mappings. Phase labels cover the observed discovery
+stages; finer attribution of the overall asynchronous timeout remains deferred.
+
 Direct child-process stdio through the MCP SDK avoids the terminal canonical
 line-buffering and shell-quoting failures observed with hand-written long
 JSON-RPC lines.

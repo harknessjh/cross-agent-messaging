@@ -657,6 +657,38 @@ dispatched recipient work, records `held_for_clarification`, returns exit status
 ordering only; it does not prove that an agent read or understood a message and
 does not constrain unrelated work. See [causal ordering](CAUSAL_ORDERING.md).
 
+### Conflict diagnostics
+
+`state.message_conflict` means a record for this message ID already holds
+different exact bytes. `lifecycle.message_conflict` can occur first for a root
+whose parsed content changed, including a transcription slip outside the body
+hash. Neither error by itself proves intentional ID reuse. Both still reject
+the new input; validation and nonce failures keep their existing precedence.
+
+New conflict rejections may add `diagnostics` to
+`message.inbound.rejected.attributes`, matching the CLI's `error.diagnostics`.
+The bounded object contains prior/incoming `byte_length` and `sha256`, a
+`comparison` category, and a `prior_record` pointer (sequence, record ID and
+event type), or null if no source can be established. The source is the first
+committed `state.lifecycle.root_registered` or `state.lifecycle.reply_applied`
+record matching both message ID and exact prior bytes in the same verified
+transaction history. An outbound intent or inbound observation alone is not
+that source. The lookup runs only after a conflict, not on successful messages.
+
+`one_terminal_lf_added` and `one_terminal_lf_removed` describe an exact one-byte
+difference relative to the prior capture. Other exact-byte differences remain
+`different_exact_bytes`; a lifecycle content mismatch is `different_content`.
+No whitespace equivalence or normalization is inferred. Message contents are
+not copied into diagnostics, and diagnostics neither repair captures nor
+establish delivery. Preserve the failed observation; never substitute a
+sender-side journal copy for product-visible receive evidence.
+
+The existing rejection code, nonzero exit and unchanged lifecycle remain the
+decision. These are optional local audit attributes, not new wire fields or
+event types. Older records without diagnostics still replay. Historical state
+conflicts still fail replay as `state.event_invalid`; diagnostic construction
+or source-attribution failure must not mask that error.
+
 ## Privacy, retention, and moderation
 
 The journal contains message bodies and capability-like routing metadata. Keep

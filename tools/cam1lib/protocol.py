@@ -77,6 +77,55 @@ class CamUsageError(ValueError):
         super().__init__(detail)
 
 
+class LocalDiagnostics:
+    """Bounded supplementary CLI facts, constructed by allowlisted producers.
+
+    This is not envelope data, transport evidence, or an arbitrary exception
+    dictionary. Keep the serialized copy private so callers cannot enlarge it.
+    """
+
+    MAX_BYTES = 4096
+
+    def __init__(self, fields: dict[str, Any]):
+        encoded = json.dumps(fields, ensure_ascii=True, separators=(",", ":"))
+        bounded = json.loads(encoded)
+        # Row producers cap at eight first. Escaped labels can still exceed the
+        # byte budget; remove only summaries, retaining counts and omissions.
+        for section_name in ("agent_view", "list_agents"):
+            section = bounded.get(section_name, {})
+            rows = section.get("rows", []) if isinstance(section, dict) else []
+            while len(encoded) > self.MAX_BYTES and rows:
+                rows.pop()
+                section["rows_omitted"] += 1
+                encoded = json.dumps(bounded, ensure_ascii=True, separators=(",", ":"))
+        if len(encoded) > self.MAX_BYTES:
+            encoded = '{"omitted":"diagnostic_size_limit"}'
+        self._encoded = encoded
+
+    def as_dict(self) -> dict[str, Any]:
+        return json.loads(self._encoded)
+
+    def with_fields(self, **fields: Any) -> LocalDiagnostics:
+        return LocalDiagnostics({**self.as_dict(), **fields})
+
+
+class DiagnosticUsageError(CamUsageError):
+    """Usage failure with explicitly constructed local diagnostics."""
+
+    def __init__(self, code: str, detail: str, diagnostics: LocalDiagnostics):
+        self.diagnostics = diagnostics
+        super().__init__(code, detail)
+
+
+def local_diagnostic_fields(error: BaseException) -> dict[str, Any]:
+    """Export only the bounded carrier, never an exception's raw attributes."""
+
+    diagnostics = getattr(error, "diagnostics", None)
+    if isinstance(diagnostics, LocalDiagnostics):
+        return {"diagnostics": diagnostics.as_dict()}
+    return {}
+
+
 @dataclass(frozen=True, slots=True)
 class Problem:
     """A bounded validation diagnostic that does not expose field values."""

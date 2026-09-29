@@ -11,6 +11,7 @@ it and rebuild it from the journal at any time.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import uuid
 from collections.abc import Mapping
 from copy import deepcopy
@@ -46,6 +47,8 @@ from .project import (
 from .protocol import (
     CamUsageError,
     CamValidationError,
+    DiagnosticUsageError,
+    LocalDiagnostics,
     ValidationPolicy,
     parse_exact_bytes,
 )
@@ -317,9 +320,71 @@ def _remember_message(snapshot: StateSnapshot, message_id: str, raw: bytes) -> N
     if prior is not None and prior != raw:
         raise CamUsageError(
             "state.message_conflict",
-            "message ID was reused with different exact bytes",
+            "a record for this message ID already holds different exact bytes",
         )
     snapshot._message_bytes[message_id] = raw
+
+
+class MessageConflictError(DiagnosticUsageError):
+    """A rejected comparison, with no normalization or acceptance implied."""
+
+    def __init__(
+        self, error: CamUsageError, message_id: str, prior: bytes, incoming: bytes
+    ):
+        comparison = "different_exact_bytes"
+        if error.code == "lifecycle.message_conflict":
+            comparison = "different_content"
+        elif incoming == prior + b"\n":
+            comparison = "one_terminal_lf_added"
+        elif prior == incoming + b"\n":
+            comparison = "one_terminal_lf_removed"
+        self._message_id = message_id
+        self._prior = prior
+        super().__init__(
+            error.code,
+            error.detail,
+            LocalDiagnostics(
+                {
+                    "comparison": comparison,
+                    "prior": {
+                        "byte_length": len(prior),
+                        "sha256": hashlib.sha256(prior).hexdigest(),
+                    },
+                    "incoming": {
+                        "byte_length": len(incoming),
+                        "sha256": hashlib.sha256(incoming).hexdigest(),
+                    },
+                    "prior_record": None,
+                }
+            ),
+        )
+
+    def attribute_prior_record(self, records: list[dict[str, Any]]) -> None:
+        """Failure-only lookup in the same transaction's verified history."""
+
+        try:
+            for record in records:
+                event_type = record["event_type"]
+                if event_type == LIFECYCLE_ROOT_REGISTERED:
+                    id_field = "root_message_id"
+                elif event_type == LIFECYCLE_REPLY_APPLIED:
+                    id_field = "message_id"
+                else:
+                    continue
+                if (
+                    record["attributes"].get(id_field) == self._message_id
+                    and decode_exact_message(record) == self._prior
+                ):
+                    self.diagnostics = self.diagnostics.with_fields(
+                        prior_record={
+                            "sequence": record["sequence"],
+                            "record_id": record["record_id"],
+                            "event_type": event_type,
+                        }
+                    )
+                    break
+        except Exception:  # supplementary evidence must not mask the rejection
+            return
 
 
 def _record_nonce(
@@ -949,7 +1014,34 @@ def _apply_event(
     applier = _EVENT_APPLIERS.get(event_type)
     if applier is None:
         raise _state_error("state.event_type", "state event type is unsupported")
-    return applier(snapshot, attributes, exact_message)
+    try:
+        return applier(snapshot, attributes, exact_message)
+    except CamUsageError as error:
+        if error.code not in {"state.message_conflict", "lifecycle.message_conflict"}:
+            raise
+        # Enrich only after the existing applier has chosen its error. In
+        # particular, nonce and validation failures keep their precedence.
+        try:
+            id_field = (
+                "root_message_id"
+                if event_type == LIFECYCLE_ROOT_REGISTERED
+                else "message_id"
+            )
+            message_id = attributes.get(id_field)
+            prior = snapshot._message_bytes.get(message_id)
+            enriched = (
+                MessageConflictError(error, message_id, prior, exact_message)
+                if isinstance(message_id, str)
+                and isinstance(prior, bytes)
+                and isinstance(exact_message, bytes)
+                and prior != exact_message
+                else None
+            )
+        except Exception:  # best effort even when historical replay is corrupt
+            enriched = None
+        if enriched is not None:
+            raise enriched from error
+        raise
 
 
 def _apply_compatibility_record(

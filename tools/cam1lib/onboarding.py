@@ -17,7 +17,7 @@ from typing import Any
 
 from . import product_approvals, product_installations, profile, project, routing
 from .enrollment import EnrollmentProposal
-from .protocol import CamUsageError
+from .protocol import CamUsageError, DiagnosticUsageError
 
 _PRODUCT_COMMAND = {"codex": "codex", "claude-code": "claude"}
 _SESSION_ENVIRONMENT = {
@@ -133,21 +133,32 @@ def _claude_agent_view(
             stderr=subprocess.DEVNULL,
             timeout=10,
         )
-    except (OSError, subprocess.TimeoutExpired):
-        raise CamUsageError(
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise DiagnosticUsageError(
             "onboarding.claude_discovery_failed",
             "Claude Agent View discovery did not complete",
+            routing.agent_view_failure_diagnostics(error=error, stderr_captured=False),
         ) from None
     if completed.returncode != 0:
-        raise CamUsageError(
+        raise DiagnosticUsageError(
             "onboarding.claude_discovery_failed",
             "Claude Agent View discovery exited unsuccessfully",
+            routing.agent_view_failure_diagnostics(
+                returncode=completed.returncode, stderr_captured=False
+            ),
         )
     try:
         sessions = routing.parse_agent_view_sessions(completed.stdout)
         return routing.select_agent_view_identity_session(sessions, session_id)
     except routing.RoutingError as error:
-        raise CamUsageError(error.code, error.detail) from error
+        raise DiagnosticUsageError(
+            error.code,
+            error.detail,
+            error.diagnostics
+            or routing.agent_view_failure_diagnostics(
+                returncode=completed.returncode, stderr_captured=False, error=error
+            ),
+        ) from error
 
 
 def _slug(value: str, *, fallback: str) -> str:

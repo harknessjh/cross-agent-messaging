@@ -46,6 +46,7 @@ from .state_projection import (
     PARTICIPANT_ROUTE_CONFIRMED,
     PARTICIPANT_ROUTE_OBSERVED,
     LifecyclePlan,
+    MessageConflictError,
     ProjectionRefreshError,
     StateSnapshot,
     _apply_event,
@@ -198,8 +199,9 @@ class StateStore:
         exact_message: bytes | None,
         now: dt.datetime | None,
     ) -> Participant | enrollment.EnrollmentProposal | LifecycleEntry:
-        result = _apply_event(
+        result = self._apply_event_locked(
             snapshot,
+            transaction,
             event_type=event_type,
             attributes=attributes,
             exact_message=exact_message,
@@ -224,6 +226,23 @@ class StateStore:
                 sequence=cast(int, record["sequence"]),
             ) from None
         return result
+
+    def _apply_event_locked(
+        self,
+        snapshot: StateSnapshot,
+        transaction: ProjectTransaction,
+        **kwargs: Any,
+    ) -> Participant | enrollment.EnrollmentProposal | LifecycleEntry:
+        try:
+            return _apply_event(snapshot, **kwargs)
+        except MessageConflictError as error:
+            try:
+                error.attribute_prior_record(
+                    _verified_records_for_transaction(self.project, transaction)
+                )
+            except Exception:  # diagnostic failure never replaces enforcement
+                pass
+            raise
 
     def participant_add(
         self,
@@ -778,8 +797,9 @@ class StateStore:
 
         preview = cast(
             LifecycleEntry,
-            _apply_event(
+            self._apply_event_locked(
                 snapshot,
+                transaction,
                 event_type=event_type,
                 attributes=attributes,
                 exact_message=exact_message,

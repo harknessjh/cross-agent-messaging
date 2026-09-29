@@ -25,7 +25,9 @@ from . import (
 from .protocol import (
     CamUsageError,
     CamValidationError,
+    DiagnosticUsageError,
     ValidationPolicy,
+    local_diagnostic_fields,
     parse_exact_bytes,
 )
 from .state import StateStore
@@ -287,6 +289,7 @@ def _record_inbound_rejection(
     """Append one bounded rejection correlated to the preserved observation."""
 
     error_code, problem_codes = _rejection_codes(error)
+    diagnostic_fields = local_diagnostic_fields(error)
     rejected_now, _ = _utc_now()
     rejected_record = journal.append_record(
         binding,
@@ -296,6 +299,7 @@ def _record_inbound_rejection(
             "problem_codes": problem_codes,
             "observed_record_id": observed_record["record_id"],
             "validation_profile": validation_profile,
+            **diagnostic_fields,
         },
         now=rejected_now,
         transaction=transaction,
@@ -306,6 +310,12 @@ def _record_inbound_rejection(
         "error": {
             "code": error_code,
             "problem_codes": problem_codes,
+            **(
+                {"detail": error.detail}
+                if isinstance(error, DiagnosticUsageError)
+                else {}
+            ),
+            **diagnostic_fields,
         },
         "observed_record": record_summary(observed_record),
         "rejected_record": record_summary(rejected_record),

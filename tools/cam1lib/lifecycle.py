@@ -716,7 +716,7 @@ class LifecycleProjection:
                 return existing
             raise CamUsageError(
                 "lifecycle.message_conflict",
-                "message ID was reused with different content",
+                "a record for this message ID already holds different parsed content",
             )
         action = envelope.get("action")
         idempotency_key = _canonical_uuid(
@@ -771,7 +771,7 @@ class LifecycleProjection:
             if prior_digest != digest:
                 raise CamUsageError(
                     "lifecycle.message_conflict",
-                    "message ID was reused with different content",
+                    "a record for this message ID already holds different parsed content",
                 )
             root_id = _canonical_uuid(
                 envelope.get("in_reply_to"), field_name="in_reply_to"
