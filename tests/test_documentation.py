@@ -180,6 +180,28 @@ class DocumentationTests(unittest.TestCase):
                 self.assertIn("**Audience:**", introduction)
                 self.assertIn("START HERE", introduction)
 
+    def test_readme_separates_release_notifications_from_checkout_updates(self) -> None:
+        readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
+        section = readme.split("## Releases and update notifications\n", 1)[1].split(
+            "\n## ", 1
+        )[0]
+        normalized = " ".join(section.split())
+        self.assertIn(
+            "https://github.com/harknessjh/cross-agent-messaging/releases", section
+        )
+        self.assertIn("Watch → Custom → Releases", section)
+        self.assertIn("GitHub inbox and by email", normalized)
+        self.assertIn(
+            "not notifications inside Codex or Claude Code terminals", normalized
+        )
+        self.assertIn(
+            "Notifications do not update your clone, run CAM, or approve a new checkout",
+            normalized,
+        )
+        self.assertIn("separate from the CAM/1 wire-major version", normalized)
+        self.assertIn("rerun validation before live use", normalized)
+        self.assertIn("START_HERE.md#once-per-cam-clone", section)
+
     def test_start_here_requires_no_manual_path_substitution(self) -> None:
         content = START_HERE.read_text(encoding="utf-8")
         self.assertNotIn("PROJECT_ROOT", content)

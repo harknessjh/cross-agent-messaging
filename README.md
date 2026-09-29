@@ -183,6 +183,29 @@ creating another CAM clone or project journal.
 Follow [START HERE](START_HERE.md) for installation and the complete
 first-contact workflow.
 
+## Releases and update notifications
+
+Find published software snapshots and their release notes on
+[GitHub Releases](https://github.com/harknessjh/cross-agent-messaging/releases).
+Software release numbers, such as `v0.1.0`, are separate from the CAM/1
+wire-major version and the protocol document's revision.
+
+To subscribe, open the
+[repository](https://github.com/harknessjh/cross-agent-messaging), choose
+**Watch → Custom → Releases**, and save your selection. Delivery follows your
+[GitHub notification settings](https://docs.github.com/en/subscriptions-and-notifications/get-started/configuring-notifications):
+you can receive notices in your GitHub inbox and by email. These are not
+notifications inside Codex or Claude Code terminals. Publishing a release
+triggers release notifications; merging a pull request alone does not.
+
+Notifications do not update your clone, run CAM, or approve a new checkout.
+Before adopting an update, read its release notes and follow your operator's
+checkout-selection policy. Coordinate updates to a shared clone between CAM
+commands, then rerun validation before live use. Keep the existing virtual
+environment unless dependencies or its interpreter require attention; see
+[once-per-clone update guidance](START_HERE.md#once-per-cam-clone).
+Separate clones and pinned worktrees do not update when another checkout does.
+
 ## Where CAM stores project state
 
 CAM adds no files to the application worktree. It stores:
