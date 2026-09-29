@@ -28,6 +28,40 @@ else:
 
 
 class ProjectTransportDiscoveryTests(ProjectBoundTransportTestCase):
+    def test_excluded_list_agents_row_diagnostics_reach_both_clis_without_intent(
+        self,
+    ) -> None:
+        self.add_claude_participant()
+        self.add_codex_participant()
+        marker = self.base / "must-not-send"
+        binary = self.fake_claude(
+            returned={
+                "success": True,
+                "msg_id": "00000000-0000-4000-8000-000000000900",
+            },
+            marker=marker,
+            peer_listing="Peer sessions (1):\n  local-worker [abcdef]  ·  interactive  ·  shell  ·  synthetic",
+        )
+        envelope = self.private_envelope(
+            "discovery-failure.json", build_first_contact()
+        )
+        diagnostics = []
+        before = journal.replay_records(self.binding)
+        for command in ("claude-preflight", "claude-send"):
+            extra = ["--envelope", str(envelope)] if command == "claude-send" else []
+            completed = self.run_transport(
+                command, "--participant", "local-worker", *extra, claude_bin=binary
+            )
+            self.assertEqual(completed.returncode, 2, completed.stderr)
+            payload = json.loads(completed.stderr)
+            self.assertEqual(payload["error"]["code"], "claude.route_not_found")
+            diagnostics.append(payload["error"]["diagnostics"])
+            self.assertNotIn("audit", payload)
+        self.assertEqual(diagnostics[0], diagnostics[1])
+        self.assertEqual(diagnostics[0]["list_agents"]["rows"][0]["state"], "shell")
+        self.assertFalse(marker.exists())
+        self.assertEqual(journal.replay_records(self.binding), before)
+
     def test_agent_view_cwd_outside_project_is_rejected(self) -> None:
         self.add_claude_participant()
         outside = self.base / "different-project"
@@ -67,6 +101,12 @@ class ProjectTransportDiscoveryTests(ProjectBoundTransportTestCase):
                     json.loads(completed.stderr)["error"]["code"],
                     "claude.project_mismatch",
                 )
+                facts = json.loads(completed.stderr)["error"]["diagnostics"]
+                self.assertEqual(facts["phase"], "project_check")
+                self.assertIn(
+                    facts["reason"], {"git_probe_failure", "different_common_dir"}
+                )
+                self.assertNotIn(str(cwd), json.dumps(facts))
         self.assertEqual(
             [record["event_type"] for record in journal.replay_records(self.binding)],
             [state.PARTICIPANT_ADDED, state.PARTICIPANT_BOUND],

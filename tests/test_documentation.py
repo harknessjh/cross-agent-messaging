@@ -807,6 +807,49 @@ class DocumentationTests(unittest.TestCase):
             "- a tool, network request, application-worktree change", evaluation
         )
 
+    def test_diagnostics_guidance_preserves_enforcement_and_evidence_boundaries(
+        self,
+    ) -> None:
+        detailed = " ".join(
+            (REPOSITORY_ROOT / "docs/CODEX_TO_CLAUDE.md").read_text().split()
+        )
+        journal = " ".join(
+            (REPOSITORY_ROOT / "docs/PROJECT_JOURNAL.md").read_text().split()
+        )
+        notes = " ".join(
+            (REPOSITORY_ROOT / "docs/IMPLEMENTATION_NOTES.md").read_text().split()
+        )
+        for phrase in (
+            "### Discovery failure diagnostics",
+            "not UUID-confirmed identities",
+            "`not_observed`",
+            "`not_parsed`",
+            "`not_captured`",
+            "4 KiB",
+            "No new session kinds or states become eligible",
+            "warning is non-fatal",
+            "not a new failure journal event",
+            "do not authorize a resend",
+        ):
+            self.assertIn(phrase, detailed)
+        for phrase in (
+            "### Conflict diagnostics",
+            "`state.message_conflict`",
+            "`lifecycle.message_conflict`",
+            "one_terminal_lf_added",
+            "one_terminal_lf_removed",
+            "`prior_record`",
+            "first committed",
+            "both message ID and exact prior bytes",
+            "Both still reject",
+            "Older records without diagnostics still replay",
+            "never substitute a sender-side journal copy",
+        ):
+            self.assertIn(phrase, journal)
+        self.assertIn("all gates are unchanged", notes)
+        self.assertIn("synthetic inventories", notes)
+        self.assertIn("overall asynchronous timeout remains deferred", notes)
+
     def test_all_local_markdown_links_and_fragments_resolve(self) -> None:
         failures: list[str] = []
         for document in _markdown_documents():

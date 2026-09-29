@@ -855,6 +855,16 @@ malformed, expired, conflicting, or illegal input it still preserves the
 observation, appends `message.inbound.rejected`, and exits nonzero. That
 rejection is an audit event, not application acceptance.
 
+For `state.message_conflict` or `lifecycle.message_conflict`, optional
+`error.diagnostics` explains which prior committed bytes conflict with this
+capture: both lengths and SHA-256 digests, the prior lifecycle record pointer
+when provable, and a comparison category. For example,
+`one_terminal_lf_added` means exactly one final LF was added relative to the
+prior bytes; it does not make the changed capture acceptable. Preserve the
+failed capture and use a separate path for any new, faithful product-visible
+capture. Never normalize it or substitute a sender-side journal copy as
+received evidence. See [journal conflict diagnostics](PROJECT_JOURNAL.md#conflict-diagnostics).
+
 After exact roster endpoint matching and any confirmation independently
 required by the receiver's existing policy, build a complete received ACK:
 
@@ -1223,6 +1233,43 @@ Every message remains subject to each session's own instructions, permissions,
 and operator authorization. A future advisory moderator may inspect journal
 appends, but automatic moderation and execution are deliberately deferred from
 this release.
+
+### Discovery failure diagnostics
+
+Selection and route failures may include a bounded `error.diagnostics` object.
+The existing error code and refusal remain authoritative; these facts explain
+what the current probe observed, not why a peer is unavailable:
+
+- `agent_view` separates parsed row count from distinct session count, says
+  whether the selected UUID was present, and summarizes only its rows. An
+  id-less non-process row or companion shadowed by a process row stays excluded.
+- `list_agents` counts local/addressable and excluded rows. Its selected rows
+  are **mutable-name matches, not UUID-confirmed identities**. A matching row
+  in an excluded state is different from no observed match.
+- `not_observed` means that stage was never reached; `not_parsed` means no
+  usable parsed inventory was established. Neither means an empty inventory.
+- Probe failures can report an exit code, exception class and stderr presence
+  and byte length, never raw product output. Onboarding still discards stderr
+  and explicitly reports `not_captured` for those probe failures.
+- Refresh drift reports changed field names and bounded kind/state values,
+  not names, UUIDs, PIDs, paths, refs or sockets. Project mismatch reports only
+  a reason category. No new session kinds or states become eligible.
+
+Diagnostics are at most 4 KiB of compact JSON, with at most eight row summaries
+per inventory, 64 source characters per kind/state, escaped control/bidi
+characters and explicit omission/truncation. They do not prove a dead session,
+a sandbox cause, a long tool call, or permission to retry. `busy` remains
+eligible under the existing rules; `shell` and unknown states remain excluded.
+Doctor's `claude.empty_agent_view` warning is non-fatal: no sessions were
+observed, and normal recipient preflight is still required. Doctor does not
+probe `ListAgents`.
+
+These discovery failures precede the attempt's outbound intent and their
+diagnostics go to CLI output only, not a new failure journal event. This is
+not a statement that all preflight activity is unjournaled: successful
+project-aware route observation retains its existing audit behavior. Existing
+intent/outcome evidence and [reply transport recovery](#reply-transport-recovery)
+still govern any earlier attempt; diagnostics do not authorize a resend.
 
 ### Reply transport recovery
 

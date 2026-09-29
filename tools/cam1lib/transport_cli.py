@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .protocol import local_diagnostic_fields
+
 
 @dataclass(frozen=True, slots=True)
 class TransportCliApi:
@@ -565,7 +567,11 @@ def main(
                 api.with_validation_profile(
                     {
                         "ok": False,
-                        "error": {"code": error.code, "detail": error.detail},
+                        "error": {
+                            "code": error.code,
+                            "detail": error.detail,
+                            **local_diagnostic_fields(error),
+                        },
                     }
                 ),
                 stream=sys.stderr,
@@ -574,7 +580,11 @@ def main(
     except api.transport_error as error:
         payload: dict[str, Any] = {
             "ok": False,
-            "error": {"code": error.code, "detail": error.detail},
+            "error": {
+                "code": error.code,
+                "detail": error.detail,
+                **local_diagnostic_fields(error),
+            },
         }
         if error.audit is not None:
             payload["audit"] = error.audit

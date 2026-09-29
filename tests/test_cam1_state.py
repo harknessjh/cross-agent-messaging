@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import subprocess
 import tempfile
@@ -787,6 +788,163 @@ class JournalBackedStateTests(unittest.TestCase):
 
         self.assertEqual(context.exception.code, "state.message_conflict")
         self.assertEqual(journal.verify_journal(self.binding).record_count, 1)
+
+    def test_conflict_diagnostics_classify_bytes_without_normalizing(self) -> None:
+        root = request_bytes()
+        self.store.lifecycle_root(root, now=NOW)
+        value = json.loads(root)
+        value["intent"] = "A different synthetic intent"
+        cases = [
+            (root + b"\n", "state.message_conflict", "one_terminal_lf_added"),
+            (b" " + root, "state.message_conflict", "different_exact_bytes"),
+            (root + b"\r\n", "state.message_conflict", "different_exact_bytes"),
+            (
+                json.dumps(json.loads(root)).encode(),
+                "state.message_conflict",
+                "different_exact_bytes",
+            ),
+            (
+                serialize_envelope(value),
+                "lifecycle.message_conflict",
+                "different_content",
+            ),
+        ]
+        before = journal.replay_records(self.binding)
+        for incoming, code, comparison in cases:
+            with self.subTest(comparison=comparison, length=len(incoming)):
+                with self.assertRaises(state_projection.MessageConflictError) as caught:
+                    self.store.lifecycle_root(incoming, now=NOW)
+                error = caught.exception
+                self.assertEqual(error.code, code)
+                self.assertNotIn("reused", error.detail)
+                facts = error.diagnostics.as_dict()
+                self.assertEqual(facts["comparison"], comparison)
+                for label, raw in (("prior", root), ("incoming", incoming)):
+                    self.assertEqual(
+                        facts[label],
+                        {
+                            "byte_length": len(raw),
+                            "sha256": hashlib.sha256(raw).hexdigest(),
+                        },
+                    )
+                self.assertEqual(
+                    facts["prior_record"],
+                    {
+                        key: before[0][key]
+                        for key in ("sequence", "record_id", "event_type")
+                    },
+                )
+                self.assertNotIn("synthetic", json.dumps(facts))
+                self.assertLessEqual(len(json.dumps(facts)), 4096)
+                self.assertEqual(journal.replay_records(self.binding), before)
+        self.assertEqual(
+            self.store.rebuild()._message_bytes[json.loads(root)["message_id"]], root
+        )
+
+    def test_removed_terminal_lf_and_first_committed_record_attribution(self) -> None:
+        root = request_bytes() + b"\n"
+        # Neither an intent nor an observation may become the prior source.
+        for event in ("message.outbound.intent", "message.inbound.observed"):
+            journal.append_record(
+                self.binding,
+                event_type=event,
+                exact_message=root,
+                attributes={"message_id": json.loads(root)["message_id"]},
+                now=NOW,
+            )
+        self.store.lifecycle_root(root, now=NOW)
+        source = journal.replay_records(self.binding)[-1]
+        self.store.lifecycle_root(root, now=NOW)  # a later duplicate is not the source
+        journal.append_record(
+            self.binding, event_type="note.synthetic", attributes={}, now=NOW
+        )
+        with self.assertRaises(state_projection.MessageConflictError) as caught:
+            with project.project_transaction(self.binding) as transaction:
+                self.store.prepare_inbound_lifecycle(
+                    root[:-1], now=NOW, transaction=transaction
+                )
+        facts = caught.exception.diagnostics.as_dict()
+        self.assertEqual(facts["comparison"], "one_terminal_lf_removed")
+        self.assertEqual(facts["prior_record"]["sequence"], source["sequence"])
+        self.assertEqual(facts["prior_record"]["record_id"], source["record_id"])
+
+    def test_reply_conflict_and_nonce_error_precedence_are_unchanged(self) -> None:
+        root = request_bytes()
+        first = received_ack(root, now=NOW)
+        self.store.lifecycle_root(root, now=NOW)
+        self.store.lifecycle_reply(first, now=NOW)
+        changed = json.loads(first)
+        changed["receipt"]["detail"] = "Transcription changed an unhashed field"
+        with self.assertRaises(state_projection.MessageConflictError) as caught:
+            self.store.lifecycle_reply(serialize_envelope(changed), now=NOW)
+        self.assertEqual(caught.exception.code, "state.message_conflict")
+        self.assertEqual(
+            caught.exception.diagnostics.as_dict()["prior_record"]["event_type"],
+            state.LIFECYCLE_REPLY_APPLIED,
+        )
+
+        # Reuse the first reply's ID in an otherwise valid ACK for a different
+        # root whose nonce was already echoed. Both guards could fail; the
+        # existing nonce guard must still win over the byte conflict.
+        second_root = request_bytes()
+        second_ack = received_ack(second_root, now=NOW)
+        self.store.lifecycle_root(second_root, now=NOW)
+        self.store.lifecycle_reply(second_ack, now=NOW)
+        changed = json.loads(second_ack)
+        changed["message_id"] = json.loads(first)["message_id"]
+        changed["action"]["idempotency_key"] = changed["message_id"]
+        with self.assertRaises(CamUsageError) as nonce:
+            self.store.lifecycle_reply(serialize_envelope(changed), now=NOW)
+        self.assertEqual(nonce.exception.code, "state.nonce_reuse")
+        self.assertFalse(hasattr(nonce.exception, "diagnostics"))
+        self.assertEqual(journal.verify_journal(self.binding).record_count, 4)
+
+    def test_conflict_diagnostics_failure_never_changes_rejection(self) -> None:
+        root = request_bytes()
+        self.store.lifecycle_root(root, now=NOW)
+        with mock.patch.object(
+            state_projection,
+            "MessageConflictError",
+            side_effect=ValueError("synthetic"),
+        ):
+            # Test the projection boundary directly: diagnostic construction is
+            # best effort even during historical replay.
+            snapshot = self.store.snapshot()
+            record = journal.replay_records(self.binding)[0]
+            with self.assertRaises(CamUsageError) as caught:
+                state_projection._apply_event(
+                    snapshot,
+                    event_type=record["event_type"],
+                    attributes=record["attributes"],
+                    exact_message=root + b"\n",
+                )
+        self.assertEqual(caught.exception.code, "state.message_conflict")
+        self.assertEqual(journal.verify_journal(self.binding).record_count, 1)
+
+    def test_historical_conflict_keeps_replay_error_and_old_rejections_replay(
+        self,
+    ) -> None:
+        root = request_bytes()
+        self.store.lifecycle_root(root, now=NOW)
+        journal.append_record(
+            self.binding,
+            event_type="message.inbound.rejected",
+            attributes={"error_code": "state.message_conflict"},
+            now=NOW,
+        )
+        self.assertEqual(len(self.store.rebuild().lifecycle.entries), 1)
+        record = journal.replay_records(self.binding)[0]
+        journal.append_record(
+            self.binding,
+            event_type=record["event_type"],
+            attributes=record["attributes"],
+            exact_message=root + b"\n",
+            now=NOW,
+        )
+        with self.assertRaises(state.StateError) as caught:
+            self.store.rebuild()
+        self.assertEqual(caught.exception.code, "state.event_invalid")
+        self.assertIn("state.message_conflict", caught.exception.detail)
 
     def test_invalid_and_unknown_state_events_fail_closed_on_rebuild(self) -> None:
         journal.append_record(

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import unittest
 from pathlib import Path
@@ -32,6 +33,62 @@ else:
 
 
 class ProjectMessageIngestTests(ProjectTestCase):
+    def test_parsed_content_conflict_is_diagnosed_but_invalid_body_keeps_precedence(
+        self,
+    ) -> None:
+        binding = self.initialize()
+        self.bind_ingest_participants(binding)
+        root = builders.build_hello(
+            sender_vendor="codex",
+            sender_name="project-coordinator",
+            sender_session=CODEX_SESSION,
+            recipient_vendor="claude-code",
+            recipient_name="bob-reviewer",
+            recipient_session=CLAUDE_SESSION,
+            reply_transport="codex_queue",
+            reply_address=CODEX_SESSION,
+            now=dt.datetime.now(dt.UTC),
+        )
+        store = state.StateStore(binding)
+        store.lifecycle_root(root, now=dt.datetime.now(dt.UTC))
+        original = store.snapshot().projection_document()
+        for invalid_body in (False, True):
+            changed = json.loads(root)
+            changed["intent"] = "Synthetic transcription changed the intent"
+            if invalid_body:
+                changed["body"] += " An unhashed modification."
+            raw = json.dumps(changed).encode()
+            source = self.private_message_file(f"changed-{invalid_body}.json", raw)
+            completed = self.run_tool(
+                "message",
+                "ingest",
+                "--message",
+                str(source),
+                "--as-participant",
+                "bob-reviewer",
+            )
+            self.assertEqual(completed.returncode, 2, completed.stderr)
+            error = json.loads(completed.stderr)["error"]
+            if invalid_body:
+                self.assertNotIn("diagnostics", error)
+                self.assertNotEqual(error["code"], "lifecycle.message_conflict")
+            else:
+                self.assertEqual(error["code"], "lifecycle.message_conflict")
+                self.assertEqual(
+                    error["diagnostics"]["comparison"], "different_content"
+                )
+                self.assertEqual(
+                    journal.replay_records(binding)[-1]["attributes"]["diagnostics"],
+                    error["diagnostics"],
+                )
+            self.assertEqual(
+                journal.decode_exact_message(journal.replay_records(binding)[-2]), raw
+            )
+        # Only audit position changes; no state transition or stored-byte rewrite.
+        snapshot = store.rebuild()
+        self.assertEqual(snapshot.lifecycle.as_dict()["entries"], original["lifecycle"])
+        self.assertEqual(snapshot._message_bytes[json.loads(root)["message_id"]], root)
+
     def test_newline_conflict_retains_failed_capture_and_allows_exact_recapture(
         self,
     ) -> None:
@@ -63,6 +120,23 @@ class ProjectMessageIngestTests(ProjectTestCase):
         self.assertEqual(
             json.loads(rejected.stderr)["error"]["code"], "state.message_conflict"
         )
+        facts = json.loads(rejected.stderr)["error"]["diagnostics"]
+        self.assertEqual(facts["comparison"], "one_terminal_lf_added")
+        self.assertEqual(
+            facts["prior"],
+            {"byte_length": len(root), "sha256": hashlib.sha256(root).hexdigest()},
+        )
+        self.assertEqual(facts["incoming"]["byte_length"], len(root) + 1)
+        source = next(
+            record
+            for record in journal.replay_records(binding)
+            if record["event_type"] == state.LIFECYCLE_ROOT_REGISTERED
+        )
+        self.assertEqual(facts["prior_record"]["record_id"], source["record_id"])
+        rejection = journal.replay_records(binding)[-1]
+        self.assertEqual(rejection["event_type"], "message.inbound.rejected")
+        self.assertEqual(rejection["attributes"]["diagnostics"], facts)
+        self.assertEqual(bad_path.read_bytes(), root + b"\n")
         exact_path = self.private_message_file("recaptured.json", root)
         accepted = self.run_tool(
             "message",
@@ -73,6 +147,7 @@ class ProjectMessageIngestTests(ProjectTestCase):
             "bob-reviewer",
         )
         self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.assertNotIn("diagnostics", json.loads(accepted.stdout))
         records = journal.replay_records(binding)
         observations = [
             journal.decode_exact_message(record)
