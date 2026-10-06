@@ -18,8 +18,9 @@ MAX_AGENT_VIEW_BYTES = 1_048_576
 MAX_AGENT_VIEW_SESSIONS = 512
 MAX_LIST_AGENTS_CHARS = 262_144
 MAX_LIST_AGENTS_PEERS = 512
+# ListAgents may abbreviate "background" as "bg" (Claude Code 2.1.29x).
 LOCAL_SESSION_KINDS = frozenset(
-    {"background", "headless", "interactive", "non-interactive", "print"}
+    {"background", "bg", "headless", "interactive", "non-interactive", "print"}
 )
 ADDRESSABLE_SESSION_STATES = frozenset({"busy", "idle", "running", "waiting"})
 NONLOCAL_MARKERS = ("cloud", "remote control", "other machine")
