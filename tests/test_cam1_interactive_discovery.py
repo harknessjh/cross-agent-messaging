@@ -193,10 +193,12 @@ class InteractiveAgentViewDiscoveryTests(unittest.TestCase):
         self.assertEqual(selected.product_name, "live-worker")
 
     def test_list_agents_separates_locality_from_addressability(self) -> None:
-        listing = """Peer sessions (3):
+        listing = """Peer sessions (5):
   busy-worker [aaaaaa]  ·  interactive  ·  busy  ·  started now
   exited-worker [bbbbbb]  ·  interactive  ·  exited  ·  started earlier
   remote-worker [cccccc]  ·  interactive  ·  idle  ·  Remote Control
+  bg-worker [dddddd]  ·  bg  ·  busy  ·  started 3h ago
+  bg-remote-worker [eeeeee]  ·  bg  ·  idle  ·  Remote Control
 """
 
         peers = {peer.name: peer for peer in routing.parse_list_agents_peers(listing)}
@@ -207,6 +209,11 @@ class InteractiveAgentViewDiscoveryTests(unittest.TestCase):
         self.assertFalse(peers["exited-worker"].addressable)
         self.assertFalse(peers["remote-worker"].local)
         self.assertFalse(peers["remote-worker"].addressable)
+        # "bg" is ListAgents' short form of the local "background" kind.
+        self.assertTrue(peers["bg-worker"].local)
+        self.assertTrue(peers["bg-worker"].addressable)
+        self.assertFalse(peers["bg-remote-worker"].local)
+        self.assertFalse(peers["bg-remote-worker"].addressable)
         self.assertTrue(peers["busy-worker"].as_dict()["addressable"])
 
     def test_refresh_allows_status_change_but_rejects_pid_change(self) -> None:

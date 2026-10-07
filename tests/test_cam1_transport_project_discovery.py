@@ -28,6 +28,112 @@ else:
 
 
 class ProjectTransportDiscoveryTests(ProjectBoundTransportTestCase):
+    def test_background_alias_passes_project_preflight_and_send(self) -> None:
+        self.add_claude_participant(kind="background")
+        self.add_codex_participant()
+        raw = build_first_contact()
+        envelope = self.private_envelope("background-alias.json", raw)
+        marker = self.base / "background-alias.called"
+        binary = self.fake_claude(
+            returned={
+                "success": True,
+                "msg_id": "00000000-0000-4000-8000-000000000900",
+            },
+            peer_kind="background",
+            peer_state="busy",
+            peer_listing="Peer sessions (1):\n  local-worker [abcdef]  ·  bg  ·  busy  ·  synthetic",
+            expected_message=raw,
+            marker=marker,
+        )
+        preflight = self.run_transport(
+            "claude-preflight", "--participant", "local-worker", claude_bin=binary
+        )
+        self.assertEqual(preflight.returncode, 0, preflight.stderr)
+        payload = json.loads(preflight.stdout)
+        self.assertEqual(payload["status"], "route_preflight")
+        self.assertEqual(payload["identity"]["session_id"], CLAUDE_SESSION)
+        self.assertEqual(payload["identity"]["kind"], "background")
+        self.assertTrue(payload["identity"]["process_backed"])
+        self.assertEqual(payload["route"]["kind"], "bg")
+        self.assertEqual(payload["participant"]["route_status"], "tool_correlated")
+        self.assertFalse(marker.exists())
+        self.assertNotIn(
+            "message.outbound.intent",
+            [record["event_type"] for record in journal.replay_records(self.binding)],
+        )
+
+        sent = self.run_transport(
+            "claude-send",
+            "--participant",
+            "local-worker",
+            "--envelope",
+            str(envelope),
+            claude_bin=binary,
+        )
+        self.assertEqual(sent.returncode, 0, sent.stderr)
+        self.assertEqual(json.loads(sent.stdout)["status"], "transport_accepted")
+        self.assertEqual(marker.read_text(encoding="utf-8"), "called\n")
+        participant = (
+            state.StateStore(self.binding).snapshot().roster.select("local-worker")
+        )
+        self.assertEqual(participant.binding.session_kind, "background")
+        self.assertEqual(participant.binding.generation, 1)
+        self.assertEqual(participant.route.agent_view_kind, "background")
+        self.assertEqual(participant.route.address, "local-worker [abcdef]")
+        events = [
+            record["event_type"] for record in journal.replay_records(self.binding)
+        ]
+        self.assertEqual(events.count("message.outbound.intent"), 1)
+        self.assertEqual(events.count("transport.accepted"), 1)
+
+    def test_background_alias_does_not_admit_remote_or_unavailable_peers(self) -> None:
+        self.add_claude_participant(kind="background")
+        self.add_codex_participant()
+        marker = self.base / "background-alias-must-not-send"
+        envelope = self.private_envelope("excluded-bg.json", build_first_contact())
+        before = journal.replay_records(self.binding)
+        for activity, detail in (
+            ("busy", "Remote Control"),
+            ("busy", "cloud"),
+            ("busy", "other machine"),
+            ("exited", "synthetic"),
+            ("unknown-state", "synthetic"),
+        ):
+            with self.subTest(activity=activity, detail=detail):
+                binary = self.fake_claude(
+                    returned={
+                        "success": True,
+                        "msg_id": "00000000-0000-4000-8000-000000000900",
+                    },
+                    peer_kind="background",
+                    peer_state="busy",
+                    peer_listing=(
+                        "Peer sessions (1):\n"
+                        f"  local-worker [abcdef]  ·  bg  ·  {activity}  ·  {detail}"
+                    ),
+                    marker=marker,
+                )
+                for command in ("claude-preflight", "claude-send"):
+                    extra = (
+                        ["--envelope", str(envelope)]
+                        if command == "claude-send"
+                        else []
+                    )
+                    completed = self.run_transport(
+                        command,
+                        "--participant",
+                        "local-worker",
+                        *extra,
+                        claude_bin=binary,
+                    )
+                    self.assertEqual(completed.returncode, 2, completed.stderr)
+                    self.assertEqual(
+                        json.loads(completed.stderr)["error"]["code"],
+                        "claude.route_not_found",
+                    )
+                    self.assertFalse(marker.exists())
+                    self.assertEqual(journal.replay_records(self.binding), before)
+
     def test_excluded_list_agents_row_diagnostics_reach_both_clis_without_intent(
         self,
     ) -> None:

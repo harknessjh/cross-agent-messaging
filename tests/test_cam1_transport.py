@@ -824,6 +824,38 @@ class ProductResponseParsingTests(unittest.TestCase):
                 kind,
             )
 
+    def test_route_accepts_list_agents_bg_alias_for_agent_view_background(
+        self,
+    ) -> None:
+        session = routing.AgentViewSession(
+            session_id=CLAUDE_SESSION,
+            agent_view_id=None,
+            product_name="worker",
+            cwd="/example/project",
+            kind="background",
+            state="busy",
+            started_at_ms=1,
+            process_id=42,
+        )
+        session = routing.select_agent_view_session(
+            {CLAUDE_SESSION: (session,)}, CLAUDE_SESSION
+        )
+        (peer,) = routing.parse_list_agents_peers(
+            "Peer sessions (1):\n  worker [abcdef]  ·  bg  ·  busy  ·  started 3h ago\n"
+        )
+        self.assertTrue(peer.local)
+        self.assertTrue(peer.addressable)
+        route = routing.correlate_route(session, (peer,))
+        self.assertEqual(route.peer, peer)
+        self.assertEqual(route.peer.kind, "bg")
+        for kind in ("interactive", "headless"):
+            with (
+                self.subTest(kind=kind),
+                self.assertRaises(routing.RoutingError) as error,
+            ):
+                routing.correlate_route(replace(session, kind=kind), (peer,))
+            self.assertEqual(error.exception.code, "claude.route_kind_mismatch")
+
 
 class ProjectBoundTransportTestCase(unittest.TestCase):
     """Exercise the supported journal-first live transport commands."""
@@ -948,7 +980,7 @@ class ProjectBoundTransportTestCase(unittest.TestCase):
         environment["CODEX_HOME"] = str(codex_home or self.codex_home)
         return environment
 
-    def add_claude_participant(self) -> None:
+    def add_claude_participant(self, *, kind: str = "interactive") -> None:
         added = self.run_project(
             "participant",
             "add",
@@ -975,7 +1007,7 @@ class ProjectBoundTransportTestCase(unittest.TestCase):
             "--session-label",
             "local-worker",
             "--session-kind",
-            "interactive",
+            kind,
             "--operator-reference",
             "test operator matched Claude status output",
         )

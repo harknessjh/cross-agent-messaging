@@ -729,6 +729,30 @@ class DocumentationTests(unittest.TestCase):
         )
         self.assertNotIn("non-normative fallback", troubleshooting)
 
+    def test_background_alias_guidance_matches_routing_scope(self) -> None:
+        guide = (REPOSITORY_ROOT / "docs" / "CODEX_TO_CLAUDE.md").read_text(
+            encoding="utf-8"
+        )
+        notes = (REPOSITORY_ROOT / "docs" / "IMPLEMENTATION_NOTES.md").read_text(
+            encoding="utf-8"
+        )
+        for text in (guide, notes):
+            words = " ".join(text.split())
+            self.assertIn("`bg`", words)
+            self.assertIn("`background`", words)
+            self.assertIn("both raw kind values", words)
+            self.assertIn("preflight and send", words)
+            self.assertNotIn("current reference parser", words)
+        self.assertIn(
+            "alias does not permit an automatic rebind", " ".join(guide.split())
+        )
+        self.assertIn("restarted after a host reboot", " ".join(guide.split()))
+        self.assertIn(
+            "Live delivery to a background session has not been established",
+            " ".join(guide.split()),
+        )
+        self.assertIn("not live product delivery", " ".join(notes.split()))
+
     def test_release_checklist_tracks_transport_and_upgrade_contracts(self) -> None:
         checklist = (
             REPOSITORY_ROOT / "docs" / "PUBLIC_RELEASE_CHECKLIST.md"

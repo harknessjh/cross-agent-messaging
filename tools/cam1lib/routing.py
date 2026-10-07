@@ -21,10 +21,20 @@ MAX_LIST_AGENTS_PEERS = 512
 LOCAL_SESSION_KINDS = frozenset(
     {"background", "headless", "interactive", "non-interactive", "print"}
 )
+# Claude Code 2.1.29x lists background sessions as "bg" in ListAgents while
+# `claude agents --json` still reports "background"; compare canonical kinds.
+SESSION_KIND_ALIASES = {"bg": "background"}
 ADDRESSABLE_SESSION_STATES = frozenset({"busy", "idle", "running", "waiting"})
 NONLOCAL_MARKERS = ("cloud", "remote control", "other machine")
 PEER_NAME_PATTERN = re.compile(r"^(?P<name>.+?) \[(?P<ref>[0-9a-fA-F]{6})\]$")
 AGENT_VIEW_ID_PATTERN = re.compile(r"^[0-9a-fA-F]{8}$")
+
+
+def canonical_session_kind(kind: str) -> str:
+    """Return the lowercase session kind with known product aliases resolved."""
+
+    lowered = kind.lower()
+    return SESSION_KIND_ALIASES.get(lowered, lowered)
 
 
 class RoutingError(ValueError):
@@ -330,7 +340,7 @@ def parse_list_agents_peers(listing: str) -> tuple[Peer, ...]:
         kind = metadata[0] if metadata else ""
         state = metadata[1] if len(metadata) > 1 else ""
         metadata_text = " ".join(metadata).lower()
-        local = kind.lower() in LOCAL_SESSION_KINDS and not any(
+        local = canonical_session_kind(kind) in LOCAL_SESSION_KINDS and not any(
             marker in metadata_text for marker in NONLOCAL_MARKERS
         )
         addressable = local and state.lower() in ADDRESSABLE_SESSION_STATES
@@ -403,7 +413,7 @@ def agent_view_diagnostics(
             reason = "shadowed_by_process_row"
         elif not row.process_backed and row.agent_view_id is None:
             reason = "idless_nonprocess_row"
-        elif row.kind.lower() not in LOCAL_SESSION_KINDS:
+        elif canonical_session_kind(row.kind) not in LOCAL_SESSION_KINDS:
             reason = "kind_not_local"
         elif row.state.lower() not in ADDRESSABLE_SESSION_STATES:
             reason = "state_not_addressable"
@@ -518,7 +528,7 @@ def select_agent_view_session(
         for rows in sessions.values()
         for row in _current_agent_view_rows(rows)
         if row.product_name == selected.product_name
-        and row.kind.lower() in LOCAL_SESSION_KINDS
+        and canonical_session_kind(row.kind) in LOCAL_SESSION_KINDS
         and row.state.lower() in ADDRESSABLE_SESSION_STATES
     }
     if same_name_session_ids != {selected.session_id}:
@@ -556,7 +566,7 @@ def select_agent_view_identity_session(
     eligible = tuple(
         row
         for row in candidates
-        if row.kind.lower() in LOCAL_SESSION_KINDS
+        if canonical_session_kind(row.kind) in LOCAL_SESSION_KINDS
         and row.state.lower() in ADDRESSABLE_SESSION_STATES
     )
     if len(eligible) != 1:
@@ -615,7 +625,7 @@ def correlate_route(
             ),
         )
     peer = matching[0]
-    if peer.kind.lower() != session.kind.lower():
+    if canonical_session_kind(peer.kind) != canonical_session_kind(session.kind):
         raise RoutingError(
             "claude.route_kind_mismatch",
             "Agent View and ListAgents disagree on the selected session kind",
