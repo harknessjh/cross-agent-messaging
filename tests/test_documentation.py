@@ -479,7 +479,9 @@ class DocumentationTests(unittest.TestCase):
             self.assertIn(requirement, collaboration)
         self.assertNotIn("| Recorded outcome | Next step |", collaboration)
 
-    def test_obligation_tracking_does_not_invent_an_outstanding_command(self) -> None:
+    def test_outstanding_view_assists_but_does_not_replace_obligation_tracking(
+        self,
+    ) -> None:
         for name in ("AGENTS.md", "docs/CONTINUING_COLLABORATION.md"):
             with self.subTest(document=name):
                 text = " ".join(
@@ -489,16 +491,41 @@ class DocumentationTests(unittest.TestCase):
                 self.assertIn("root ID, requester, exact preserved root path", text)
                 self.assertIn("last sent reply/outcome and next action", text)
                 self.assertIn(
-                    "aggregate lifecycle counts, not per-participant obligations", text
-                )
-                self.assertIn(
                     "`journal tail` shows recent records for all participants", text
                 )
+                self.assertIn("per-participant-outstanding-exchange-view", text)
+        collaboration = " ".join(
+            (REPOSITORY_ROOT / "docs/CONTINUING_COLLABORATION.md")
+            .read_text(encoding="utf-8")
+            .split()
+        )
+        self.assertIn("state outstanding --participant COMMON_NAME", collaboration)
+        self.assertIn("not an obligations list", collaboration)
+        self.assertIn("does not replace your own accepted-work tracking", collaboration)
+        journal_guide = " ".join(
+            (REPOSITORY_ROOT / "docs/PROJECT_JOURNAL.md")
+            .read_text(encoding="utf-8")
+            .split()
+        )
+        for requirement in (
+            "CAM-OUTSTANDING/1",
+            "--include-attention",
+            "--limit",
+            "per section",
+            "not an obligations list",
+            "Journaled intake evidence",
+            "not nondelivery",
+            "not a work",
+            "terminal_intake_tracking",
+            "the lock is released before report-specific",
+        ):
+            self.assertIn(requirement, journal_guide)
         for document in _markdown_documents():
             with self.subTest(document=document.relative_to(REPOSITORY_ROOT)):
                 text = " ".join(document.read_text(encoding="utf-8").split())
                 self.assertNotRegex(
-                    text, r"\b(?:state|message)\s+(?:outstanding|unanswered)\b"
+                    text,
+                    r"\b(?:state\s+unanswered|message\s+(?:outstanding|unanswered))\b",
                 )
 
     def test_first_contact_prompts_do_not_assign_continuing_reply_duties(self) -> None:

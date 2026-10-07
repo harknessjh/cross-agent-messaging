@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from copy import deepcopy
 from typing import Any, cast
 
-from . import enrollment
+from . import enrollment, outstanding
 from .compatibility import (
     COMPATIBILITY_GATE_ACTIVATED_EVENT,
     CompatibilityGate,
@@ -21,6 +21,7 @@ from .journal import (
     _verified_records_for_transaction,
     append_record,
     decode_exact_message,
+    replay_records,
 )
 from .lifecycle import ROOT_TYPES, LifecycleEntry, LifecycleState
 from .participants import Participant, ParticipantStatus
@@ -28,6 +29,7 @@ from .project import (
     ProjectBinding,
     ProjectError,
     ProjectTransaction,
+    current_project_transaction,
     project_transaction,
     require_project_transaction,
 )
@@ -111,6 +113,34 @@ class StateStore:
 
         with _transaction(self.project, transaction) as active:
             return _replay_locked(self.project, active)
+
+    def outstanding(
+        self,
+        participant: str,
+        *,
+        limit: int = outstanding.DEFAULT_LIMIT,
+        include_attention: bool = False,
+        now: dt.datetime | None = None,
+    ) -> dict[str, Any]:
+        """Capture once, then release the lock before indexing/rendering."""
+        if current_project_transaction(self.project) is not None:
+            raise CamUsageError(
+                "outstanding.nested_transaction",
+                "outstanding view must run outside an existing transaction",
+            )
+        with project_transaction(self.project) as transaction:
+            snapshot = self.snapshot(transaction=transaction)
+            records = replay_records(self.project)
+            as_of = now if now is not None else dt.datetime.now(dt.UTC)
+        return outstanding.render(
+            snapshot,
+            records,
+            project_name=self.project.display_name,
+            participant=participant,
+            as_of=as_of,
+            limit=limit,
+            include_attention=include_attention,
+        )
 
     def compatibility_activate(
         self,

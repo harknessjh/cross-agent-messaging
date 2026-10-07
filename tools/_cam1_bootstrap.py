@@ -64,6 +64,7 @@ _SOURCE_PATHS = {
     "tools.cam1lib.native_fs": "cam1lib/native_fs.py",
     "tools.cam1lib.onboarding": "cam1lib/onboarding.py",
     "tools.cam1lib.onboarding_cli": "cam1lib/onboarding_cli.py",
+    "tools.cam1lib.outstanding": "cam1lib/outstanding.py",
     "tools.cam1lib.participants": "cam1lib/participants.py",
     "tools.cam1lib.profile": "cam1lib/profile.py",
     "tools.cam1lib.product_approval_recovery": "cam1lib/product_approval_recovery.py",

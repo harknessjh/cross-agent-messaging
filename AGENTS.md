@@ -66,6 +66,7 @@ requires this session's own authority. Keep unrelated authorized work moving.
   requester, exact preserved root path, last sent reply/outcome and next action.
   `state status` gives aggregate lifecycle counts, not per-participant
   obligations; `journal tail` shows recent records for all participants.
+  Use the [per-participant exchange view](docs/PROJECT_JOURNAL.md#per-participant-outstanding-exchange-view) to assist this check, not replace your accepted-work list.
 - This duty excludes ACKs and messages requesting no outcome. Never
   acknowledge an ACK or create a chat loop. A valid, correlated reply's
   transport acceptance satisfies the send step, not proof of delivery,

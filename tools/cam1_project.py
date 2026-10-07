@@ -208,6 +208,12 @@ def _parser() -> argparse.ArgumentParser:
     state_commands.add_parser(
         "rebuild", help="rebuild disposable state projections from the journal"
     )
+    outstanding_parser = state_commands.add_parser(
+        "outstanding", help="show a read-only per-participant exchange-state view"
+    )
+    outstanding_parser.add_argument("--participant", required=True)
+    outstanding_parser.add_argument("--include-attention", action="store_true")
+    outstanding_parser.add_argument("--limit", type=_outstanding_limit, default=50)
 
     compatibility_cli.register_parser(domains)
     onboarding_cli.add_parser(domains)
@@ -638,8 +644,34 @@ def _handle_participant(
     return 0
 
 
+def _outstanding_limit(value: str) -> int:
+    try:
+        limit = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            "limit must be an integer from 1 to 200"
+        ) from None
+    if not 1 <= limit <= 200:
+        raise argparse.ArgumentTypeError("limit must be an integer from 1 to 200")
+    return limit
+
+
 def _handle_state(args: argparse.Namespace, store: StateStore) -> int:
-    snapshot = store.snapshot() if args.state_command == "status" else store.rebuild()
+    if args.state_command == "outstanding":
+        _emit(
+            store.outstanding(
+                args.participant,
+                limit=args.limit,
+                include_attention=args.include_attention,
+            )
+        )
+        return 0
+    if args.state_command == "status":
+        snapshot = store.snapshot()
+    elif args.state_command == "rebuild":
+        snapshot = store.rebuild()
+    else:
+        raise CamUsageError("argument.invalid", "unknown state command")
     _emit(
         {
             "ok": True,
