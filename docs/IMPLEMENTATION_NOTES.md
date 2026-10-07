@@ -369,6 +369,17 @@ idempotency key only when it is the same action. A receiver that first sees an
 expired message does not process its request; it may emit the typed late
 rejection.
 
+For the narrow [committed-reply observation](../PROTOCOL.md#committed-reply-observation)
+case, reference intake can recognize a fresh delayed rejection using exact
+same-journal intent, acceptance, and committed reply evidence. It correlates at
+the final pre-dispatch observation preserved on the committed reply, while
+checking the reply's own freshness at current intake and commit time. It does
+not trust the envelope's claimed `sent_at` as timeliness evidence. The lifecycle
+plan is a duplicate with no state transition, but first recipient intake is
+still `validated` with `duplicate: false`. Standalone late-nonce validation,
+rejected historical intake records, and the existing accepted-reply fallback
+are unchanged. No journal-only delivery capture or action is authorized.
+
 The reference transport adapter distinguishes a retry from a renewal. A retry
 must name the latest exact outbound intent and is allowed only when its
 journaled outcome proves dispatch was not attempted. It reuses the identical
