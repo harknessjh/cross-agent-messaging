@@ -750,12 +750,16 @@ Remote Control, and other nonlocal rows. Locality and activity are separate:
 `busy` is addressable scheduling state, not proof of delivery or handling. Do
 not use any display name or short ref without the full-session preflight.
 
-Claude Code 2.1.251 was also observed to spell one background kind as
-`background` in Agent View and `bg` in `ListAgents`. The current reference
-parser rejects the abbreviated MCP spelling and reports no route. Until a
-narrow alias is implemented and tested, restore or resume the intended session
-to an eligible interactive state rather than bypassing discovery. Delivery to
-a background session has not been tested.
+Claude Code 2.1.251 was observed to spell one background kind as `background`
+in Agent View and `bg` in `ListAgents`; the same spelling difference was
+reported for 2.1.29x. The reference helper recognizes `bg` as a narrow alias for
+`background` during locality checks and route correlation, while retaining
+both raw kind values. Other unknown kinds, nonlocal markers, terminal or
+unknown activity, and genuine kind mismatches still fail closed. The full-UUID,
+project, uniqueness, fresh-discovery, and operator-confirmed binding checks
+remain required; the alias does not permit an automatic rebind. Synthetic
+preflight and send tests cover this alias. Live delivery to a background
+session has not been established by those tests.
 
 ## 7. Prepare the Claude receiver
 
@@ -1199,7 +1203,8 @@ Operational recovery rules:
   changed:** stop and resolve the stable binding or project mismatch with the
   operator. Ref-only churn is normal and is handled by fresh tool correlation;
   never ask the operator to approve an unobservable short ref.
-- **A session was backgrounded, resumed, or renamed:** run fresh preflight. If
+- **A session was backgrounded, resumed, renamed, or restarted after a host
+  reboot:** run fresh preflight. If
   the full UUID changed, directly enroll or rebind that new incarnation. If the
   UUID is unchanged but the product kind or label changed, directly confirm a
   metadata rebind. Never reuse an earlier ref. In one 2.1.251 observation,

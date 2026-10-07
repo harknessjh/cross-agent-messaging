@@ -626,12 +626,16 @@ rename and therefore numbered the last three generations one too low.
 
 The background capture contained `id`, `pid`, `state`, and `status` together,
 which is another valid heterogeneous Agent View shape. For the same session,
-MCP `ListAgents` abbreviated the kind as `bg`. The current reference parser
-does not recognize that abbreviation and therefore fails closed with no route;
-it must not be described as background-session support. A future compatibility
-change may normalize the narrowly observed `bg` spelling to `background` while
-retaining the raw value and all UUID, project, uniqueness, activity, and
-nonlocal-marker checks.
+MCP `ListAgents` abbreviated the kind as `bg`. The reader used in that episode
+did not recognize the abbreviation and failed closed with no route. The
+reference helper now normalizes only the known `bg` alias to `background` for
+locality checks and route correlation, retaining both raw kind values and all
+UUID, project, uniqueness, activity, and nonlocal-marker checks. Genuine kind
+drift still fails closed; normalization does not update an operator-confirmed
+binding. Synthetic project-aware preflight and send regressions exercise the
+`background`/`bg` pair, including rejection of nonlocal or unavailable peers.
+Their disposable MCP fixture bypasses executable-approval and live-profile
+gates; they establish routing behavior, not live product delivery.
 
 This is one operator-observed lifecycle on one product version, not a vendor
 contract. It does not establish that backgrounding always replaces a UUID,

@@ -833,8 +833,12 @@ class ProductResponseParsingTests(unittest.TestCase):
             product_name="worker",
             cwd="/example/project",
             kind="background",
-            state="working",
+            state="busy",
             started_at_ms=1,
+            process_id=42,
+        )
+        session = routing.select_agent_view_session(
+            {CLAUDE_SESSION: (session,)}, CLAUDE_SESSION
         )
         (peer,) = routing.parse_list_agents_peers(
             "Peer sessions (1):\n  worker [abcdef]  ·  bg  ·  busy  ·  started 3h ago\n"
@@ -976,7 +980,7 @@ class ProjectBoundTransportTestCase(unittest.TestCase):
         environment["CODEX_HOME"] = str(codex_home or self.codex_home)
         return environment
 
-    def add_claude_participant(self) -> None:
+    def add_claude_participant(self, *, kind: str = "interactive") -> None:
         added = self.run_project(
             "participant",
             "add",
@@ -1003,7 +1007,7 @@ class ProjectBoundTransportTestCase(unittest.TestCase):
             "--session-label",
             "local-worker",
             "--session-kind",
-            "interactive",
+            kind,
             "--operator-reference",
             "test operator matched Claude status output",
         )
