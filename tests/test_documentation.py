@@ -520,6 +520,35 @@ class DocumentationTests(unittest.TestCase):
                     self.assertNotIn(outside_scope, prompt)
                 self.assertIn("workflow-local instructions end", prompt)
 
+    def test_committed_rejection_guidance_keeps_evidence_and_clocks_separate(
+        self,
+    ) -> None:
+        protocol = (REPOSITORY_ROOT / "PROTOCOL.md").read_text(encoding="utf-8")
+        section = protocol.split("### Committed-reply observation", 1)[1].split(
+            "## 17.", 1
+        )[0]
+        for phrase in (
+            "Section 13 step 4",
+            "current `rejected` lifecycle",
+            "`state.lifecycle.reply_applied`",
+            "`lifecycle_state_committed: true`",
+            "final pre-dispatch correlation check",
+            "strictly before root expiry",
+            "fresh at current intake and commit time",
+            "`hello` and `cancel` roots are not",
+            "`status: validated`, `duplicate: false`",
+            "late-nonce verdict remains unchanged",
+            "prove product delivery, or grant authority",
+            "Sender-side journal bytes alone never substitute",
+        ):
+            self.assertIn(phrase, section)
+        self.assertIn("Committed-rejection clarification (2026-10-03)", protocol)
+        notes = (REPOSITORY_ROOT / "docs/IMPLEMENTATION_NOTES.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("../PROTOCOL.md#committed-reply-observation", notes)
+        self.assertIn("first recipient intake is", notes)
+
     def test_protocol_scopes_cam_constraints_without_revoking_authority(self) -> None:
         content = (REPOSITORY_ROOT / "PROTOCOL.md").read_text(encoding="utf-8")
         core_security = content.split("## 2. Core security invariant", 1)[1].split(

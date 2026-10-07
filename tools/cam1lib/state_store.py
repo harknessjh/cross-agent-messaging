@@ -31,7 +31,7 @@ from .project import (
     project_transaction,
     require_project_transaction,
 )
-from .protocol import REPLY_TYPES, CamUsageError, parse_exact_bytes
+from .protocol import REPLY_TYPES, CamUsageError, CamValidationError, parse_exact_bytes
 from .state_projection import (
     LIFECYCLE_EXPIRED_UNCONFIRMED,
     LIFECYCLE_REPLY_APPLIED,
@@ -824,7 +824,7 @@ class StateStore:
         now: dt.datetime | None = None,
         transaction: ProjectTransaction,
     ) -> LifecyclePlan:
-        """Prepare inbound state, honoring prior accepted local reply delivery."""
+        """Prepare inbound state, recognizing evidenced committed reply duplicates."""
 
         try:
             return self.prepare_lifecycle(
@@ -844,6 +844,20 @@ class StateStore:
             if accepted is None:
                 raise
             return accepted
+        except CamValidationError as error:
+            if [problem.code for problem in error.problems] != [
+                "correlation.late_rejection_nonce"
+            ]:
+                raise
+            accepted = self._prepare_accepted_outbound_reply(
+                exact_message,
+                now=now,
+                transaction=transaction,
+                timely_rejection=True,
+            )
+            if accepted is None:
+                raise
+            return accepted
 
     def _prepare_accepted_outbound_reply(
         self,
@@ -851,8 +865,9 @@ class StateStore:
         *,
         now: dt.datetime | None,
         transaction: ProjectTransaction,
+        timely_rejection: bool = False,
     ) -> LifecyclePlan | None:
-        """Recognize a fresh callback for a reply this project already delivered."""
+        """Recognize a fresh callback for an accepted, committed local reply."""
 
         require_project_transaction(self.project, transaction)
         event_now, observed_at = _event_time(now)
@@ -870,6 +885,19 @@ class StateStore:
         current = snapshot.lifecycle.entries.get(root_id)
         if root_raw is None or current is None:
             return None
+
+        if timely_rejection:
+            root = parse_exact_bytes(root_raw)
+            if (
+                root.get("type") != "request"
+                or envelope.get("type") != "ack"
+                or envelope.get("receipt", {}).get("status") != "rejected"
+                or root.get("nonce") is None
+                or envelope.get("nonce") != root["nonce"]
+                or current.state != LifecycleState.REJECTED
+                or message_id not in current.reply_message_ids
+            ):
+                return None
 
         records = _verified_records_for_transaction(self.project, transaction)
         intent_ids = {
@@ -892,9 +920,34 @@ class StateStore:
         if not accepted_delivery:
             return None
 
+        correlation_observed_at = observed_at
+        if timely_rejection:
+            committed = next(
+                (
+                    record
+                    for record in records
+                    if record["event_type"] == LIFECYCLE_REPLY_APPLIED
+                    and record["attributes"].get("message_id") == message_id
+                    and record["attributes"].get("root_message_id") == root_id
+                    and record["attributes"].get("message_type") == "ack"
+                    and decode_exact_message(record) == exact_message
+                ),
+                None,
+            )
+            if committed is None:
+                return None
+            # Replay has already checked this committed event. Correlate at
+            # its final pre-dispatch observation, never at claimed sent_at or
+            # transport-acceptance time. The ordinary validator enforces the
+            # strict before-expiry boundary for the nonce echo.
+            correlation_observed_at = _required_text(
+                committed["attributes"], "observed_at"
+            )
+            # Historical correlation must not make an expired reply fresh.
+            _validate_message(exact_message, observed_at=observed_at)
         _validate_message(
             exact_message,
-            observed_at=observed_at,
+            observed_at=correlation_observed_at,
             against_raw=root_raw,
         )
         return LifecyclePlan(

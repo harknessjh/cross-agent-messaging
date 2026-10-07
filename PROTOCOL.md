@@ -26,6 +26,10 @@ that the existing requirement to preserve a parsed send receipt also applies
 when subsequent client cleanup fails. It describes local diagnostics and
 interruption evidence, without changing wire fields or retry permissions.
 
+Committed-rejection clarification (2026-10-03): section 16 describes reference
+intake of a fresh, exact duplicate of a timely journal-committed rejection.
+The stateless validator, wire format, expiry rules, and authority are unchanged.
+
 ## 1. Purpose
 
 This document defines a same-host messaging profile for Codex and Claude Code agents that need to exchange messages with:
@@ -1145,7 +1149,9 @@ An independent Codex recipient first follows the later-turn delivery procedure i
    correlation checks, not authentication.
 4. Check the journal for prior message ID, nonce, idempotency key, and root
    lifecycle state. Reject a conflicting duplicate and return the recorded
-   status for an identical semantic duplicate.
+   status for an identical semantic duplicate. See section 16's
+   [committed-reply observation](#committed-reply-observation) note for the
+   reference shared-journal case.
 5. Compare the observed endpoint and claimed stable session ID with the current
    operator-correlated project roster. A route observation does not override a
    mismatch.
@@ -1318,6 +1324,39 @@ These values appear in the structured `receipt.status` field. A directed message
   may arrive in a separate turn.
 - Agents SHOULD send compact results and reference authorized shared artifacts by exact path and hash when payloads are large; a message does not carry shared context, and transports impose size limits.
 - Agent-to-agent loops MUST stop after a bounded number of exchanges and escalate to the operator.
+
+### Committed-reply observation
+
+Section 13 step 4 returns recorded state for an identical duplicate; it does
+not apply the transition again. The pending-or-held expiry rule above does not
+undo a terminal rejection whose committed observation preceded expiry. The
+reference intake path recognizes a later observation of a nonce-echoing
+`ack: rejected` to a `request` only when the same verified project journal holds:
+
+- the exact preserved root and reply bytes, with that reply ID in the root's
+  current `rejected` lifecycle;
+- a matching committed `state.lifecycle.reply_applied` event; and
+- an exact-byte outbound intent linked to `transport.accepted` with
+  `lifecycle_state_committed: true`.
+
+Correlation uses the committed reply's `observed_at`, recorded by the adapter's
+final pre-dispatch correlation check. The ordinary validator must accept the
+nonce echo at that time, strictly before root expiry. Claimed `sent_at`, transport
+acceptance time, and event append time do not substitute for this observation.
+The reply itself must remain fresh at current intake and commit time. Missing
+or mismatched evidence retains the rejection; `hello` and `cancel` roots are not
+covered by this rejection fallback.
+
+This is recognition of a committed duplicate, not a new rejection, nonce
+consumption, action, or reopening of expired work. The first recipient-specific
+intake still reports `status: validated`, `duplicate: false`; only a subsequent
+intake with prior validated recipient evidence reports `duplicate: true`.
+Earlier rejected intake records remain unchanged. The standalone validator's
+late-nonce verdict remains unchanged, as does the existing accepted-reply
+fallback. This uses the same same-account journal trust as that fallback: it
+does not authenticate the sender, prove product delivery, or grant authority.
+Sender-side journal bytes alone never substitute for a delivered-message
+capture. No new retry permission or journal event type is introduced.
 
 ## 17. Required project binding, roster, and journal
 
