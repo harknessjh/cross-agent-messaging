@@ -284,6 +284,79 @@ Inspect or rebuild it from the canonical journal with:
   state rebuild
 ```
 
+### Per-participant outstanding exchange view
+
+Use `state outstanding --participant COMMON_NAME_OR_ID` to inspect one
+participant in the resolved project. This is an **exchange-state view, not an
+obligations list**: an informational request is a root too, so nonterminal does
+not mean an outcome is owed, overdue, authorized or actionable.
+
+```bash
+"/CONFIRMED/CAM/REPO/.venv/bin/python" \
+  "/CONFIRMED/CAM/REPO/tools/cam1_project.py" \
+  --project-root "/absolute/path/to/target/project" \
+  state outstanding --participant COMMON_NAME_OR_ID --include-attention --limit 50
+```
+
+The `CAM-OUTSTANDING/1` JSON report identifies one project and participant,
+`as_of`, and the verified journal sequence/digest. It has two default sections:
+`outgoing_nonterminal` and `incoming_accepted` (request roots in accepted or
+started state without a terminal outcome). Opt-in `attention` lists incoming
+requests with journaled intake evidence but no acceptance, including received,
+protocol-held and causal-held requests. Attention is not accepted work.
+
+`--limit` is **per section**, defaults to 50 and accepts 1–200. Each enabled
+section reports total/shown/omitted counts and oldest-first rows, ordered by
+root-registration sequence (first evidence for unregistered roots), then UUID.
+Disabled attention has null total/omitted, not a claim that nothing awaits a
+decision. Bodies, free-text intents/operations, evidence paths, session UUIDs,
+labels, routes and arbitrary private attributes are never emitted. IDs, common
+names, vendors, generations and lifecycle timestamps are shown for correlation.
+
+**Journaled intake evidence** requires a recipient-specific validated, held or
+duplicate record linked to the same exact observed bytes. A raw observation
+alone is not enough. `no_recorded_evidence` is not nondelivery; never interpret
+the output as read/unread or as an inbox. Legacy roots without attributable
+endpoint evidence are counted in `coverage.unattributed_lifecycle_roots`, not
+assigned using a current name. Unusable supplemental records are counted;
+contradictory attribution fails closed. An empty list is not proof no work
+exists outside this report's coverage.
+
+The view includes the selected participant's historical binding generations.
+`current_session`/`earlier_session` compares the full session UUID internally;
+generation relation is separate, so label-only rebinds do not mislabel current
+work. Retired, stale and unbound participants may be explicitly inspected.
+Historical visibility never transfers authority to answer for another session.
+
+Transport remains separate: `accepted`, `not_attempted`, `unknown`, `orphaned`
+(intent without an outcome), or `no_recorded_evidence` (no attributable intent).
+Attempt counts and unresolved/conflicting counts prevent a later outcome from
+concealing earlier uncertainty. The latest reply-attempt summary is separate
+from the last committed reply; an accepted transport without a lifecycle commit
+does not establish acceptance/completion. Nothing releases a reply slot or
+recommends a resend. Root intents without registration remain visible.
+
+Expiry is derived at `as_of` without appending events. Pending/held roots become
+effectively expired-unconfirmed at their deadline; received/accepted/started
+roots remain confirmed afterward. The initial message deadline is **not a work
+deadline**. Renewals have separate linked rows; a pending/received cancel does
+not complete cancellation. Terminal outcomes, including rejected and
+late-rejected, are excluded. Consequently this slice does **not** list terminal
+replies lacking the requester's intake: `coverage.terminal_intake_tracking` is
+false. It cannot answer whether a terminal answer remains unseen in a product
+queue; that separate view is deferred. Never substitute journal bytes for a
+product-visible receive capture.
+
+The command performs no product calls, polling, state mutation, journal append
+or disposable-projection refresh. It ignores stale/missing disposable
+projections and replays the canonical journal once. One exclusive project
+transaction captures caller-owned records, a replayed snapshot, tip and time;
+the lock is released before report-specific parsing, indexing and rendering.
+Verification/replay still hold the lock and may contend with send/ingest (the
+existing acquisition timeout is five seconds). Do not run it inside an existing
+transaction. Concurrent later records do not change its captured position.
+There is no historical-time option, automatic repair or delivery polling.
+
 ## Participant roster
 
 The project roster is the project's address book. A participant entry keeps
