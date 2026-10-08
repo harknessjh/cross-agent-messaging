@@ -39,8 +39,8 @@ Reproduce CI from an isolated Python 3.11, 3.12, 3.13, or 3.14 environment:
 
 ```bash
 python -m pip install --requirement requirements-dev.txt
-python -m ruff format --check tools tests
-python -m ruff check --select E4,E7,E9,F,I,B,UP --target-version py311 tools tests
+python -m ruff format --check tools tests .github/scripts
+python -m ruff check --select E4,E7,E9,F,I,B,UP --target-version py311 tools tests .github/scripts
 python -m unittest discover --start-directory tests --verbose
 python tools/cam1.py --help
 python tools/cam1.py validation-profile
@@ -51,6 +51,10 @@ python tools/cam1.py validate tests/fixtures/valid-ack.json \
   --against tests/fixtures/valid-hello.json \
   --allow-expired
 ```
+
+CI splits the same test suite into parallel shards by module with
+`python .github/scripts/test_shard.py K/N`; the single `unittest discover`
+command above runs all of it.
 
 The validation profile must identify a clean CAM checkout for release work.
 Dirty-source overrides are development evidence only and must not be used to

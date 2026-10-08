@@ -4,9 +4,13 @@
 name: CI
 
 # Pull requests run a focused set: the oldest and newest supported Python on
-# Linux, plus the full suite on macOS. Pushes to main and manual runs add the
-# middle Python versions and the minimum-declared-dependency job. Each event
-# runs once: branch pushes without a pull request do not trigger CI.
+# Linux, plus macOS. Pushes to main and manual runs add the middle Python
+# versions and the minimum-declared-dependency job. Each event runs once:
+# branch pushes without a pull request do not trigger CI.
+#
+# Every configuration runs the whole offline suite, split by test module into
+# parallel shards (.github/scripts/test_shard.py). Formatting, lint and
+# command-help checks run once per configuration, in its first shard.
 on:
   push:
     branches: [main]
@@ -24,13 +28,14 @@ concurrency:
 
 jobs:
   test:
-    name: Python ${{ matrix.python-version }}
+    name: Python ${{ matrix.python-version }} (${{ matrix.shard }})
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         python-version: ${{ github.event_name == 'pull_request' && fromJSON('["3.11", "3.14"]') || fromJSON('["3.11", "3.12", "3.13", "3.14"]') }}
+        shard: ["1/3", "2/3", "3/3"]
 
     steps:
       - name: Check out source
@@ -48,30 +53,37 @@ jobs:
         run: python -m pip install --requirement requirements-dev.txt
 
       - name: Check formatting
-        run: python -m ruff format --check tools tests
+        if: matrix.shard == '1/3'
+        run: python -m ruff format --check tools tests .github/scripts
 
       - name: Lint
+        if: matrix.shard == '1/3'
         run: >-
           python -m ruff check
           --select E4,E7,E9,F,I,B,UP
           --target-version py311
-          tools tests
+          tools tests .github/scripts
 
       - name: Run offline tests
-        run: python -m unittest discover --start-directory tests --verbose
+        run: python .github/scripts/test_shard.py ${{ matrix.shard }}
 
       - name: Check command help
+        if: matrix.shard == '1/3'
         run: |
           python tools/cam1.py --help
           python tools/cam1_project.py --help
           python tools/cam1_transport.py --help
 
   macos:
-    # The full suite includes the Darwin ACL and native-executable boundary
-    # tests that the Linux jobs cannot exercise.
-    name: macOS full suite
+    # macOS also runs the Darwin ACL and native-executable boundary tests that
+    # the Linux jobs cannot exercise.
+    name: macOS (${{ matrix.shard }})
     runs-on: macos-latest
-    timeout-minutes: 40
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ["1/2", "2/2"]
 
     steps:
       - name: Check out source
@@ -89,13 +101,17 @@ jobs:
         run: python -m pip install --requirement requirements-dev.txt
 
       - name: Run offline tests
-        run: python -m unittest discover --start-directory tests --verbose
+        run: python .github/scripts/test_shard.py ${{ matrix.shard }}
 
   minimum-dependencies:
-    name: Minimum declared dependencies
+    name: Minimum declared dependencies (${{ matrix.shard }})
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ["1/2", "2/2"]
 
     steps:
       - name: Check out source
@@ -116,8 +132,11 @@ jobs:
           --constraint .github/constraints/minimum.txt
 
       - name: Run quality gates
+        if: matrix.shard == '1/2'
         run: |
-          python -m ruff format --check tools tests
-          python -m ruff check --select E4,E7,E9,F,I,B,UP --target-version py311 tools tests
-          python -m unittest discover --start-directory tests --verbose
+          python -m ruff format --check tools tests .github/scripts
+          python -m ruff check --select E4,E7,E9,F,I,B,UP --target-version py311 tools tests .github/scripts
           python tools/cam1_project.py --help
+
+      - name: Run offline tests
+        run: python .github/scripts/test_shard.py ${{ matrix.shard }}
