@@ -77,13 +77,13 @@ jobs:
   macos:
     # macOS also runs the Darwin ACL and native-executable boundary tests that
     # the Linux jobs cannot exercise.
-    name: macOS (${{ matrix.shard }})
+    name: macOS
     runs-on: macos-latest
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        shard: ["1/2", "2/2"]
+        shard: ["1/3", "2/3", "3/3"]
 
     steps:
       - name: Check out source
@@ -104,14 +104,14 @@ jobs:
         run: python .github/scripts/test_shard.py ${{ matrix.shard }}
 
   minimum-dependencies:
-    name: Minimum declared dependencies (${{ matrix.shard }})
+    name: Minimum declared dependencies
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        shard: ["1/2", "2/2"]
+        shard: ["1/3", "2/3", "3/3"]
 
     steps:
       - name: Check out source
@@ -132,7 +132,7 @@ jobs:
           --constraint .github/constraints/minimum.txt
 
       - name: Run quality gates
-        if: matrix.shard == '1/2'
+        if: matrix.shard == '1/3'
         run: |
           python -m ruff format --check tools tests .github/scripts
           python -m ruff check --select E4,E7,E9,F,I,B,UP --target-version py311 tools tests .github/scripts
